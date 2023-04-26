@@ -24,7 +24,7 @@ class BaseTransactionTest(_BaseResourceTest._ResourceTest):
         )
         data_success = response_success.json_value()
         self.assertTrue(data_success['success'])
-        self.assertEqual(data_success['accumulated_weight'], genesis_tx.weight)
+        self.assertEqual(data_success['accumulated_weight'], int(2**genesis_tx.weight))
         self.assertEqual(data_success['confirmation_level'], 0)
 
         # Adding blocks to have funds
@@ -38,7 +38,7 @@ class BaseTransactionTest(_BaseResourceTest._ResourceTest):
             {b'id': bytes(tx.hash.hex(), 'utf-8')}
         )
         data_success2 = response_success2.json_value()
-        self.assertGreater(data_success2['accumulated_weight'], tx.weight)
+        self.assertGreater(data_success2['accumulated_weight'], int(2**tx.weight))
         self.assertEqual(data_success2['confirmation_level'], 1)
 
         # Test sending hash that does not exist

@@ -616,11 +616,12 @@ class BaseTransaction(ABC):
             #        which requires the use of a storage, this is a workaround that should be fixed, places where this
             #        happens include generating new mining blocks and some tests
             height = self.calculate_height() if self.storage else None
-            score = self.weight if self.is_genesis else 0
+            score = int(2**self.weight) if self.is_genesis else 0
+            accumulated_weight = int(2**self.weight)
 
             metadata = TransactionMetadata(
                 hash=self.hash,
-                accumulated_weight=self.weight,
+                accumulated_weight=accumulated_weight,
                 height=height,
                 score=score,
                 min_height=0,
@@ -637,10 +638,11 @@ class BaseTransaction(ABC):
         """
         from hathor.transaction.transaction_metadata import ValidationState
         assert self.storage is not None
-        score = self.weight if self.is_genesis else 0
+        score = int(2**self.weight) if self.is_genesis else 0
+        accumulated_weight = int(2**self.weight)
         self._metadata = TransactionMetadata(hash=self.hash,
                                              score=score,
-                                             accumulated_weight=self.weight)
+                                             accumulated_weight=accumulated_weight)
         if self.is_genesis:
             self._metadata.validation = ValidationState.CHECKPOINT_FULL
             self._metadata.voided_by = set()
@@ -674,7 +676,7 @@ class BaseTransaction(ABC):
         if metadata.accumulated_weight > stop_value:
             return metadata
 
-        accumulated_weight = self.weight
+        accumulated_weight = int(2**self.weight)
 
         # TODO Another optimization is that, when we calculate the acc weight of a transaction, we
         # also partially calculate the acc weight of its descendants. If it were a DFS, when returning
@@ -689,7 +691,7 @@ class BaseTransaction(ABC):
         from hathor.transaction.storage.traversal import BFSTimestampWalk
         bfs_walk = BFSTimestampWalk(self.storage, is_dag_funds=True, is_dag_verifications=True, is_left_to_right=True)
         for tx in bfs_walk.run(self, skip_root=True):
-            accumulated_weight = sum_weights(accumulated_weight, tx.weight)
+            accumulated_weight += int(2**tx.weight)
             if accumulated_weight > stop_value:
                 break
 

@@ -18,7 +18,7 @@ from structlog import get_logger
 
 from hathor.conf.get_settings import get_global_settings
 from hathor.profiler import get_cpu_profiler
-from hathor.transaction import BaseTransaction, Block, Transaction, TxInput, sum_weights
+from hathor.transaction import BaseTransaction, Block, Transaction, TxInput
 from hathor.util import classproperty
 
 if TYPE_CHECKING:
@@ -199,13 +199,13 @@ class TransactionConsensusAlgorithm:
                 continue
             tx2 = tx.storage.get_transaction(h)
             tx2_meta = tx2.get_metadata()
-            tx2_meta.accumulated_weight = sum_weights(tx2_meta.accumulated_weight, tx.weight)
+            tx2_meta.accumulated_weight += int(2**tx.weight)
             self.context.save(tx2)
 
         # Then, we add ourselves.
         meta = tx.get_metadata()
         assert not meta.voided_by or meta.voided_by == {tx.hash}
-        assert meta.accumulated_weight == tx.weight
+        assert meta.accumulated_weight == int(2**tx.weight)
         if tx.hash in self.context.consensus.soft_voided_tx_ids:
             voided_by.add(self._settings.SOFT_VOIDED_ID)
             voided_by.add(tx.hash)
@@ -300,7 +300,7 @@ class TransactionConsensusAlgorithm:
                 candidate.update_accumulated_weight(stop_value=meta.accumulated_weight)
                 tx_meta = candidate.get_metadata()
                 d = tx_meta.accumulated_weight - meta.accumulated_weight
-                if abs(d) < self._settings.WEIGHT_TOL:
+                if d == 0:
                     tie_list.append(candidate)
                 elif d > 0:
                     is_highest = False

@@ -52,13 +52,13 @@ from hathor.profiler import get_cpu_profiler
 from hathor.pubsub import HathorEvents, PubSubManager
 from hathor.reactor import ReactorProtocol as Reactor
 from hathor.stratum import StratumFactory
-from hathor.transaction import BaseTransaction, Block, MergeMinedBlock, Transaction, TxVersion, sum_weights
+from hathor.transaction import BaseTransaction, Block, MergeMinedBlock, Transaction, TxVersion
 from hathor.transaction.exceptions import TxValidationError
 from hathor.transaction.storage import TransactionStorage
 from hathor.transaction.storage.exceptions import TransactionDoesNotExist
 from hathor.transaction.storage.tx_allow_scope import TxAllowScope
 from hathor.types import Address, VertexId
-from hathor.util import EnvironmentInfo, LogDuration, Random, calculate_min_significant_weight, not_none
+from hathor.util import EnvironmentInfo, LogDuration, Random, not_none
 from hathor.verification.verification_service import VerificationService
 from hathor.wallet import BaseWallet
 
@@ -795,14 +795,7 @@ class HathorManager:
             )
         timestamp = min(max(current_timestamp, timestamp_min), timestamp_max)
         parent_block_metadata = parent_block.get_metadata()
-        # this is the min weight to cause an increase of twice the WEIGHT_TOL, we make sure to generate a template with
-        # at least this weight (note that the user of the API can set its own weight, the block sumit API will also
-        # protect agains a weight that is too small but using WEIGHT_TOL instead of 2*WEIGHT_TOL)
-        min_significant_weight = calculate_min_significant_weight(
-            parent_block_metadata.score,
-            2 * self._settings.WEIGHT_TOL
-        )
-        weight = max(self.daa.calculate_next_weight(parent_block, timestamp), min_significant_weight)
+        weight = self.daa.calculate_next_weight(parent_block, timestamp)
         height = parent_block.get_height() + 1
         parents = [parent_block.hash] + parent_txs.must_include
         parents_any = parent_txs.can_include
@@ -814,6 +807,7 @@ class HathorManager:
         assert 1 <= len(parents) <= 3, 'Impossible number of parents'
         if __debug__ and len(parents) == 3:
             assert len(parents_any) == 0, 'Extra parents to choose from that cannot be chosen'
+        score = parent_block_metadata.score + int(2**weight)
         return BlockTemplate(
             versions={TxVersion.REGULAR_BLOCK.value, TxVersion.MERGE_MINED_BLOCK.value},
             reward=self.daa.get_tokens_issued_per_block(height),
@@ -824,7 +818,7 @@ class HathorManager:
             parents=parents,
             parents_any=parents_any,
             height=height,
-            score=sum_weights(parent_block_metadata.score, weight),
+            score=score,
             signal_bits=self._bit_signaling_service.generate_signal_bits(block=parent_block)
         )
 
@@ -863,15 +857,7 @@ class HathorManager:
         if parent_hash not in tips:
             self.log.warn('submit_block(): Ignoring block: parent not a tip', blk=blk.hash_hex)
             return False
-        parent_block = self.tx_storage.get_transaction(parent_hash)
-        parent_block_metadata = parent_block.get_metadata()
         # this is the smallest weight that won't cause the score to increase, anything equal or smaller is bad
-        min_insignificant_weight = calculate_min_significant_weight(
-            parent_block_metadata.score,
-            self._settings.WEIGHT_TOL
-        )
-        if blk.weight <= min_insignificant_weight:
-            self.log.warn('submit_block(): insignificant weight? accepted anyway', blk=blk.hash_hex, weight=blk.weight)
         return self.propagate_tx(blk, fails_silently=fails_silently)
 
     def push_tx(self, tx: Transaction, allow_non_standard_script: bool = False,
