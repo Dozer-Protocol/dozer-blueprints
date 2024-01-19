@@ -28,4 +28,6 @@ class Migration(BaseMigration):
         return 'change_score_acc_weight_metadata'
 
     def run(self, storage: 'TransactionStorage') -> None:
-        raise Exception('Cannot migrate your database. Please, delete your data folder and sync again.')
+        raise Exception('Cannot migrate your database due to an incompatible change in the metadata. '
+                        'Please, delete your data folder and use the latest available snapshot or sync '
+                        'from beginning.')

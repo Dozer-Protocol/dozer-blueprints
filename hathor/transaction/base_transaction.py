@@ -20,7 +20,7 @@ import weakref
 from abc import ABC, abstractmethod
 from enum import IntEnum
 from itertools import chain
-from math import inf, isfinite, log
+from math import inf, isfinite
 from struct import error as StructError, pack
 from typing import TYPE_CHECKING, Any, ClassVar, Iterator, Optional
 
@@ -34,6 +34,7 @@ from hathor.transaction.util import VerboseCallback, int_to_bytes, unpack, unpac
 from hathor.transaction.validation_state import ValidationState
 from hathor.types import TokenUid, TxOutputScript, VertexId
 from hathor.util import classproperty
+from hathor.utils.weight import weight_to_work
 
 if TYPE_CHECKING:
     from _hashlib import HASH
@@ -58,26 +59,6 @@ _GRAPH_FORMAT_STRING = '!dIB'
 
 # The int value of one byte
 _ONE_BYTE = 0xFF
-
-
-def sum_weights(w1: float, w2: float) -> float:
-    return aux_calc_weight(w1, w2, 1)
-
-
-def sub_weights(w1: float, w2: float) -> float:
-    if w1 == w2:
-        return 0
-    return aux_calc_weight(w1, w2, -1)
-
-
-def aux_calc_weight(w1: float, w2: float, multiplier: int) -> float:
-    a = max(w1, w2)
-    b = min(w1, w2)
-    if b == 0.0:
-        # Zero is a special acc_weight.
-        # We could use float('-inf'), but it is not serializable.
-        return a
-    return a + log(1 + 2**(b - a) * multiplier, 2)
 
 
 # Versions are sequential for blocks and transactions
@@ -616,8 +597,8 @@ class BaseTransaction(ABC):
             #        which requires the use of a storage, this is a workaround that should be fixed, places where this
             #        happens include generating new mining blocks and some tests
             height = self.calculate_height() if self.storage else None
-            score = int(2**self.weight) if self.is_genesis else 0
-            accumulated_weight = int(2**self.weight)
+            score = weight_to_work(self.weight) if self.is_genesis else 0
+            accumulated_weight = weight_to_work(self.weight)
 
             metadata = TransactionMetadata(
                 hash=self.hash,
@@ -638,8 +619,8 @@ class BaseTransaction(ABC):
         """
         from hathor.transaction.transaction_metadata import ValidationState
         assert self.storage is not None
-        score = int(2**self.weight) if self.is_genesis else 0
-        accumulated_weight = int(2**self.weight)
+        score = weight_to_work(self.weight) if self.is_genesis else 0
+        accumulated_weight = weight_to_work(self.weight)
         self._metadata = TransactionMetadata(hash=self.hash,
                                              score=score,
                                              accumulated_weight=accumulated_weight)
@@ -676,7 +657,7 @@ class BaseTransaction(ABC):
         if metadata.accumulated_weight > stop_value:
             return metadata
 
-        accumulated_weight = int(2**self.weight)
+        accumulated_weight = weight_to_work(self.weight)
 
         # TODO Another optimization is that, when we calculate the acc weight of a transaction, we
         # also partially calculate the acc weight of its descendants. If it were a DFS, when returning
@@ -691,7 +672,7 @@ class BaseTransaction(ABC):
         from hathor.transaction.storage.traversal import BFSTimestampWalk
         bfs_walk = BFSTimestampWalk(self.storage, is_dag_funds=True, is_dag_verifications=True, is_left_to_right=True)
         for tx in bfs_walk.run(self, skip_root=True):
-            accumulated_weight += int(2**tx.weight)
+            accumulated_weight += weight_to_work(tx.weight)
             if accumulated_weight > stop_value:
                 break
 

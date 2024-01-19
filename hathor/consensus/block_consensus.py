@@ -21,6 +21,7 @@ from hathor.conf.get_settings import get_global_settings
 from hathor.profiler import get_cpu_profiler
 from hathor.transaction import BaseTransaction, Block, Transaction
 from hathor.util import classproperty, not_none
+from hathor.utils.weight import weight_to_work
 
 if TYPE_CHECKING:
     from hathor.consensus.context import ConsensusAlgorithmContext
@@ -120,7 +121,7 @@ class BlockConsensusAlgorithm:
         for h in voided_by:
             tx = storage.get_transaction(h)
             tx_meta = tx.get_metadata()
-            tx_meta.accumulated_weight += int(2**block.weight)
+            tx_meta.accumulated_weight += weight_to_work(block.weight)
             self.context.save(tx)
 
         # Check conflicts of the transactions voiding us.
@@ -462,7 +463,7 @@ class BlockConsensusAlgorithm:
         storage = block.storage
 
         from hathor.transaction import Block
-        score = int(2**block.weight)
+        score = weight_to_work(block.weight)
         for parent in block.get_parents():
             if parent.is_block:
                 assert isinstance(parent, Block)
@@ -497,7 +498,7 @@ class BlockConsensusAlgorithm:
                         meta.first_block = block.hash
                         self.context.save(tx)
 
-                    score += int(2**tx.weight)
+                    score += weight_to_work(tx.weight)
 
         # Always save the score when it is calculated.
         meta = block.get_metadata()
@@ -524,9 +525,9 @@ class BlockConsensusAlgorithm:
         if block.is_genesis:
             if mark_as_best_chain:
                 meta = block.get_metadata()
-                meta.score = int(2**block.weight)
+                meta.score = weight_to_work(block.weight)
                 self.context.save(block)
-            return int(2**block.weight)
+            return weight_to_work(block.weight)
 
         parent = self._find_first_parent_in_best_chain(block)
         newest_timestamp = parent.timestamp
