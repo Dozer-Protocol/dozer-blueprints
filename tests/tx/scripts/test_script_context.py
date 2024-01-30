@@ -17,15 +17,17 @@ from unittest.mock import Mock
 
 import pytest
 
+from hathor.conf.settings import HathorSettings
 from hathor.transaction import Transaction, TxInput, TxOutput
 from hathor.transaction.exceptions import ScriptError
 from hathor.transaction.scripts.script_context import ScriptContext
 from hathor.transaction.scripts.sighash import SighashAll, SighashBitmask
 
 
-def test_defaults() -> None:
-    settings = Mock()
-    settings.MAX_NUM_OUTPUTS = 99
+@pytest.mark.parametrize(['max_num_outputs'], [(99,), (255,)])
+def test_defaults(max_num_outputs: int) -> None:
+    settings = Mock(spec_set=HathorSettings)
+    settings.MAX_NUM_OUTPUTS = max_num_outputs
 
     context = ScriptContext(settings=settings, stack=Mock(), logs=[], extras=Mock())
 
@@ -42,7 +44,7 @@ def test_defaults() -> None:
 
     assert context._sighash == SighashAll()
     assert context.get_tx_sighash_data(tx) == tx.get_sighash_all_data()
-    assert context.get_selected_outputs() == set(range(99))
+    assert context.get_selected_outputs() == set(range(max_num_outputs))
 
 
 def test_set_sighash() -> None:

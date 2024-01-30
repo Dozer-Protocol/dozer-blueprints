@@ -1062,18 +1062,21 @@ class TestScripts(unittest.TestCase):
         self.assertEqual(context.stack, [])
 
     def test_execute_op_code(self) -> None:
+        # Test that when `is_opcode_valid` returns False, execution must fail, regardless of the opcode.
         with (
             patch('hathor.transaction.scripts.opcode.is_opcode_valid', lambda _: False),
             self.assertRaises(ScriptError)
         ):
             execute_op_code(opcode=Mock(), context=Mock())
 
+        # Test that when `is_opcode_valid` returns True, execution must fail if it's not a "function opcode".
         with (
             patch('hathor.transaction.scripts.opcode.is_opcode_valid', lambda _: True),
             self.assertRaises(ScriptError)
         ):
             execute_op_code(opcode=Opcode.OP_0, context=Mock())
 
+        # Test that a valid opcode is correctly executed.
         with patch('hathor.transaction.scripts.opcode.op_dup') as op_mock:
             execute_op_code(opcode=Opcode.OP_DUP, context=Mock())
 

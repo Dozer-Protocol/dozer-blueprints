@@ -185,8 +185,8 @@ class BaseSighashTest(unittest.TestCase):
         atomic_swap_tx_clone.outputs.append(tokens_output)
 
         # Bob adds two change outputs for his HTR, which violates the maximum tx outputs set by Alice
-        htr_output1 = TxOutput(int(genesis_utxo.value / 4), bob_output_script)
-        htr_output2 = TxOutput(int(genesis_utxo.value / 4), bob_output_script)
+        htr_output1 = TxOutput(genesis_utxo.value // 4, bob_output_script)
+        htr_output2 = TxOutput(genesis_utxo.value // 4, bob_output_script)
         atomic_swap_tx_clone.outputs.append(htr_output1)
         atomic_swap_tx_clone.outputs.append(htr_output2)
 
