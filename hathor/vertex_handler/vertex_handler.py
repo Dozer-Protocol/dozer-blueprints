@@ -19,6 +19,7 @@ from structlog import get_logger
 
 from hathor.conf.settings import HathorSettings
 from hathor.consensus import ConsensusAlgorithm
+from hathor.daa import DifficultyAdjustmentAlgorithm
 from hathor.exception import HathorError, InvalidNewTransaction
 from hathor.feature_activation.feature import Feature
 from hathor.feature_activation.feature_service import FeatureService
@@ -28,6 +29,7 @@ from hathor.reactor import ReactorProtocol
 from hathor.transaction import BaseTransaction, Block
 from hathor.transaction.storage import TransactionStorage
 from hathor.transaction.storage.exceptions import TransactionDoesNotExist
+from hathor.util import not_none
 from hathor.verification.parallel_verifier import ParallelVerifier
 from hathor.verification.verification_service import VerificationService
 from hathor.wallet import BaseWallet
@@ -82,7 +84,11 @@ class VertexHandler:
         self._feature_service = feature_service
         self._pubsub = pubsub
         self._wallet = wallet
-        self._verifier = ParallelVerifier(verification_service=self._verification_service)
+        self._verifier = ParallelVerifier(
+            verification_service=self._verification_service,
+            tx_storage=tx_storage,
+            daa=not_none(DifficultyAdjustmentAlgorithm.singleton)
+        )
 
     def on_new_vertex(
         self,
