@@ -92,7 +92,7 @@ class Runner:
             raise NCError('not a public method')
 
         try:
-            method(ctx, *args)
+            ret = method(ctx, *args)
         except NCFail:
             raise
         except Exception as e:
@@ -102,6 +102,7 @@ class Runner:
         # If no exception is raised, update the state.
         self.update_deposits_and_withdrawals(ctx)
         storage.commit()
+        return ret
 
     def call_private_method(self, method_name: str, *args: Any) -> Any:
         """Call a contract private method. It cannot change the state."""
