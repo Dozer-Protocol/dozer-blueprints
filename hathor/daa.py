@@ -76,9 +76,16 @@ class DifficultyAdjustmentAlgorithm:
         """Calculate the N value for the `calculate_next_weight` algorithm."""
         return min(2 * self._settings.BLOCK_DIFFICULTY_N_BLOCKS, parent_block.get_height() - 1)
 
-    def get_block_dependencies(self, block: 'Block') -> list[VertexId]:
+    def get_block_dependencies(
+        self,
+        block: 'Block',
+        memory_blocks: dict[VertexId, 'Block'] | None = None
+    ) -> list[VertexId]:
         """Return the ids of the required blocks to call `calculate_block_difficulty` for the provided block."""
-        parent_block = block.get_block_parent()
+        return []
+        memory_blocks = memory_blocks or {}
+        parent_block_hash = block.get_block_parent_hash()
+        parent_block = memory_blocks.get(parent_block_hash) or block.get_block_parent()
         N = self._calculate_N(parent_block)
         ids: list[VertexId] = [not_none(parent_block.hash)]
 

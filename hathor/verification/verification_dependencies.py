@@ -18,7 +18,7 @@ from typing_extensions import Self
 
 from hathor.daa import DifficultyAdjustmentAlgorithm
 from hathor.feature_activation.feature import Feature
-from hathor.feature_activation.feature_service import BlockSignalingState, FeatureService
+from hathor.feature_activation.feature_service import BlockSignalingState, FeatureService, BlockIsSignaling
 from hathor.feature_activation.model.feature_description import FeatureInfo
 from hathor.transaction import BaseTransaction, Block, TransactionMetadata
 from hathor.transaction.storage.simple_memory_storage import SimpleMemoryStorage
@@ -48,13 +48,13 @@ class BasicBlockDependencies(VertexDependencies):
         """Create a basic block dependencies instance."""
         assert block.storage is not None
         simple_storage = SimpleMemoryStorage()
-        daa_deps = [] if skip_weight_verification else daa.get_block_dependencies(block)
-        dep_ids = block.parents + daa_deps
-        pre_fetched_deps = pre_fetched_deps or {}
 
-        for dep_id in dep_ids:
-            dep = pre_fetched_deps.get(dep_id) or block.storage.get_vertex(dep_id)
-            simple_storage.add_vertex(dep)
+        if pre_fetched_deps is not None:
+            simple_storage.add_vertices(pre_fetched_deps.values())
+        else:
+            daa_deps = [] if skip_weight_verification else daa.get_block_dependencies(block)
+            dep_ids = block.parents + daa_deps
+            simple_storage.add_vertices_from_storage(block.storage, dep_ids)
 
         return cls(simple_storage)
 
@@ -76,18 +76,21 @@ class BlockDependencies(VertexDependencies):
     ) -> Self:
         """Create a block dependencies instance."""
         assert block.storage is not None
-        signaling_state = feature_service.is_signaling_mandatory_features(block)
-        feature_info = feature_service.get_feature_info(block=block)
+        # signaling_state = feature_service.is_signaling_mandatory_features(block)
+        # feature_info = feature_service.get_feature_info(block=block)
+        signaling_state = BlockIsSignaling()
+        feature_info = {}
         simple_storage = SimpleMemoryStorage()
-        pre_fetched_deps = pre_fetched_deps or {}
 
-        for dep_id in block.parents:
-            dep = pre_fetched_deps.get(dep_id) or block.storage.get_vertex(dep_id)
-            simple_storage.add_vertex(dep)
+        if pre_fetched_deps is not None:
+            simple_storage.add_vertices(pre_fetched_deps.values())
+        else:
+            simple_storage.add_vertices_from_storage(block.storage, block.parents)
 
         return cls(
             storage=simple_storage,
-            metadata=block.get_metadata().clone(),
+            # metadata=block.get_metadata().clone(),
+            metadata=None,
             signaling_state=signaling_state,
             feature_info=feature_info,
         )
@@ -104,15 +107,15 @@ class TransactionDependencies(VertexDependencies):
         assert tx.storage is not None
         token_info = tx.get_complete_token_info()
         simple_storage = SimpleMemoryStorage()
-        spent_txs = [tx_input.tx_id for tx_input in tx.inputs]
-        deps = tx.parents + spent_txs
-        pre_fetched_deps = pre_fetched_deps or {}
+
+        if pre_fetched_deps is not None:
+            simple_storage.add_vertices(pre_fetched_deps.values())
+        else:
+            spent_txs = [tx_input.tx_id for tx_input in tx.inputs]
+            deps = tx.parents + spent_txs
+            simple_storage.add_vertices_from_storage(tx.storage, deps)
 
         simple_storage.set_best_block_tips_from_storage(tx.storage)
-
-        for dep_id in deps:
-            dep = pre_fetched_deps.get(dep_id) or tx.storage.get_vertex(dep_id)
-            simple_storage.add_vertex(dep)
 
         return cls(
             storage=simple_storage,

@@ -829,8 +829,9 @@ class BaseTransaction(ABC):
         """
         new_tx = self.create_from_struct(self.get_struct())
         if hasattr(self, '_metadata') and include_metadata:
-            assert self._metadata is not None  # FIXME: is this actually true or do we have to check if not None
-            new_tx._metadata = self._metadata.clone()
+            # assert self._metadata is not None  # FIXME: is this actually true or do we have to check if not None
+            if self._metadata:
+                new_tx._metadata = self._metadata.clone()
         if include_storage:
             new_tx.storage = self.storage
         return new_tx

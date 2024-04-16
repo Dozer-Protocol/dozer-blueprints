@@ -17,6 +17,9 @@ from typing import Callable, ParamSpec, TypeVar
 
 from structlog import get_logger
 from twisted.internet.defer import Deferred
+from twisted.internet.task import deferLater
+
+from hathor.reactor import get_global_reactor
 
 logger = get_logger()
 
@@ -37,6 +40,8 @@ class Multiprocessor:
         self._log.info('Stopped Multiprocessor pool.')
 
     def run(self, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> Deferred[T]:
+        # TODO: Random sleep
+        # return deferLater(get_global_reactor(), 0, fn, *args, **kwargs)
         deferred = Deferred[T]()
         self._pool.apply_async(fn, args, kwargs, callback=deferred.callback, error_callback=deferred.errback)
         return deferred

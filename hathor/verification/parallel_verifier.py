@@ -11,10 +11,14 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+from collections import defaultdict, deque
+
+from twisted.internet.defer import Deferred
 
 from hathor.daa import DifficultyAdjustmentAlgorithm
 from hathor.transaction import BaseTransaction, Block
 from hathor.transaction.storage import TransactionStorage
+from hathor.transaction.storage.exceptions import TransactionDoesNotExist
 from hathor.types import VertexId
 from hathor.verification.verification_service import VerificationService
 
@@ -33,6 +37,9 @@ class ParallelVerifier:
         self._daa = daa
         self._verification_service = verification_service
         self._processing_vertices: dict[VertexId, BaseTransaction] = {}
+        self._rev_deps: defaultdict[VertexId, set[BaseTransaction]] = defaultdict(set)
+        self._waiting_vertices: dict[VertexId, tuple[BaseTransaction, Deferred[None]]] = {}
+        # self._queue: deque[Deferred] = deque()
 
     async def validate_full(self, vertex: BaseTransaction, *, reject_locked_reward: bool) -> bool:
         self._processing_vertices[vertex.hash] = vertex
@@ -42,14 +49,43 @@ class ParallelVerifier:
             pre_fetched_deps=self._fetch_deps(vertex),
             reject_locked_reward=reject_locked_reward
         )
-        del self._processing_vertices[vertex.hash]
 
+        dep_ids = vertex.get_all_dependencies()
+        missing_deps = []
+        for dep_id in dep_ids:
+            try:
+                self._tx_storage.get_vertex(dep_id)
+            except TransactionDoesNotExist:
+                missing_deps.append(dep_id)
+
+        deferred: Deferred[None] = Deferred()
+
+        if not missing_deps:
+            deferred.callback(None)
+            for rev_dep in self._rev_deps[vertex.hash]:
+                if self._tx_storage.can_validate_full(rev_dep):
+                    _, dep_deferred = self._waiting_vertices.pop(rev_dep.hash)
+                    dep_deferred.callback(None)  # TODO: Call later?
+            del self._rev_deps[vertex.hash]
+        else:
+            for dep_id in missing_deps:
+                self._rev_deps[dep_id].add(vertex)
+
+            self._waiting_vertices[vertex.hash] = (vertex, deferred)
+
+        await deferred
+        del self._processing_vertices[vertex.hash]
         return result
 
     def _fetch_deps(self, vertex: BaseTransaction) -> dict[VertexId, BaseTransaction]:
         dep_ids = list(vertex.get_all_dependencies())
         if isinstance(vertex, Block):
-            dep_ids += self._daa.get_block_dependencies(block=vertex)
+            memory_blocks = {
+                vertex_id: vertex
+                for vertex_id, vertex in self._processing_vertices.items()
+                if isinstance(vertex, Block)
+            }
+            dep_ids += self._daa.get_block_dependencies(block=vertex, memory_blocks=memory_blocks)
 
         deps = {}
         for dep_id in dep_ids:
