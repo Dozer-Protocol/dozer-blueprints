@@ -26,7 +26,7 @@ def require(condition: bool, errmsg: str) -> None:
         raise NCFail(errmsg)
 
 
-class LiquidityPool(Blueprint):
+class MVP_Pool(Blueprint):
     """Liquidity pool inspired by Uniswap v2.
 
     The initial reserves for both Token A and Token B must be deposited at the contract creation.
