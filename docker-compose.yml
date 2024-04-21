@@ -10,4 +10,4 @@ services:
       - ./tests:/app/hathor/tests
 
    # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_rewards.py"] # with stdout
-    command: ["poetry", "run", "pytest", "tests/nanocontracts/blueprints/test_bet.py"] # without stdout
+    command: ["poetry", "run", "pytest", "tests/nanocontracts/blueprints/test_liquidity_pool.py"] # without stdout

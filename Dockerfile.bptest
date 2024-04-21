@@ -5,7 +5,7 @@ RUN apt-get -qy install libssl1.1 graphviz librocksdb6.11
 # dev deps for this build start here
 RUN apt-get -qy install libssl-dev libffi-dev build-essential zlib1g-dev libbz2-dev libsnappy-dev liblz4-dev librocksdb-dev cargo git pkg-config
 # Set the working directory inside the container
-WORKDIR /app
+WORKDIR /app/
 
 #COPY ./poetry.lock .
 #COPY ./pyproject.toml .
