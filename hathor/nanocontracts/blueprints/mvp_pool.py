@@ -244,6 +244,8 @@ class LiquidityPool(Blueprint):
         self._update_balance(slippage_in, action_out.token_uid)
         self._update_reserve(amount_in, action_in.token_uid)
         self._update_reserve(-amount_out, action_out.token_uid)
+        self.transactions += 1
+        self.volume += amount_in
 
         return SwapResult(
             action_in.amount,
@@ -275,6 +277,8 @@ class LiquidityPool(Blueprint):
         self._update_balance(slippage_in, action_in.token_uid)
         self._update_reserve(amount_in, action_in.token_uid)
         self._update_reserve(-amount_out, action_out.token_uid)
+        self.transactions += 1
+        self.volume += amount_in
 
         return SwapResult(
             action_in.amount,
@@ -353,16 +357,20 @@ class LiquidityPool(Blueprint):
                 - volume (float): The total volume of transactions within the pool.
                 - fee0 (float): The accumulated fee for token A.
                 - fee1 (float): The accumulated fee for token B.
+                - slippage0 (float): The accumulated slippage for token A.
+                - slippage1 (float): The accumulated slippage for token B.
                 - dzr_rewards (float): The fixed reward amount for some operations (1000 as a placeholder).
                 - transactions (float): The total number of transactions within the pool.
         """
         return {
             "reserve0": self.reserve_a,
             "reserve1": self.reserve_b,
-            "fee": self.fee_denominator,
+            "fee": self.fee_numerator / self.fee_denominator,
             "volume": self.volume,
             "fee0": self.accumulated_fee[self.token_a],
             "fee1": self.accumulated_fee[self.token_b],
+            "slippage0": self.balance_a,
+            "slippage1": self.balance_b,
             "dzr_rewards": 1000,
             "transactions": self.transactions,
         }
