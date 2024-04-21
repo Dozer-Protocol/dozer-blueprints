@@ -25,6 +25,7 @@ class SwapResult(NamedTuple):
 
     Notice that the results are presented for tokens in and tokens out.
     So one must check which one is Token A and which one is Token B."""
+
     amount_in: Amount
     change_in: Amount
     token_in: TokenUid
@@ -33,10 +34,10 @@ class SwapResult(NamedTuple):
     token_out: TokenUid
 
 
-def require(condition: bool, errtype: NCFail, errmsg: str) -> None:
+def require(condition: bool, errmsg: str) -> None:
     """Helper to fail execution if condition is false."""
     if not condition:
-        raise errtype(errmsg)
+        raise NCFail(errmsg)
 
 
 class LiquidityPool(Blueprint):
@@ -109,26 +110,28 @@ class LiquidityPool(Blueprint):
     fee_denominator: int
 
     @public
-    def initialize(self,
-                   ctx: Context,
-                   token_a: TokenUid,
-                   token_b: TokenUid,
-                   lp_token: TokenUid,
-                   fee: Amount) -> None:
+    def initialize(
+        self,
+        ctx: Context,
+        token_a: TokenUid,
+        token_b: TokenUid,
+        lp_token: TokenUid,
+        fee: Amount,
+    ) -> None:
         """Initialize the liquidity pool for the pair token_a/token_b.
 
         It expects to receive one deposit of Token A and one of Token B which will form the reserves of the pool.
         """
         if token_a == token_b:
-            raise NCFail('token_a cannot be equal to token_b')
+            raise NCFail("token_a cannot be equal to token_b")
         if token_a > token_b:
-            raise NCFail('token_a must be smaller than token_b by sort order')
+            raise NCFail("token_a must be smaller than token_b by sort order")
 
         # No fees.
         self.fee_numerator = 0
         self.fee_denominator = 1
         if self.fee_numerator > self.fee_denominator:
-            raise NCFail('invalid fee')
+            raise NCFail("invalid fee")
 
         self.token_a = token_a
         self.token_b = token_b
@@ -155,15 +158,15 @@ class LiquidityPool(Blueprint):
         """Return token_a and token_b actions. It also validates that both are deposits."""
         action_a, action_b = self._get_actions_a_b(ctx)
         if action_a.type != NCActionType.DEPOSIT:
-            raise NCFail('only deposits allowed for token_a')
+            raise NCFail("only deposits allowed for token_a")
         if action_b.type != NCActionType.DEPOSIT:
-            raise NCFail('only deposits allowed for token_b')
+            raise NCFail("only deposits allowed for token_b")
         return action_a, action_b
 
     def _get_actions_a_b(self, ctx: Context) -> tuple[NCAction, NCAction]:
         """Return token_a and token_b actions."""
         if set(ctx.actions.keys()) != {self.token_a, self.token_b}:
-            raise NCFail('only token_a and token_b are allowed')
+            raise NCFail("only token_a and token_b are allowed")
         action_a = ctx.actions[self.token_a]
         action_b = ctx.actions[self.token_b]
         return action_a, action_b
@@ -180,9 +183,9 @@ class LiquidityPool(Blueprint):
             action_out = action_a
 
         if action_in.type != NCActionType.DEPOSIT:
-            raise NCFail('must have one deposit and one withdrawal')
+            raise NCFail("must have one deposit and one withdrawal")
         if action_out.type != NCActionType.WITHDRAWAL:
-            raise NCFail('must have one deposit and one withdrawal')
+            raise NCFail("must have one deposit and one withdrawal")
 
         return action_in, action_out
 
@@ -198,15 +201,15 @@ class LiquidityPool(Blueprint):
             self.balance_b[to] = self.balance_b.get(to, 0) + amount
             self.total_balance_b += amount
         else:
-            raise NCFail('should never happen')
+            raise NCFail("should never happen")
 
-    def _get_reserve(self, token_uid: TokenUid) -> None:
+    def _get_reserve(self, token_uid: TokenUid) -> Amount:
         if token_uid == self.token_a:
             return self.reserve_a
         elif token_uid == self.token_b:
             return self.reserve_b
         else:
-            raise NCFail('should never happen')
+            raise NCFail("should never happen")
 
     def _update_reserve(self, amount, token_uid) -> None:
         if token_uid == self.token_a:
@@ -214,7 +217,7 @@ class LiquidityPool(Blueprint):
         elif token_uid == self.token_b:
             self.reserve_b += amount
         else:
-            raise NCFail('should never happen')
+            raise NCFail("should never happen")
 
     @public
     def swap_exact_tokens_for_tokens(self, ctx: Context, to: Address) -> SwapResult:
@@ -226,16 +229,23 @@ class LiquidityPool(Blueprint):
         amount_in = action_in.amount
         amount_out = self.get_amount_out(action_in.amount, reserve_in, reserve_out)
         if reserve_out < amount_out:
-            raise NCFail('insufficient funds')
+            raise NCFail("insufficient funds")
         if action_out.amount > amount_out:
-            raise NCFail('amount out is too high')
+            raise NCFail("amount out is too high")
 
         change_out = amount_out - action_out.amount
         self._update_balance(to, change_out, action_out.token_uid)
         self._update_reserve(amount_in, action_in.token_uid)
         self._update_reserve(-amount_out, action_out.token_uid)
 
-        return SwapResult(action_in.amount, 0, action_in.token_uid, amount_out, change_out, action_out.token_uid)
+        return SwapResult(
+            action_in.amount,
+            0,
+            action_in.token_uid,
+            amount_out,
+            change_out,
+            action_out.token_uid,
+        )
 
     @public
     def swap_tokens_for_exact_tokens(self, ctx: Context, to: Address) -> SwapResult:
@@ -246,31 +256,42 @@ class LiquidityPool(Blueprint):
 
         amount_out = action_out.amount
         if reserve_out < amount_out:
-            raise NCFail('insufficient funds')
+            raise NCFail("insufficient funds")
 
         amount_in = self.get_amount_in(action_out.amount, reserve_in, reserve_out)
         if action_in.amount < amount_in:
-            raise NCFail('amount in is too low')
+            raise NCFail("amount in is too low")
 
         change_in = action_in.amount - amount_in
         self._update_balance(to, change_in, action_in.token_uid)
         self._update_reserve(amount_in, action_in.token_uid)
         self._update_reserve(-amount_out, action_out.token_uid)
 
-        return SwapResult(amount_in, change_in, action_in.token_uid, action_out.amount, 0, action_out.token_uid)
+        return SwapResult(
+            amount_in,
+            change_in,
+            action_in.token_uid,
+            action_out.amount,
+            0,
+            action_out.token_uid,
+        )
 
     def balance_of(self, owner: Address) -> tuple[Amount, Amount]:
         """Get owner's balance."""
         return (self.balance_a.get(owner, 0), self.balance_b.get(owner, 0))
 
-    def get_amount_out(self, amount_in: Amount, reserve_in: Amount, reserve_out: Amount) -> Amount:
+    def get_amount_out(
+        self, amount_in: Amount, reserve_in: Amount, reserve_out: Amount
+    ) -> Amount:
         """Return the maximum amount_out for an exact amount_in."""
         a = self.fee_denominator - self.fee_numerator
         b = self.fee_denominator
         amount_out = (reserve_out * amount_in * a) // ((reserve_in + amount_in) * b)
         return amount_out
 
-    def get_amount_in(self, amount_out: Amount, reserve_in: Amount, reserve_out: Amount) -> Amount:
+    def get_amount_in(
+        self, amount_out: Amount, reserve_in: Amount, reserve_out: Amount
+    ) -> Amount:
         """Return the minimum amount_in for an exact amount_out."""
         a = self.fee_denominator - self.fee_numerator
         b = self.fee_denominator
@@ -283,17 +304,15 @@ class LiquidityPool(Blueprint):
         return amount_b
 
     @public
-    def add_liquidity(self,
-                      ctx: Context,
-                      amount_a_min: Amount,
-                      amount_b_min: Amount,
-                      to: Address) -> None:
+    def add_liquidity(
+        self, ctx: Context, amount_a_min: Amount, amount_b_min: Amount, to: Address
+    ) -> None:
         """Add liquidity to the pool."""
         action_a, action_b = self._get_actions_in_in(ctx)
 
         optimal_b = self.quote(action_a.amount, self.reserve_a, self.reserve_b)
         if optimal_b <= action_b.amount:
-            require(optimal_b >= amount_b_min, NCFail, 'insufficient b amount')
+            require(optimal_b >= amount_b_min, "insufficient b amount")
 
             change = action_b.amount - optimal_b
             self._update_balance(to, change, self.token_b)
@@ -304,7 +323,7 @@ class LiquidityPool(Blueprint):
         else:
             optimal_a = self.quote(action_b.amount, self.reserve_b, self.reserve_a)
             assert optimal_a <= action_a.amount
-            require(optimal_a >= amount_a_min, NCFail, 'insufficient a amount')
+            require(optimal_a >= amount_a_min, "insufficient a amount")
 
             change = action_a.amount - optimal_a
             self._update_balance(to, change, self.token_a)
@@ -313,18 +332,16 @@ class LiquidityPool(Blueprint):
             self.reserve_b += action_b.amount
 
     @public
-    def remove_liquidity(self,
-                         ctx: Context,
-                         amount_a_min: Amount,
-                         amount_b_min: Amount,
-                         to: Address) -> None:
+    def remove_liquidity(
+        self, ctx: Context, amount_a_min: Amount, amount_b_min: Amount, to: Address
+    ) -> None:
         """Remove liquidity from the pool."""
-        raise NCFail('not implemented yet')
+        raise NCFail("not implemented yet")
 
     @public
     def set_owner(self, ctx: Context, owner: TxOutputScript) -> None:
         if len(ctx.actions) != 0:
-            raise NCFail('must be a single call')
+            raise NCFail("must be a single call")
         self.owner = owner
 
     @public
