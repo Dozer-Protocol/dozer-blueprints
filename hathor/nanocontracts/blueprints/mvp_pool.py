@@ -130,8 +130,8 @@ class MVP_Pool(Blueprint):
 
         self.fee_numerator = fee
         self.fee_denominator = 1000
-        self.accumulated_fee[self.token_a] = 0
-        self.accumulated_fee[self.token_b] = 0
+        self.accumulated_fee[token_a] = 0
+        self.accumulated_fee[token_b] = 0
 
         self.token_a = token_a
         self.token_b = token_b
@@ -290,7 +290,7 @@ class MVP_Pool(Blueprint):
 
     def balance_of(self, owner: Address) -> tuple[Amount, Amount]:
         """Get owner's balance."""
-        return (self.balance_a.get(owner, 0), self.balance_b.get(owner, 0))
+        return (self.balance_a, self.balance_b)
 
     def get_amount_out(
         self, amount_in: Amount, reserve_in: Amount, reserve_out: Amount

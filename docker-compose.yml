@@ -7,7 +7,7 @@ services:
     volumes:
       - ./hathor/nanocontracts/blueprints:/app/hathor/nanocontracts/blueprints
       - ./hathor/conf/nano_testnet.yml:/app/hathor/conf/nano_testnet.yml
-      - ./tests:/app/hathor/tests
+      - ./tests/nanocontracts/blueprints:/app/tests/nanocontracts/blueprints
 
    # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_rewards.py"] # with stdout
     command: ["poetry", "run", "pytest", "tests/nanocontracts/blueprints/test_mvp_pool.py"] # without stdout
