@@ -34,10 +34,10 @@ class SwapResult(NamedTuple):
     token_out: TokenUid
 
 
-def require(condition: bool, errmsg: str) -> None:
+def require(condition: bool, errtype: NCFail, errmsg: str) -> None:
     """Helper to fail execution if condition is false."""
     if not condition:
-        raise NCFail(errmsg)
+        raise errtype(errmsg)
 
 
 class LiquidityPool(Blueprint):
@@ -203,7 +203,7 @@ class LiquidityPool(Blueprint):
         else:
             raise NCFail("should never happen")
 
-    def _get_reserve(self, token_uid: TokenUid) -> Amount:
+    def _get_reserve(self, token_uid: TokenUid) -> None:
         if token_uid == self.token_a:
             return self.reserve_a
         elif token_uid == self.token_b:
@@ -312,7 +312,7 @@ class LiquidityPool(Blueprint):
 
         optimal_b = self.quote(action_a.amount, self.reserve_a, self.reserve_b)
         if optimal_b <= action_b.amount:
-            require(optimal_b >= amount_b_min, "insufficient b amount")
+            require(optimal_b >= amount_b_min, NCFail, "insufficient b amount")
 
             change = action_b.amount - optimal_b
             self._update_balance(to, change, self.token_b)
@@ -323,7 +323,7 @@ class LiquidityPool(Blueprint):
         else:
             optimal_a = self.quote(action_b.amount, self.reserve_b, self.reserve_a)
             assert optimal_a <= action_a.amount
-            require(optimal_a >= amount_a_min, "insufficient a amount")
+            require(optimal_a >= amount_a_min, NCFail, "insufficient a amount")
 
             change = action_a.amount - optimal_a
             self._update_balance(to, change, self.token_a)

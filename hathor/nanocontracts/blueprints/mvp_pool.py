@@ -256,7 +256,7 @@ class MVP_Pool(Blueprint):
         )
 
     @public
-    def swap_tokens_for_exact_tokens(self, ctx: Context, to: Address) -> SwapResult:
+    def swap_tokens_for_exact_tokens(self, ctx: Context) -> SwapResult:
         """Receive an exact amount of output tokens for as few input tokens as possible."""
         action_in, action_out = self._get_actions_in_out(ctx)
         reserve_in = self._get_reserve(action_in.token_uid)
