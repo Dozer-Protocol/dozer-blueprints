@@ -215,7 +215,7 @@ class MVP_Pool(Blueprint):
         else:
             raise NCFail("should never happen")
 
-    def _update_reserve(self, amount, token_uid) -> None:
+    def _update_reserve(self, amount: Amount, token_uid: TokenUid) -> None:
         if token_uid == self.token_a:
             self.reserve_a += amount
         elif token_uid == self.token_b:
