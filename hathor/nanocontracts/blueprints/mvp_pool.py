@@ -375,7 +375,7 @@ class MVP_Pool(Blueprint):
             "transactions": self.transactions,
         }
 
-    def front_quote_exact_tokens_for_tokens(self, amount_in: Amount) -> Amount:
+    def front_quote_exact_tokens_for_tokens(self, amount_in: Amount) -> int:
         """
         Calculate the amount of tokens received for a given input amount.
 
@@ -390,7 +390,7 @@ class MVP_Pool(Blueprint):
         """
         return self.get_amount_out(amount_in, self.reserve_a, self.reserve_b)
 
-    def front_quote_tokens_for_exact_tokens(self, amount_out: Amount) -> Amount:
+    def front_quote_tokens_for_exact_tokens(self, amount_out: Amount) -> int:
         """
         Calculate the required amount of input tokens to obtain a specific amount of output tokens.
 
