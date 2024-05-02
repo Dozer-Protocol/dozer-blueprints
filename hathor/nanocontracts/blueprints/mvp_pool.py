@@ -375,7 +375,9 @@ class MVP_Pool(Blueprint):
             "transactions": self.transactions,
         }
 
-    def front_quote_exact_tokens_for_tokens(self, amount_in: Amount) -> int:
+    def front_quote_exact_tokens_for_tokens(
+        self, amount_in: Amount, token_in: TokenUid
+    ) -> dict[str, float]:
         """
         Calculate the amount of tokens received for a given input amount.
 
@@ -388,9 +390,18 @@ class MVP_Pool(Blueprint):
         Returns:
         - Amount: The calculated amount of tokens that would be received.
         """
-        return self.get_amount_out(amount_in, self.reserve_a, self.reserve_b)
+        if token_in == self.token_a:
+            amount_out = self.get_amount_out(amount_in, self.reserve_a, self.reserve_b)
+            quote = self.quote(amount_in, self.reserve_a, self.reserve_b)
+        else:
+            amount_out = self.get_amount_out(amount_in, self.reserve_b, self.reserve_a)
+            quote = self.quote(amount_in, self.reserve_b, self.reserve_a)
+        price_impact = 100 * (quote - amount_out) / amount_out
+        return {"amount_out": amount_out, "price_impact": price_impact}
 
-    def front_quote_tokens_for_exact_tokens(self, amount_out: Amount) -> int:
+    def front_quote_tokens_for_exact_tokens(
+        self, amount_out: Amount, token_in: TokenUid
+    ) -> dict[str, float]:
         """
         Calculate the required amount of input tokens to obtain a specific amount of output tokens.
 
@@ -403,4 +414,14 @@ class MVP_Pool(Blueprint):
         Returns:
         - Amount: The required amount of input tokens to achieve the desired output.
         """
-        return self.get_amount_in(amount_out, self.reserve_a, self.reserve_b)
+        # amount_in = self.get_amount_in(amount_out, self.reserve_a, self.reserve_b)
+        # quote = self.quote(amount_out, self.reserve_a, self.reserve_b)
+        if token_in == self.token_a:
+            amount_out = self.get_amount_out(amount_out, self.reserve_a, self.reserve_b)
+            quote = self.quote(amount_out, self.reserve_a, self.reserve_b)
+        else:
+            amount_out = self.get_amount_out(amount_out, self.reserve_b, self.reserve_a)
+            quote = self.quote(amount_out, self.reserve_b, self.reserve_a)
+
+        price_impact = 100 * (quote - amount_out) / amount_out
+        return {"amount_in": amount_out, "price_impact": price_impact}
