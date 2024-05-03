@@ -396,7 +396,7 @@ class MVP_Pool(Blueprint):
         else:
             amount_out = self.get_amount_out(amount_in, self.reserve_b, self.reserve_a)
             quote = self.quote(amount_in, self.reserve_b, self.reserve_a)
-        price_impact = 100 * (quote - amount_out) / amount_out
+        price_impact = 100 * (quote - amount_out) / amount_out - self.fee_numerator / 10
         return {"amount_out": amount_out, "price_impact": price_impact}
 
     def front_quote_tokens_for_exact_tokens(
@@ -417,11 +417,11 @@ class MVP_Pool(Blueprint):
         # amount_in = self.get_amount_in(amount_out, self.reserve_a, self.reserve_b)
         # quote = self.quote(amount_out, self.reserve_a, self.reserve_b)
         if token_in == self.token_a:
-            amount_out = self.get_amount_out(amount_out, self.reserve_a, self.reserve_b)
+            amount_in = self.get_amount_in(amount_out, self.reserve_a, self.reserve_b)
             quote = self.quote(amount_out, self.reserve_a, self.reserve_b)
         else:
-            amount_out = self.get_amount_out(amount_out, self.reserve_b, self.reserve_a)
+            amount_in = self.get_amount_in(amount_out, self.reserve_b, self.reserve_a)
             quote = self.quote(amount_out, self.reserve_b, self.reserve_a)
 
-        price_impact = 100 * (quote - amount_out) / amount_out
-        return {"amount_in": amount_out, "price_impact": price_impact}
+        price_impact = 100 * (quote - amount_out) / amount_out - self.fee_numerator / 10
+        return {"amount_in": amount_in, "price_impact": price_impact}
