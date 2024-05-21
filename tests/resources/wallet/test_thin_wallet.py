@@ -266,6 +266,67 @@ class BaseSendTokensTest(_BaseResourceTest._ResourceTest):
         # The last big tx
         self.assertEqual(len(response_data['history']), 1)
 
+        # Test paginate with tx version filter
+        random_address_2 = self.manager.wallet.get_unused_address(mark_as_used=False)
+        response_tx_version_filter = yield self.web_address_history.get(
+            'thin_wallet/address_history', {
+                b'addresses[]': random_address_2.encode(),
+                b'paginate': b'true'
+            }
+        )
+        data = response_tx_version_filter.json_value()
+        self.assertEqual(len(data['history']), 0)
+
+        add_new_blocks(
+            self.manager,
+            3,
+            advance_clock=1,
+            address=decode_address(random_address_2)
+        )
+
+        add_blocks_unlock_reward(self.manager)
+
+        add_new_tx(self.manager, random_address_2, 1, advance_clock=1)
+
+        # Now we must have 3 blocks and one tx in the random_address_2
+
+        response_tx_version_filter_2 = yield self.web_address_history.get(
+            'thin_wallet/address_history', {
+                b'addresses[]': random_address_2.encode(),
+                b'paginate': b'true'
+            }
+        )
+        data_2 = response_tx_version_filter_2.json_value()
+        self.assertEqual(len(data_2['history']), 4)
+
+        response_tx_version_filter_3 = yield self.web_address_history.get(
+            'thin_wallet/address_history', {
+                b'addresses[]': random_address_2.encode(),
+                b'paginate': b'true',
+                b'tx_version[]': b'0',  # block
+            }
+        )
+        data_3 = response_tx_version_filter_3.json_value()
+        self.assertEqual(len(data_3['history']), 3)
+        data_3_blocks = [x for x in data_3['history'] if x['version'] == 0]
+        data_3_txs = [x for x in data_3['history'] if x['version'] == 1]
+        self.assertEqual(len(data_3_blocks), 3)
+        self.assertEqual(len(data_3_txs), 0)
+
+        response_tx_version_filter_4 = yield self.web_address_history.get(
+            'thin_wallet/address_history', {
+                b'addresses[]': random_address_2.encode(),
+                b'paginate': b'true',
+                b'tx_version[]': b'1',  # tx
+            }
+        )
+        data_4 = response_tx_version_filter_4.json_value()
+        self.assertEqual(len(data_4['history']), 1)
+        data_4_blocks = [x for x in data_4['history'] if x['version'] == 0]
+        data_4_txs = [x for x in data_4['history'] if x['version'] == 1]
+        self.assertEqual(len(data_4_blocks), 0)
+        self.assertEqual(len(data_4_txs), 1)
+
     def test_error_request(self):
         from hathor.wallet.resources.thin_wallet.send_tokens import _Context
 
