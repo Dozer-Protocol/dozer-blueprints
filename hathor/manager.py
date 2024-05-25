@@ -19,7 +19,9 @@ from cProfile import Profile
 from enum import Enum
 from typing import Iterator, NamedTuple, Optional, Union
 
-from hathorlib.base_transaction import tx_or_block_from_bytes as lib_tx_or_block_from_bytes
+from hathorlib.base_transaction import (
+    tx_or_block_from_bytes as lib_tx_or_block_from_bytes,
+)
 from structlog import get_logger
 from twisted.internet import defer
 from twisted.internet.defer import Deferred
@@ -55,13 +57,26 @@ from hathor.pubsub import HathorEvents, PubSubManager
 from hathor.reactor import ReactorProtocol as Reactor
 from hathor.reward_lock import is_spent_reward_locked
 from hathor.stratum import StratumFactory
-from hathor.transaction import BaseTransaction, Block, MergeMinedBlock, Transaction, TxVersion, sum_weights
+from hathor.transaction import (
+    BaseTransaction,
+    Block,
+    MergeMinedBlock,
+    Transaction,
+    TxVersion,
+    sum_weights,
+)
 from hathor.transaction.exceptions import TxValidationError
 from hathor.transaction.storage import TransactionStorage
 from hathor.transaction.storage.exceptions import TransactionDoesNotExist
 from hathor.transaction.storage.tx_allow_scope import TxAllowScope
 from hathor.types import Address, VertexId
-from hathor.util import EnvironmentInfo, LogDuration, Random, calculate_min_significant_weight, not_none
+from hathor.util import (
+    EnvironmentInfo,
+    LogDuration,
+    Random,
+    calculate_min_significant_weight,
+    not_none,
+)
 from hathor.verification.verification_service import VerificationService
 from hathor.wallet import BaseWallet
 
@@ -70,17 +85,17 @@ cpu = get_cpu_profiler()
 
 
 class HathorManager:
-    """ HathorManager manages the node with the help of other specialized classes.
+    """HathorManager manages the node with the help of other specialized classes.
 
     Its primary objective is to handle DAG-related matters, ensuring that the DAG is always valid and connected.
     """
 
     class NodeState(Enum):
         # This node is still initializing
-        INITIALIZING = 'INITIALIZING'
+        INITIALIZING = "INITIALIZING"
 
         # This node is ready to establish new connections, sync, and exchange transactions.
-        READY = 'READY'
+        READY = "READY"
 
     class UnhealthinessReason(str, Enum):
         NO_RECENT_ACTIVITY = "Node doesn't have recent blocks"
@@ -89,31 +104,33 @@ class HathorManager:
     # This is the interval to be used by the task to check if the node is synced
     CHECK_SYNC_STATE_INTERVAL = 30  # seconds
 
-    def __init__(self,
-                 reactor: Reactor,
-                 *,
-                 settings: HathorSettings,
-                 pubsub: PubSubManager,
-                 consensus_algorithm: ConsensusAlgorithm,
-                 daa: DifficultyAdjustmentAlgorithm,
-                 peer_id: PeerId,
-                 tx_storage: TransactionStorage,
-                 p2p_manager: ConnectionsManager,
-                 event_manager: EventManager,
-                 feature_service: FeatureService,
-                 bit_signaling_service: BitSignalingService,
-                 verification_service: VerificationService,
-                 cpu_mining_service: CpuMiningService,
-                 network: str,
-                 execution_manager: ExecutionManager,
-                 hostname: Optional[str] = None,
-                 wallet: Optional[BaseWallet] = None,
-                 capabilities: Optional[list[str]] = None,
-                 checkpoints: Optional[list[Checkpoint]] = None,
-                 rng: Optional[Random] = None,
-                 environment_info: Optional[EnvironmentInfo] = None,
-                 full_verification: bool = False,
-                 enable_event_queue: bool = False):
+    def __init__(
+        self,
+        reactor: Reactor,
+        *,
+        settings: HathorSettings,
+        pubsub: PubSubManager,
+        consensus_algorithm: ConsensusAlgorithm,
+        daa: DifficultyAdjustmentAlgorithm,
+        peer_id: PeerId,
+        tx_storage: TransactionStorage,
+        p2p_manager: ConnectionsManager,
+        event_manager: EventManager,
+        feature_service: FeatureService,
+        bit_signaling_service: BitSignalingService,
+        verification_service: VerificationService,
+        cpu_mining_service: CpuMiningService,
+        network: str,
+        execution_manager: ExecutionManager,
+        hostname: Optional[str] = None,
+        wallet: Optional[BaseWallet] = None,
+        capabilities: Optional[list[str]] = None,
+        checkpoints: Optional[list[Checkpoint]] = None,
+        rng: Optional[Random] = None,
+        environment_info: Optional[EnvironmentInfo] = None,
+        full_verification: bool = False,
+        enable_event_queue: bool = False,
+    ):
         """
         :param reactor: Twisted reactor which handles the mainloop and the events.
         :param peer_id: Id of this node.
@@ -127,8 +144,8 @@ class HathorManager:
 
         if event_manager.get_event_queue_state() is True and not enable_event_queue:
             raise InitializationError(
-                'Cannot start manager without event queue feature, as it was enabled in the previous startup. '
-                'Either enable it, or use the reset-event-queue CLI command to remove all event-related data'
+                "Cannot start manager without event queue feature, as it was enabled in the previous startup. "
+                "Either enable it, or use the reset-event-queue CLI command to remove all event-related data"
             )
 
         self._execution_manager = execution_manager
@@ -143,9 +160,9 @@ class HathorManager:
         self.rng = rng
 
         self.reactor = reactor
-        add_system_event_trigger = getattr(self.reactor, 'addSystemEventTrigger', None)
+        add_system_event_trigger = getattr(self.reactor, "addSystemEventTrigger", None)
         if add_system_event_trigger is not None:
-            add_system_event_trigger('after', 'shutdown', self.stop)
+            add_system_event_trigger("after", "shutdown", self.stop)
 
         self.state: Optional[HathorManager.NodeState] = None
 
@@ -214,7 +231,9 @@ class HathorManager:
         self._allow_mining_without_peers = False
 
         # Thread pool used to resolve pow when sending tokens
-        self.pow_thread_pool = ThreadPool(minthreads=0, maxthreads=settings.MAX_POW_THREADS, name='Pow thread pool')
+        self.pow_thread_pool = ThreadPool(
+            minthreads=0, maxthreads=settings.MAX_POW_THREADS, name="Pow thread pool"
+        )
 
         # Full verification execute all validations for transactions and blocks when initializing the node
         # Can be activated on the command line with --full-verification
@@ -242,23 +261,22 @@ class HathorManager:
         return [
             self._settings.CAPABILITY_WHITELIST,
             self._settings.CAPABILITY_SYNC_VERSION,
-            self._settings.CAPABILITY_GET_BEST_BLOCKCHAIN
+            self._settings.CAPABILITY_GET_BEST_BLOCKCHAIN,
         ]
 
     def start(self) -> None:
-        """ A factory must be started only once. And it is usually automatically started.
-        """
+        """A factory must be started only once. And it is usually automatically started."""
         if self.is_started:
-            raise Exception('HathorManager is already started')
+            raise Exception("HathorManager is already started")
         self.is_started = True
 
-        self.log.info('start manager', network=self.network)
+        self.log.info("start manager", network=self.network)
 
         if self.tx_storage.is_full_node_crashed():
             self.log.error(
-                'Error initializing node. The last time you executed your full node it wasn\'t stopped correctly. '
-                'The storage is not reliable anymore and, because of that, you must remove your storage and do a '
-                'full sync (either from scratch or from a snapshot).'
+                "Error initializing node. The last time you executed your full node it wasn't stopped correctly. "
+                "The storage is not reliable anymore and, because of that, you must remove your storage and do a "
+                "full sync (either from scratch or from a snapshot)."
             )
             sys.exit(-1)
 
@@ -273,9 +291,9 @@ class HathorManager:
             # or execute an initialization with full verification
             if self.tx_storage.is_running_full_verification():
                 self.log.error(
-                    'Error initializing node. The last time you started your node you did a full verification '
-                    'that was stopped in the middle. The storage is not reliable anymore and, because of that, '
-                    'you must initialize with a full verification again or remove your storage and do a full sync.'
+                    "Error initializing node. The last time you started your node you did a full verification "
+                    "that was stopped in the middle. The storage is not reliable anymore and, because of that, "
+                    "you must initialize with a full verification again or remove your storage and do a full sync."
                 )
                 sys.exit(-1)
 
@@ -284,9 +302,9 @@ class HathorManager:
             # The metadata is the only piece of the storage that may be wrong, not the blocks and transactions.
             if self.tx_storage.is_running_manager():
                 self.log.error(
-                    'Error initializing node. The last time you executed your full node it wasn\'t stopped correctly. '
-                    'The storage is not reliable anymore and, because of that, so you must run a full verification '
-                    'or remove your storage and do a full sync.'
+                    "Error initializing node. The last time you executed your full node it wasn't stopped correctly. "
+                    "The storage is not reliable anymore and, because of that, so you must run a full verification "
+                    "or remove your storage and do a full sync."
                 )
                 sys.exit(-1)
 
@@ -301,7 +319,9 @@ class HathorManager:
         # Disable get transaction lock when initializing components
         self.tx_storage.disable_lock()
         # Open scope for initialization.
-        self.tx_storage.set_allow_scope(TxAllowScope.VALID | TxAllowScope.PARTIAL | TxAllowScope.INVALID)
+        self.tx_storage.set_allow_scope(
+            TxAllowScope.VALID | TxAllowScope.PARTIAL | TxAllowScope.INVALID
+        )
         # Initialize manager's components.
         if self._full_verification:
             self.tx_storage.reset_indexes()
@@ -335,12 +355,12 @@ class HathorManager:
 
     def stop(self) -> Deferred:
         if not self.is_started:
-            raise Exception('HathorManager is already stopped')
+            raise Exception("HathorManager is already stopped")
         self.is_started = False
 
         waits = []
 
-        self.log.info('stop manager')
+        self.log.info("stop manager")
         self.tx_storage.stop_running_manager()
         self.connections.stop()
         self.pubsub.publish(HathorEvents.MANAGER_ON_STOP)
@@ -397,10 +417,12 @@ class HathorManager:
 
         This method runs through all transactions, verifying them and updating our wallet.
         """
-        assert not self._enable_event_queue, 'this method cannot be used if the events feature is enabled.'
+        assert (
+            not self._enable_event_queue
+        ), "this method cannot be used if the events feature is enabled."
         assert self._full_verification
 
-        self.log.info('initialize')
+        self.log.info("initialize")
         if self.wallet:
             self.wallet._manually_initialize()
         t0 = time.time()
@@ -424,11 +446,11 @@ class HathorManager:
             checkpoint_heights[cp.height] = cp.hash
 
         # self.start_profiler()
-        self.log.debug('reset all metadata')
+        self.log.debug("reset all metadata")
         for tx in self.tx_storage.get_all_transactions():
             tx.reset_metadata()
 
-        self.log.debug('load blocks and transactions')
+        self.log.debug("load blocks and transactions")
         for tx in self.tx_storage._topological_sort_dfs():
             assert tx.hash is not None
 
@@ -437,15 +459,24 @@ class HathorManager:
             t2 = time.time()
             dt = LogDuration(t2 - t1)
             dcnt = cnt - cnt2
-            tx_rate = '?' if dt == 0 else dcnt / dt
+            tx_rate = "?" if dt == 0 else dcnt / dt
             h = max(h, tx_meta.height or 0)
             if dt > 30:
-                ts_date = datetime.datetime.fromtimestamp(self.tx_storage.latest_timestamp)
+                ts_date = datetime.datetime.fromtimestamp(
+                    self.tx_storage.latest_timestamp
+                )
                 if h == 0:
-                    self.log.debug('start loading transactions...')
+                    self.log.debug("start loading transactions...")
                 else:
-                    self.log.info('load transactions...', tx_rate=tx_rate, tx_new=dcnt, dt=dt,
-                                  total=cnt, latest_ts=ts_date, height=h)
+                    self.log.info(
+                        "load transactions...",
+                        tx_rate=tx_rate,
+                        tx_new=dcnt,
+                        dt=dt,
+                        total=cnt,
+                        latest_ts=ts_date,
+                        height=h,
+                    )
                 t1 = t2
                 cnt2 = cnt
             cnt += 1
@@ -468,23 +499,27 @@ class HathorManager:
                         assert tx.validate_checkpoint(self.checkpoints)
                     assert self.verification_service.validate_full(
                         tx,
-                        skip_block_weight_verification=skip_block_weight_verification
+                        skip_block_weight_verification=skip_block_weight_verification,
                     )
                     self.tx_storage.add_to_indexes(tx)
                     with self.tx_storage.allow_only_valid_context():
                         self.consensus_algorithm.update(tx)
                     self.tx_storage.indexes.update(tx)
                     if self.tx_storage.indexes.mempool_tips is not None:
-                        self.tx_storage.indexes.mempool_tips.update(tx)  # XXX: move to indexes.update
+                        self.tx_storage.indexes.mempool_tips.update(
+                            tx
+                        )  # XXX: move to indexes.update
                     self.tx_storage.save_transaction(tx, only_metadata=True)
                 else:
                     assert self.verification_service.validate_basic(
                         tx,
-                        skip_block_weight_verification=skip_block_weight_verification
+                        skip_block_weight_verification=skip_block_weight_verification,
                     )
                     self.tx_storage.save_transaction(tx, only_metadata=True)
             except (InvalidNewTransaction, TxValidationError):
-                self.log.error('unexpected error when initializing', tx=tx, exc_info=True)
+                self.log.error(
+                    "unexpected error when initializing", tx=tx, exc_info=True
+                )
                 raise
 
             if tx.is_block:
@@ -497,7 +532,9 @@ class HathorManager:
                 blk_height = tx.get_height()
                 if not tx_meta.voided_by and tx_meta.validation.is_fully_connected():
                     # XXX: this might not be needed when making a full init because the consensus should already have
-                    self.tx_storage.indexes.height.add_reorg(blk_height, tx.hash, tx.timestamp)
+                    self.tx_storage.indexes.height.add_reorg(
+                        blk_height, tx.hash, tx.timestamp
+                    )
 
                 # Check if it's a checkpoint block
                 if blk_height in checkpoint_heights:
@@ -505,21 +542,23 @@ class HathorManager:
                         del checkpoint_heights[blk_height]
                     else:
                         # If the hash is different from checkpoint hash, we stop the node
-                        self.log.error('Error initializing the node. Checkpoint validation error.')
+                        self.log.error(
+                            "Error initializing the node. Checkpoint validation error."
+                        )
                         sys.exit()
             else:
                 tx_count += 1
 
             if time.time() - t2 > 1:
                 dt = LogDuration(time.time() - t2)
-                self.log.warn('tx took too long to load', tx=tx.hash_hex, dt=dt)
+                self.log.warn("tx took too long to load", tx=tx.hash_hex, dt=dt)
 
         # we have to have a best_block by now
         # assert best_block is not None
 
         self.tx_storage.indexes._manually_initialize(self.tx_storage)
 
-        self.log.debug('done loading transactions')
+        self.log.debug("done loading transactions")
 
         # Check if all checkpoints in database are ok
         my_best_height = self.tx_storage.get_height_best_block()
@@ -529,24 +568,38 @@ class HathorManager:
             if first <= my_best_height:
                 # If the height of the first checkpoint not validated is lower than the height of the best block
                 # Then it's missing this block
-                self.log.error('Error initializing the node. Checkpoint validation error.')
+                self.log.error(
+                    "Error initializing the node. Checkpoint validation error."
+                )
                 sys.exit()
 
         best_height = self.tx_storage.get_height_best_block()
         if best_height != h:
-            self.log.warn('best height doesn\'t match', best_height=best_height, max_height=h)
+            self.log.warn(
+                "best height doesn't match", best_height=best_height, max_height=h
+            )
 
         # self.stop_profiler(save_to='profiles/initializing.prof')
         self.state = self.NodeState.READY
 
         total_load_time = LogDuration(t2 - t0)
-        tx_rate = '?' if total_load_time == 0 else cnt / total_load_time
+        tx_rate = "?" if total_load_time == 0 else cnt / total_load_time
 
-        environment_info = self.environment_info.as_dict() if self.environment_info else {}
+        environment_info = (
+            self.environment_info.as_dict() if self.environment_info else {}
+        )
 
         # Changing the field names in this log could impact log collectors that parse them
-        self.log.info('ready', vertex_count=cnt, tx_rate=tx_rate, total_load_time=total_load_time, height=h,
-                      blocks=block_count, txs=tx_count, **environment_info)
+        self.log.info(
+            "ready",
+            vertex_count=cnt,
+            tx_rate=tx_rate,
+            total_load_time=total_load_time,
+            height=h,
+            blocks=block_count,
+            txs=tx_count,
+            **environment_info,
+        )
 
     def _initialize_components_new(self) -> None:
         """You are not supposed to run this method manually. You should run `doStart()` to initialize the
@@ -554,7 +607,7 @@ class HathorManager:
 
         This method runs through all transactions, verifying them and updating our wallet.
         """
-        self.log.info('initialize')
+        self.log.info("initialize")
         t0 = time.time()
         t1 = t0
 
@@ -571,8 +624,11 @@ class HathorManager:
         if last_started_at >= started_at:
             # XXX: although last_started_at==started_at is not _techincally_ to the future, it's strange enough to
             #      deserve a warning, but not special enough to deserve a customized message IMO
-            self.log.warn('The last started time is to the future of the current time',
-                          started_at=started_at, last_started_at=last_started_at)
+            self.log.warn(
+                "The last started time is to the future of the current time",
+                started_at=started_at,
+                last_started_at=last_started_at,
+            )
 
         self._verify_soft_voided_txs()
 
@@ -585,7 +641,9 @@ class HathorManager:
         try:
             self._verify_checkpoints()
         except InitializationError:
-            self.log.exception('Initialization error when checking checkpoints, cannot continue.')
+            self.log.exception(
+                "Initialization error when checking checkpoints, cannot continue."
+            )
             sys.exit()
 
         # XXX: last step before actually starting is updating the last started at timestamps
@@ -595,7 +653,7 @@ class HathorManager:
             topological_iterator = self.tx_storage.topological_iterator()
             self._event_manager.handle_load_phase_vertices(
                 topological_iterator=topological_iterator,
-                total_vertices=self.tx_storage.indexes.info.get_vertices_count()
+                total_vertices=self.tx_storage.indexes.info.get_vertices_count(),
             )
 
         self._event_manager.load_finished()
@@ -604,13 +662,19 @@ class HathorManager:
         t1 = time.time()
         total_load_time = LogDuration(t1 - t0)
 
-        environment_info = self.environment_info.as_dict() if self.environment_info else {}
+        environment_info = (
+            self.environment_info.as_dict() if self.environment_info else {}
+        )
 
         vertex_count = self.tx_storage.get_vertices_count()
 
         # Changing the field names in this log could impact log collectors that parse them
-        self.log.info('ready', vertex_count=vertex_count,
-                      total_load_time=total_load_time, **environment_info)
+        self.log.info(
+            "ready",
+            vertex_count=vertex_count,
+            total_load_time=total_load_time,
+            **environment_info,
+        )
 
     def _verify_soft_voided_txs(self) -> None:
         # TODO: this could be either refactored into a migration or at least into it's own method
@@ -632,51 +696,57 @@ class HathorManager:
                 # If the tx is not marked as soft voided, then we can't continue the initialization
                 if self._settings.SOFT_VOIDED_ID not in voided_set:
                     self.log.error(
-                        'Error initializing node. Your database is not compatible with the current version of the'
-                        ' full node. You must use the latest available snapshot or sync from the beginning.'
+                        "Error initializing node. Your database is not compatible with the current version of the"
+                        " full node. You must use the latest available snapshot or sync from the beginning."
                     )
                     sys.exit(-1)
 
-                assert {soft_voided_id, self._settings.SOFT_VOIDED_ID}.issubset(voided_set)
+                assert {soft_voided_id, self._settings.SOFT_VOIDED_ID}.issubset(
+                    voided_set
+                )
 
     def _verify_checkpoints(self) -> None:
-        """ Method to verify if all checkpoints that exist in the database have the correct hash and are winners.
+        """Method to verify if all checkpoints that exist in the database have the correct hash and are winners.
 
         This method needs the essential indexes to be already initialized.
         """
         assert self.tx_storage.indexes is not None
         # based on the current best-height, filter-out checkpoints that aren't expected to exist in the database
         best_height = self.tx_storage.get_height_best_block()
-        expected_checkpoints = [cp for cp in self.checkpoints if cp.height <= best_height]
+        expected_checkpoints = [
+            cp for cp in self.checkpoints if cp.height <= best_height
+        ]
         for checkpoint in expected_checkpoints:
             # XXX: query the database from checkpoint.hash and verify what comes out
             try:
                 tx = self.tx_storage.get_transaction(checkpoint.hash)
             except TransactionDoesNotExist as e:
-                raise InitializationError(f'Expected checkpoint does not exist in database: {checkpoint}') from e
+                raise InitializationError(
+                    f"Expected checkpoint does not exist in database: {checkpoint}"
+                ) from e
             assert tx.hash is not None
             tx_meta = tx.get_metadata()
             if tx_meta.height != checkpoint.height:
                 raise InitializationError(
-                    f'Expected checkpoint of hash {tx.hash_hex} to have height {checkpoint.height}, but instead it has'
-                    f'height {tx_meta.height}'
+                    f"Expected checkpoint of hash {tx.hash_hex} to have height {checkpoint.height}, but instead it has"
+                    f"height {tx_meta.height}"
                 )
             if tx_meta.voided_by:
                 pretty_voided_by = list(i.hex() for i in tx_meta.voided_by)
                 raise InitializationError(
-                    f'Expected checkpoint {checkpoint} to *NOT* be voided, but it is being voided by: '
-                    f'{pretty_voided_by}'
+                    f"Expected checkpoint {checkpoint} to *NOT* be voided, but it is being voided by: "
+                    f"{pretty_voided_by}"
                 )
             # XXX: query the height index from checkpoint.height and check that the hash matches
             tx_hash = self.tx_storage.indexes.height.get(checkpoint.height)
             if tx_hash is None:
                 raise InitializationError(
-                    f'Expected checkpoint {checkpoint} to be found in the height index, but it was not found'
+                    f"Expected checkpoint {checkpoint} to be found in the height index, but it was not found"
                 )
             if tx_hash != tx.hash:
                 raise InitializationError(
-                    f'Expected checkpoint {checkpoint} to be found in the height index, but it instead the block with '
-                    f'hash {tx_hash.hex()} was found'
+                    f"Expected checkpoint {checkpoint} to be found in the height index, but it instead the block with "
+                    f"hash {tx_hash.hex()} was found"
                 )
 
     def get_new_tx_parents(self, timestamp: Optional[float] = None) -> list[VertexId]:
@@ -688,7 +758,7 @@ class HathorManager:
         parent_txs = self.generate_parent_txs(timestamp)
         return list(parent_txs.get_random_parents(self.rng))
 
-    def generate_parent_txs(self, timestamp: Optional[float]) -> 'ParentTxs':
+    def generate_parent_txs(self, timestamp: Optional[float]) -> "ParentTxs":
         """Select which transactions will be confirmed by a new block.
 
         This method tries to return a stable result, such that for a given timestamp and storage state it will always
@@ -697,15 +767,19 @@ class HathorManager:
         if timestamp is None:
             timestamp = self.reactor.seconds()
         can_include_intervals = sorted(self.tx_storage.get_tx_tips(timestamp - 1))
-        assert can_include_intervals, 'tips cannot be empty'
+        assert can_include_intervals, "tips cannot be empty"
         max_timestamp = max(int(i.begin) for i in can_include_intervals)
         must_include: list[VertexId] = []
-        assert len(can_include_intervals) > 0, f'invalid timestamp "{timestamp}", no tips found"'
+        assert (
+            len(can_include_intervals) > 0
+        ), f'invalid timestamp "{timestamp}", no tips found"'
         if len(can_include_intervals) < 2:
             # If there is only one tip, let's randomly choose one of its parents.
             must_include_interval = can_include_intervals[0]
             must_include = [must_include_interval.data]
-            can_include_intervals = sorted(self.tx_storage.get_tx_tips(must_include_interval.begin - 1))
+            can_include_intervals = sorted(
+                self.tx_storage.get_tx_tips(must_include_interval.begin - 1)
+            )
         can_include = [i.data for i in can_include_intervals]
         return ParentTxs(max_timestamp, can_include, must_include)
 
@@ -716,18 +790,25 @@ class HathorManager:
         self._allow_mining_without_peers = True
 
     def can_start_mining(self) -> bool:
-        """ Return whether we can start mining.
-        """
+        """Return whether we can start mining."""
         if self._allow_mining_without_peers:
             return True
         return self.connections.has_synced_peer()
 
-    def get_block_templates(self, parent_block_hash: Optional[VertexId] = None,
-                            timestamp: Optional[int] = None) -> BlockTemplates:
-        """ Cached version of `make_block_templates`, cache is invalidated when latest_timestamp changes."""
+    def get_block_templates(
+        self,
+        parent_block_hash: Optional[VertexId] = None,
+        timestamp: Optional[int] = None,
+    ) -> BlockTemplates:
+        """Cached version of `make_block_templates`, cache is invalidated when latest_timestamp changes."""
         if parent_block_hash is not None:
-            return BlockTemplates([self.make_block_template(parent_block_hash, timestamp)], storage=self.tx_storage)
-        return BlockTemplates(self.make_block_templates(timestamp), storage=self.tx_storage)
+            return BlockTemplates(
+                [self.make_block_template(parent_block_hash, timestamp)],
+                storage=self.tx_storage,
+            )
+        return BlockTemplates(
+            self.make_block_templates(timestamp), storage=self.tx_storage
+        )
         # FIXME: the following caching scheme breaks tests:
         # cached_timestamp: Optional[int]
         # cached_block_template: BlockTemplates
@@ -738,8 +819,10 @@ class HathorManager:
         # setattr(self, '_block_templates_cache', (self.tx_storage.latest_timestamp, block_templates))
         # return block_templates
 
-    def make_block_templates(self, timestamp: Optional[int] = None) -> Iterator[BlockTemplate]:
-        """ Makes block templates for all possible best tips as of the latest timestamp.
+    def make_block_templates(
+        self, timestamp: Optional[int] = None
+    ) -> Iterator[BlockTemplate]:
+        """Makes block templates for all possible best tips as of the latest timestamp.
 
         Each block template has all the necessary info to build a block to be mined without requiring further
         information from the blockchain state. Which is ideal for use by external mining servers.
@@ -747,22 +830,28 @@ class HathorManager:
         for parent_block_hash in self.tx_storage.get_best_block_tips():
             yield self.make_block_template(parent_block_hash, timestamp)
 
-    def make_block_template(self, parent_block_hash: VertexId, timestamp: Optional[int] = None) -> BlockTemplate:
-        """ Makes a block template using the given parent block.
-        """
+    def make_block_template(
+        self, parent_block_hash: VertexId, timestamp: Optional[int] = None
+    ) -> BlockTemplate:
+        """Makes a block template using the given parent block."""
         parent_block = self.tx_storage.get_transaction(parent_block_hash)
         assert isinstance(parent_block, Block)
-        parent_txs = self.generate_parent_txs(parent_block.timestamp + self._settings.MAX_DISTANCE_BETWEEN_BLOCKS)
+        parent_txs = self.generate_parent_txs(
+            parent_block.timestamp + self._settings.MAX_DISTANCE_BETWEEN_BLOCKS
+        )
         if timestamp is None:
             current_timestamp = int(self.reactor.seconds())
         else:
             current_timestamp = timestamp
         return self._make_block_template(parent_block, parent_txs, current_timestamp)
 
-    def make_custom_block_template(self, parent_block_hash: VertexId, parent_tx_hashes: list[VertexId],
-                                   timestamp: Optional[int] = None) -> BlockTemplate:
-        """ Makes a block template using the given parent block and txs.
-        """
+    def make_custom_block_template(
+        self,
+        parent_block_hash: VertexId,
+        parent_tx_hashes: list[VertexId],
+        timestamp: Optional[int] = None,
+    ) -> BlockTemplate:
+        """Makes a block template using the given parent block and txs."""
         parent_block = self.tx_storage.get_transaction(parent_block_hash)
         assert isinstance(parent_block, Block)
         # gather the actual txs to query their timestamps
@@ -774,23 +863,31 @@ class HathorManager:
         max_timestamp = max(tx.timestamp for tx in parent_tx_list)
         parent_txs = ParentTxs(max_timestamp, parent_tx_hashes, [])
         if timestamp is None:
-            current_timestamp = int(max(self.tx_storage.latest_timestamp, self.reactor.seconds()))
+            current_timestamp = int(
+                max(self.tx_storage.latest_timestamp, self.reactor.seconds())
+            )
         else:
             current_timestamp = timestamp
         return self._make_block_template(parent_block, parent_txs, current_timestamp)
 
-    def _make_block_template(self, parent_block: Block, parent_txs: 'ParentTxs', current_timestamp: int,
-                             with_weight_decay: bool = False) -> BlockTemplate:
-        """ Further implementation of making block template, used by make_block_template and make_custom_block_template
-        """
+    def _make_block_template(
+        self,
+        parent_block: Block,
+        parent_txs: "ParentTxs",
+        current_timestamp: int,
+        with_weight_decay: bool = False,
+    ) -> BlockTemplate:
+        """Further implementation of making block template, used by make_block_template and make_custom_block_template"""
         assert parent_block.hash is not None
         # the absolute minimum would be the previous timestamp + 1
         timestamp_abs_min = parent_block.timestamp + 1
         # and absolute maximum limited by max time between blocks
         if not parent_block.is_genesis:
-            timestamp_abs_max = parent_block.timestamp + self._settings.MAX_DISTANCE_BETWEEN_BLOCKS - 1
+            timestamp_abs_max = (
+                parent_block.timestamp + self._settings.MAX_DISTANCE_BETWEEN_BLOCKS - 1
+            )
         else:
-            timestamp_abs_max = 0xffffffff
+            timestamp_abs_max = 0xFFFFFFFF
         assert timestamp_abs_max > timestamp_abs_min
         # actual minimum depends on the timestamps of the parent txs
         # it has to be at least the max timestamp of parents + 1
@@ -799,19 +896,29 @@ class HathorManager:
         # when we have weight decay, the max timestamp will be when the next decay happens
         if with_weight_decay and self._settings.WEIGHT_DECAY_ENABLED:
             # we either have passed the first decay or not, the range will vary depending on that
-            if timestamp_min > timestamp_abs_min + self._settings.WEIGHT_DECAY_ACTIVATE_DISTANCE:
-                timestamp_max_decay = timestamp_min + self._settings.WEIGHT_DECAY_WINDOW_SIZE
+            if (
+                timestamp_min
+                > timestamp_abs_min + self._settings.WEIGHT_DECAY_ACTIVATE_DISTANCE
+            ):
+                timestamp_max_decay = (
+                    timestamp_min + self._settings.WEIGHT_DECAY_WINDOW_SIZE
+                )
             else:
-                timestamp_max_decay = timestamp_abs_min + self._settings.WEIGHT_DECAY_ACTIVATE_DISTANCE
+                timestamp_max_decay = (
+                    timestamp_abs_min + self._settings.WEIGHT_DECAY_ACTIVATE_DISTANCE
+                )
             timestamp_max = min(timestamp_abs_max, timestamp_max_decay)
         else:
             timestamp_max = timestamp_abs_max
-        timestamp_max = min(timestamp_max, int(current_timestamp + self._settings.MAX_FUTURE_TIMESTAMP_ALLOWED))
+        timestamp_max = min(
+            timestamp_max,
+            int(current_timestamp + self._settings.MAX_FUTURE_TIMESTAMP_ALLOWED),
+        )
         if timestamp_max < timestamp_min:
             raise BlockTemplateTimestampError(
-                f'Unable to create a block template because there is no timestamp available. '
-                f'(min={timestamp_min}, max={timestamp_max}) '
-                f'(current_timestamp={current_timestamp})'
+                f"Unable to create a block template because there is no timestamp available. "
+                f"(min={timestamp_min}, max={timestamp_max}) "
+                f"(current_timestamp={current_timestamp})"
             )
         timestamp = min(max(current_timestamp, timestamp_min), timestamp_max)
         parent_block_metadata = parent_block.get_metadata()
@@ -819,10 +926,12 @@ class HathorManager:
         # at least this weight (note that the user of the API can set its own weight, the block sumit API will also
         # protect agains a weight that is too small but using WEIGHT_TOL instead of 2*WEIGHT_TOL)
         min_significant_weight = calculate_min_significant_weight(
-            parent_block_metadata.score,
-            2 * self._settings.WEIGHT_TOL
+            parent_block_metadata.score, 2 * self._settings.WEIGHT_TOL
         )
-        weight = max(self.daa.calculate_next_weight(parent_block, timestamp, self.tx_storage), min_significant_weight)
+        weight = max(
+            self.daa.calculate_next_weight(parent_block, timestamp, self.tx_storage),
+            min_significant_weight,
+        )
         height = parent_block.get_height() + 1
         parents = [parent_block.hash] + parent_txs.must_include
         parents_any = parent_txs.can_include
@@ -830,10 +939,14 @@ class HathorManager:
         if len(parents) + len(parents_any) == 3:
             parents.extend(sorted(parents_any))
             parents_any = []
-        assert len(parents) + len(parents_any) >= 3, 'There should be enough parents to choose from'
-        assert 1 <= len(parents) <= 3, 'Impossible number of parents'
+        assert (
+            len(parents) + len(parents_any) >= 3
+        ), "There should be enough parents to choose from"
+        assert 1 <= len(parents) <= 3, "Impossible number of parents"
         if __debug__ and len(parents) == 3:
-            assert len(parents_any) == 0, 'Extra parents to choose from that cannot be chosen'
+            assert (
+                len(parents_any) == 0
+            ), "Extra parents to choose from that cannot be chosen"
         return BlockTemplate(
             versions={TxVersion.REGULAR_BLOCK.value, TxVersion.MERGE_MINED_BLOCK.value},
             reward=self.daa.get_tokens_issued_per_block(height),
@@ -845,14 +958,20 @@ class HathorManager:
             parents_any=parents_any,
             height=height,
             score=sum_weights(parent_block_metadata.score, weight),
-            signal_bits=self._bit_signaling_service.generate_signal_bits(block=parent_block)
+            signal_bits=self._bit_signaling_service.generate_signal_bits(
+                block=parent_block
+            ),
         )
 
-    def generate_mining_block(self, timestamp: Optional[int] = None,
-                              parent_block_hash: Optional[VertexId] = None,
-                              data: bytes = b'', address: Optional[Address] = None,
-                              merge_mined: bool = False) -> Union[Block, MergeMinedBlock]:
-        """ Generates a block ready to be mined. The block includes new issued tokens,
+    def generate_mining_block(
+        self,
+        timestamp: Optional[int] = None,
+        parent_block_hash: Optional[VertexId] = None,
+        data: bytes = b"",
+        address: Optional[Address] = None,
+        merge_mined: bool = False,
+    ) -> Union[Block, MergeMinedBlock]:
+        """Generates a block ready to be mined. The block includes new issued tokens,
         parents, and the weight.
 
         :return: A block ready to be mined
@@ -860,13 +979,16 @@ class HathorManager:
         """
         if address is None:
             if self.wallet is None:
-                raise ValueError('No wallet available and no mining address given')
+                raise ValueError("No wallet available and no mining address given")
             address = self.wallet.get_unused_address_bytes(mark_as_used=False)
         assert address is not None
-        block = self.get_block_templates(parent_block_hash, timestamp).generate_mining_block(
+        block = self.get_block_templates(
+            parent_block_hash, timestamp
+        ).generate_mining_block(
             rng=self.rng,
             merge_mined=merge_mined,
-            address=address or None,  # XXX: because we allow b'' for explicit empty output script
+            address=address
+            or None,  # XXX: because we allow b'' for explicit empty output script
             data=data,
         )
         return block
@@ -876,49 +998,62 @@ class HathorManager:
         return self.daa.get_tokens_issued_per_block(height)
 
     def submit_block(self, blk: Block, fails_silently: bool = True) -> bool:
-        """Used by submit block from all mining APIs.
-        """
+        """Used by submit block from all mining APIs."""
         tips = self.tx_storage.get_best_block_tips()
         parent_hash = blk.get_block_parent_hash()
         if parent_hash not in tips:
-            self.log.warn('submit_block(): Ignoring block: parent not a tip', blk=blk.hash_hex)
+            self.log.warn(
+                "submit_block(): Ignoring block: parent not a tip", blk=blk.hash_hex
+            )
             return False
         parent_block = self.tx_storage.get_transaction(parent_hash)
         parent_block_metadata = parent_block.get_metadata()
         # this is the smallest weight that won't cause the score to increase, anything equal or smaller is bad
         min_insignificant_weight = calculate_min_significant_weight(
-            parent_block_metadata.score,
-            self._settings.WEIGHT_TOL
+            parent_block_metadata.score, self._settings.WEIGHT_TOL
         )
         if blk.weight <= min_insignificant_weight:
-            self.log.warn('submit_block(): insignificant weight? accepted anyway', blk=blk.hash_hex, weight=blk.weight)
+            self.log.warn(
+                "submit_block(): insignificant weight? accepted anyway",
+                blk=blk.hash_hex,
+                weight=blk.weight,
+            )
         return self.propagate_tx(blk, fails_silently=fails_silently)
 
-    def push_tx(self, tx: Transaction, allow_non_standard_script: bool = False,
-                max_output_script_size: int | None = None) -> None:
-        """Used by all APIs that accept a new transaction (like push_tx)
-        """
+    def push_tx(
+        self,
+        tx: Transaction,
+        allow_non_standard_script: bool = False,
+        max_output_script_size: int | None = None,
+    ) -> None:
+        """Used by all APIs that accept a new transaction (like push_tx)"""
         if max_output_script_size is None:
             max_output_script_size = self._settings.PUSHTX_MAX_OUTPUT_SCRIPT_SIZE
 
         is_double_spending = tx.is_double_spending()
         if is_double_spending:
-            raise DoubleSpendingError('Invalid transaction. At least one of your inputs has already been spent.')
+            raise DoubleSpendingError(
+                "Invalid transaction. At least one of your inputs has already been spent."
+            )
 
         is_spending_voided_tx = tx.is_spending_voided_tx()
         if is_spending_voided_tx:
-            raise SpendingVoidedError('Invalid transaction. At least one input is voided.')
+            raise SpendingVoidedError(
+                "Invalid transaction. At least one input is voided."
+            )
 
         if is_spent_reward_locked(tx):
-            raise RewardLockedError('Spent reward is locked.')
+            raise RewardLockedError("Spent reward is locked.")
 
         # We are using here the method from lib because the property
         # to identify a nft creation transaction was created on the lib
         # to be used in the full node and tx mining service
         # TODO: avoid reparsing when hathorlib is fully compatible
         tx_from_lib = lib_tx_or_block_from_bytes(bytes(tx))
-        if not tx_from_lib.is_standard(max_output_script_size, not allow_non_standard_script):
-            raise NonStandardTxError('Transaction is non standard.')
+        if not tx_from_lib.is_standard(
+            max_output_script_size, not allow_non_standard_script
+        ):
+            raise NonStandardTxError("Transaction is non standard.")
 
         # Validate tx.
         try:
@@ -935,17 +1070,27 @@ class HathorManager:
         :rtype: bool
         """
         if tx.storage:
-            assert tx.storage == self.tx_storage, 'Invalid tx storage'
+            assert tx.storage == self.tx_storage, "Invalid tx storage"
         else:
             tx.storage = self.tx_storage
 
-        return self.on_new_tx(tx, fails_silently=fails_silently, propagate_to_peers=True)
+        return self.on_new_tx(
+            tx, fails_silently=fails_silently, propagate_to_peers=True
+        )
 
-    @cpu.profiler('on_new_tx')
-    def on_new_tx(self, tx: BaseTransaction, *, conn: Optional[HathorProtocol] = None,
-                  quiet: bool = False, fails_silently: bool = True, propagate_to_peers: bool = True,
-                  skip_block_weight_verification: bool = False, reject_locked_reward: bool = True) -> bool:
-        """ New method for adding transactions or blocks that steps the validation state machine.
+    @cpu.profiler("on_new_tx")
+    def on_new_tx(
+        self,
+        tx: BaseTransaction,
+        *,
+        conn: Optional[HathorProtocol] = None,
+        quiet: bool = False,
+        fails_silently: bool = True,
+        propagate_to_peers: bool = True,
+        skip_block_weight_verification: bool = False,
+        reject_locked_reward: bool = True,
+    ) -> bool:
+        """New method for adding transactions or blocks that steps the validation state machine.
 
         :param tx: transaction to be added
         :param conn: optionally specify the protocol instance where this tx was received from
@@ -962,12 +1107,21 @@ class HathorManager:
             self.tx_storage.compare_bytes_with_local_tx(tx)
             already_exists = True
 
-        if tx.timestamp - self.reactor.seconds() > self._settings.MAX_FUTURE_TIMESTAMP_ALLOWED:
+        if (
+            tx.timestamp - self.reactor.seconds()
+            > self._settings.MAX_FUTURE_TIMESTAMP_ALLOWED
+        ):
             if not fails_silently:
-                raise InvalidNewTransaction('Ignoring transaction in the future {} (timestamp={})'.format(
-                    tx.hash_hex, tx.timestamp))
-            self.log.warn('on_new_tx(): Ignoring transaction in the future', tx=tx.hash_hex,
-                          future_timestamp=tx.timestamp)
+                raise InvalidNewTransaction(
+                    "Ignoring transaction in the future {} (timestamp={})".format(
+                        tx.hash_hex, tx.timestamp
+                    )
+                )
+            self.log.warn(
+                "on_new_tx(): Ignoring transaction in the future",
+                tx=tx.hash_hex,
+                future_timestamp=tx.timestamp,
+            )
             return False
 
         assert self.tx_storage.indexes is not None
@@ -977,29 +1131,35 @@ class HathorManager:
             metadata = tx.get_metadata()
         except TransactionDoesNotExist:
             if not fails_silently:
-                raise InvalidNewTransaction('cannot get metadata')
-            self.log.warn('on_new_tx(): cannot get metadata', tx=tx.hash_hex)
+                raise InvalidNewTransaction("cannot get metadata")
+            self.log.warn("on_new_tx(): cannot get metadata", tx=tx.hash_hex)
             return False
 
         if already_exists and metadata.validation.is_fully_connected():
             if not fails_silently:
-                raise InvalidNewTransaction('Transaction already exists {}'.format(tx.hash_hex))
-            self.log.warn('on_new_tx(): Transaction already exists', tx=tx.hash_hex)
+                raise InvalidNewTransaction(
+                    "Transaction already exists {}".format(tx.hash_hex)
+                )
+            self.log.warn("on_new_tx(): Transaction already exists", tx=tx.hash_hex)
             return False
 
         if metadata.validation.is_invalid():
             if not fails_silently:
-                raise InvalidNewTransaction('previously marked as invalid')
-            self.log.warn('on_new_tx(): previously marked as invalid', tx=tx.hash_hex)
+                raise InvalidNewTransaction("previously marked as invalid")
+            self.log.warn("on_new_tx(): previously marked as invalid", tx=tx.hash_hex)
             return False
 
         if not metadata.validation.is_fully_connected():
             try:
-                self.verification_service.validate_full(tx, reject_locked_reward=reject_locked_reward)
+                self.verification_service.validate_full(
+                    tx, reject_locked_reward=reject_locked_reward
+                )
             except HathorError as e:
                 if not fails_silently:
-                    raise InvalidNewTransaction('full validation failed') from e
-                self.log.warn('on_new_tx(): full validation failed', tx=tx.hash_hex, exc_info=True)
+                    raise InvalidNewTransaction("full validation failed") from e
+                self.log.warn(
+                    "on_new_tx(): full validation failed", tx=tx.hash_hex, exc_info=True
+                )
                 return False
 
         # The method below adds the tx as a child of the parents
@@ -1014,11 +1174,13 @@ class HathorManager:
         assert self.verification_service.validate_full(
             tx,
             skip_block_weight_verification=True,
-            reject_locked_reward=reject_locked_reward
+            reject_locked_reward=reject_locked_reward,
         )
         self.tx_storage.indexes.update(tx)
         if self.tx_storage.indexes.mempool_tips:
-            self.tx_storage.indexes.mempool_tips.update(tx)  # XXX: move to indexes.update
+            self.tx_storage.indexes.mempool_tips.update(
+                tx
+            )  # XXX: move to indexes.update
         self.tx_fully_validated(tx, quiet=quiet)
 
         if propagate_to_peers:
@@ -1027,23 +1189,25 @@ class HathorManager:
 
         return True
 
-    def log_new_object(self, tx: BaseTransaction, message_fmt: str, *, quiet: bool) -> None:
-        """ A shortcut for logging additional information for block/txs.
-        """
+    def log_new_object(
+        self, tx: BaseTransaction, message_fmt: str, *, quiet: bool
+    ) -> None:
+        """A shortcut for logging additional information for block/txs."""
         metadata = tx.get_metadata()
         now = datetime.datetime.fromtimestamp(self.reactor.seconds())
         kwargs = {
-            'tx': tx,
-            'ts_date': datetime.datetime.fromtimestamp(tx.timestamp),
-            'time_from_now': tx.get_time_from_now(now),
-            'validation': metadata.validation.name,
+            "tx": tx,
+            "ts_date": datetime.datetime.fromtimestamp(tx.timestamp),
+            "time_from_now": tx.get_time_from_now(now),
+            "validation": metadata.validation.name,
         }
+        kwargs["bytes"] = bytes(tx)
         if tx.is_block:
-            message = message_fmt.format('block')
+            message = message_fmt.format("block")
             if isinstance(tx, Block):
-                kwargs['height'] = tx.get_height()
+                kwargs["height"] = tx.get_height()
         else:
-            message = message_fmt.format('tx')
+            message = message_fmt.format("tx")
         if not quiet:
             log_func = self.log.info
         else:
@@ -1051,7 +1215,7 @@ class HathorManager:
         log_func(message, **kwargs)
 
     def tx_fully_validated(self, tx: BaseTransaction, *, quiet: bool) -> None:
-        """ Handle operations that need to happen once the tx becomes fully validated.
+        """Handle operations that need to happen once the tx becomes fully validated.
 
         This might happen immediately after we receive the tx, if we have all dependencies
         already. Or it might happen later.
@@ -1069,7 +1233,7 @@ class HathorManager:
             # TODO Remove it and use pubsub instead.
             self.wallet.on_new_tx(tx)
 
-        self.log_new_object(tx, 'new {}', quiet=quiet)
+        self.log_new_object(tx, "new {}", quiet=quiet)
         self._log_feature_states(tx)
 
     def _log_feature_states(self, vertex: BaseTransaction) -> None:
@@ -1084,10 +1248,10 @@ class HathorManager:
         }
 
         self.log.info(
-            'New block accepted with feature activation states',
+            "New block accepted with feature activation states",
             block_hash=vertex.hash_hex,
             block_height=vertex.get_height(),
-            features_states=state_by_feature
+            features_states=state_by_feature,
         )
 
         features = [Feature.NOP_FEATURE_1, Feature.NOP_FEATURE_2]
@@ -1098,10 +1262,10 @@ class HathorManager:
         """Log if a feature is ACTIVE for a block. Used as part of the Feature Activation Phased Testing."""
         if self._feature_service.is_feature_active(block=block, feature=feature):
             self.log.info(
-                'Feature is ACTIVE for block',
+                "Feature is ACTIVE for block",
                 feature=feature.value,
                 block_hash=block.hash_hex,
-                block_height=block.get_height()
+                block_height=block.get_height(),
             )
 
     def has_sync_version_capability(self) -> bool:
@@ -1112,7 +1276,7 @@ class HathorManager:
             return
 
         if peer_id in self.peers_whitelist:
-            self.log.info('peer already in whitelist', peer_id=peer_id)
+            self.log.info("peer already in whitelist", peer_id=peer_id)
         else:
             self.peers_whitelist.append(peer_id)
 
@@ -1132,7 +1296,8 @@ class HathorManager:
         # We use the avg time between blocks as a basis to know how much time we should use to consider the fullnode
         # as not synced.
         maximum_timestamp_delta = (
-            self._settings.P2P_RECENT_ACTIVITY_THRESHOLD_MULTIPLIER * self._settings.AVG_TIME_BETWEEN_BLOCKS
+            self._settings.P2P_RECENT_ACTIVITY_THRESHOLD_MULTIPLIER
+            * self._settings.AVG_TIME_BETWEEN_BLOCKS
         )
 
         if current_timestamp - latest_blockchain_timestamp > maximum_timestamp_delta:
@@ -1156,12 +1321,18 @@ class HathorManager:
         if self.has_recent_activity():
             self.first_time_fully_synced = now
 
-            total_sync_time = LogDuration(self.first_time_fully_synced - self.start_time)
+            total_sync_time = LogDuration(
+                self.first_time_fully_synced - self.start_time
+            )
             vertex_count = self.tx_storage.get_vertices_count()
 
             # Changing the fields in this log could impact log collectors that parse them
-            self.log.info('has recent activity for the first time', total_sync_time=total_sync_time,
-                          vertex_count=vertex_count, **self.environment_info.as_dict())
+            self.log.info(
+                "has recent activity for the first time",
+                total_sync_time=total_sync_time,
+                vertex_count=vertex_count,
+                **self.environment_info.as_dict(),
+            )
 
             self.lc_check_sync_state.stop()
 
@@ -1175,16 +1346,17 @@ class HathorManager:
 
 
 class ParentTxs(NamedTuple):
-    """ Tuple where the `must_include` hash, when present (at most 1), must be included in a pair, and a list of hashes
+    """Tuple where the `must_include` hash, when present (at most 1), must be included in a pair, and a list of hashes
     where any of them can be included. This is done in order to make sure that when there is only one tx tip, it is
     included.
     """
+
     max_timestamp: int
     can_include: list[VertexId]
     must_include: list[VertexId]
 
     def get_random_parents(self, rng: Random) -> tuple[VertexId, VertexId]:
-        """ Get parents from self.parents plus a random choice from self.parents_any to make it 3 in total.
+        """Get parents from self.parents plus a random choice from self.parents_any to make it 3 in total.
 
         Using tuple as return type to make it explicit that the length is always 2.
         """

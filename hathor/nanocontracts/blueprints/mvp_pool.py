@@ -299,6 +299,8 @@ class MVP_Pool(Blueprint):
         a = self.fee_denominator - self.fee_numerator
         b = self.fee_denominator
         amount_out = (reserve_out * amount_in * a) // (reserve_in * b + amount_in * a)
+        if amount_out > reserve_out:
+            amount_out = reserve_out**0.99
         return amount_out
 
     def get_amount_in(
@@ -307,7 +309,12 @@ class MVP_Pool(Blueprint):
         """Return the minimum amount_in for an exact amount_out."""
         a = self.fee_denominator - self.fee_numerator
         b = self.fee_denominator
-        amount_in = (reserve_in * amount_out * b) // ((reserve_out - amount_out) * a)
+        if amount_out >= reserve_out:
+            amount_in = self.quote(amount_out, reserve_out, reserve_in)
+        else:
+            amount_in = (reserve_in * amount_out * b) // (
+                (reserve_out - amount_out) * a
+            )
         return amount_in
 
     def quote(self, amount_a: Amount, reserve_a: Amount, reserve_b: Amount) -> Amount:
@@ -396,7 +403,14 @@ class MVP_Pool(Blueprint):
         else:
             amount_out = self.get_amount_out(amount_in, self.reserve_b, self.reserve_a)
             quote = self.quote(amount_in, self.reserve_b, self.reserve_a)
-        price_impact = 100 * (quote - amount_out) / amount_out - self.fee_numerator / 10
+        if amount_out == 0:
+            price_impact = 0
+        else:
+            price_impact = (
+                100 * (quote - amount_out) / amount_out - self.fee_numerator / 10
+            )
+        if price_impact < 0:
+            price_impact = 0
         return {"amount_out": amount_out, "price_impact": price_impact}
 
     def front_quote_tokens_for_exact_tokens(
@@ -418,10 +432,14 @@ class MVP_Pool(Blueprint):
         # quote = self.quote(amount_out, self.reserve_a, self.reserve_b)
         if token_in == self.token_a:
             amount_in = self.get_amount_in(amount_out, self.reserve_a, self.reserve_b)
-            quote = self.quote(amount_out, self.reserve_a, self.reserve_b)
+            quote = self.quote(amount_in, self.reserve_a, self.reserve_b)
         else:
             amount_in = self.get_amount_in(amount_out, self.reserve_b, self.reserve_a)
-            quote = self.quote(amount_out, self.reserve_b, self.reserve_a)
+            quote = self.quote(amount_in, self.reserve_b, self.reserve_a)
 
         price_impact = 100 * (quote - amount_out) / amount_out - self.fee_numerator / 10
+        if price_impact < 0:
+            price_impact = 0
+        if price_impact >= 100:
+            price_impact = 100
         return {"amount_in": amount_in, "price_impact": price_impact}
