@@ -1,25 +1,17 @@
-# Copyright 2023 Hathor Labs
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# include Dozer Finance??
-
 from typing import NamedTuple
 
+from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import Context, NCAction, NCActionType, public
-from hathor.types import Address, Amount, TokenUid, TxOutputScript
+from hathor.types import (
+    Address,
+    AddressB58,
+    Amount,
+    Timestamp,
+    TokenUid,
+    TxOutputScript,
+)
 
 
 class SwapResult(NamedTuple):
@@ -29,20 +21,20 @@ class SwapResult(NamedTuple):
     So one must check which one is Token A and which one is Token B."""
 
     amount_in: Amount
-    change_in: Amount
+    slippage_in: Amount
     token_in: TokenUid
     amount_out: Amount
-    change_out: Amount
+    # change_out: Amount
     token_out: TokenUid
 
 
-def require(condition: bool, errtype: NCFail, errmsg: str) -> None:
+def require(condition: bool, errmsg: str) -> None:
     """Helper to fail execution if condition is false."""
     if not condition:
-        raise errtype(errmsg)
+        raise NCFail(errmsg)
 
 
-class LiquidityPool(Blueprint):
+class Liquidity_Pool(Blueprint):
     """Liquidity pool inspired by Uniswap v2.
 
     The initial reserves for both Token A and Token B must be deposited at the contract creation.
@@ -78,6 +70,9 @@ class LiquidityPool(Blueprint):
     - fee_to_setter: TxOutputScript
     """
 
+    name: str
+    owner: Address
+    fee_to: Address
     # Token information for the pair TokenA/TokenB.
     token_a: TokenUid
     token_b: TokenUid
@@ -91,17 +86,18 @@ class LiquidityPool(Blueprint):
     reserve_b: Amount
 
     # Balance of users. These are the amounts available for users to withdrawal.
-    balance_a: dict[Address, Amount]
-    balance_b: dict[Address, Amount]
+    # Slippage acummulate in the contract
+    balance_a: Amount
+    balance_b: Amount
 
     # Sum of all user balances.
     # total_balance_a = sum(amount for amount in balance_a.items())
     # total_balance_b = sum(amount for amount in balance_b.items())
-    total_balance_a: Amount
-    total_balance_b: Amount
+    # total_balance_a: Amount
+    # total_balance_b: Amount
 
     # LP Token (not implemented yet)
-    lp_token: TokenUid
+    # lp_token: TokenUid
 
     # Fee rate to all trades.
     #
@@ -110,8 +106,12 @@ class LiquidityPool(Blueprint):
     # For example, a fee of 0.3% would be 3/1000.
     fee_numerator: int
     fee_denominator: int
-    fee_to: Address
-    fee_to_setter: TxOutputScript
+
+    accumulated_fee: dict[TokenUid, Amount]
+    volume_a: Amount
+    volume_b: Amount
+    transactions: int
+    last_activity_timestamp: Timestamp
 
     @public
     def initialize(
@@ -119,9 +119,8 @@ class LiquidityPool(Blueprint):
         ctx: Context,
         token_a: TokenUid,
         token_b: TokenUid,
-        lp_token: TokenUid,
+        name: str,
         fee: Amount,
-        fee_to: Address,
     ) -> None:
         """Initialize the liquidity pool for the pair token_a/token_b.
 
@@ -132,21 +131,37 @@ class LiquidityPool(Blueprint):
         if token_a > token_b:
             raise NCFail("token_a must be smaller than token_b by sort order")
 
-        # Fees.
-        if fee > 50:
-            raise NCFail("fee cannot be greater than 5%")
+        self.name = name
+        self.volume = 0
+        self.transactions = 0
+
+        self.owner = ctx.address
+        self.fee_to = ctx.address
+
+        # LP Fees.
+        if fee > 20:
+            raise NCFail("fee too high")
+        if fee < 0:
+            raise NCFail("invalid fee")
+
         self.fee_numerator = fee
         self.fee_denominator = 1000
-        # if self.fee_numerator > self.fee_denominator:
-        #     raise NCFail("invalid fee")
+        self.accumulated_fee[token_a] = 0
+        self.accumulated_fee[token_b] = 0
 
         self.token_a = token_a
         self.token_b = token_b
-        self.lp_token = lp_token
+        # self.lp_token = lp_token
         # self.fee = fee
 
-        self.total_balance_a = 0
-        self.total_balance_b = 0
+        self.balance_a = 0
+        self.balance_b = 0
+
+        self.volume_a = 0
+        self.volume_b = 0
+
+        # self.total_balance_a = 0
+        # self.total_balance_b = 0
 
         action_a, action_b = self._get_actions_in_in(ctx)
         self.reserve_a = action_a.amount
@@ -185,6 +200,7 @@ class LiquidityPool(Blueprint):
             raise NCFail("only token_a and token_b are allowed")
         action_a = ctx.actions[self.token_a]
         action_b = ctx.actions[self.token_b]
+        self.last_activity_timestamp = ctx.timestamp
         return action_a, action_b
 
     def _get_actions_in_out(self, ctx: Context) -> tuple[NCAction, NCAction]:
@@ -205,21 +221,22 @@ class LiquidityPool(Blueprint):
 
         return action_in, action_out
 
-    def _update_balance(self, to: Address, amount: Amount, token: TokenUid) -> None:
-        """Update balance for a given change."""
+    def _update_balance(self, amount: Amount, token: TokenUid) -> None:
+        # """Update balance for a given change."""
+        """ "For the MVP all changes will be deposited in the owner address"""
         if amount == 0:
             return
 
         if token == self.token_a:
-            self.balance_a[to] = self.balance_a.get(to, 0) + amount
-            self.total_balance_a += amount
+            self.balance_a = self.balance_a + amount
+            # self.total_balance_a += amount
         elif token == self.token_b:
-            self.balance_b[to] = self.balance_b.get(to, 0) + amount
-            self.total_balance_b += amount
+            self.balance_b = self.balance_b + amount
+            # self.total_balance_b += amount
         else:
             raise NCFail("should never happen")
 
-    def _get_reserve(self, token_uid: TokenUid) -> None:
+    def _get_reserve(self, token_uid: TokenUid) -> Amount:
         if token_uid == self.token_a:
             return self.reserve_a
         elif token_uid == self.token_b:
@@ -227,7 +244,7 @@ class LiquidityPool(Blueprint):
         else:
             raise NCFail("should never happen")
 
-    def _update_reserve(self, amount, token_uid) -> None:
+    def _update_reserve(self, amount: Amount, token_uid: TokenUid) -> None:
         if token_uid == self.token_a:
             self.reserve_a += amount
         elif token_uid == self.token_b:
@@ -236,35 +253,43 @@ class LiquidityPool(Blueprint):
             raise NCFail("should never happen")
 
     @public
-    def swap_exact_tokens_for_tokens(self, ctx: Context, to: Address) -> SwapResult:
+    def swap_exact_tokens_for_tokens(self, ctx: Context) -> SwapResult:
         """Swaps an exact amount of input tokens for as many output tokens as possible."""
         action_in, action_out = self._get_actions_in_out(ctx)
         reserve_in = self._get_reserve(action_in.token_uid)
         reserve_out = self._get_reserve(action_out.token_uid)
 
         amount_in = action_in.amount
+        self.accumulated_fee[action_in.token_uid] += (
+            amount_in * self.fee_numerator // self.fee_denominator
+        )
         amount_out = self.get_amount_out(action_in.amount, reserve_in, reserve_out)
-        if reserve_out < amount_out:
+        if reserve_out < amount_out:  # type: ignore
             raise NCFail("insufficient funds")
         if action_out.amount > amount_out:
             raise NCFail("amount out is too high")
 
-        change_out = amount_out - action_out.amount
-        self._update_balance(to, change_out, action_out.token_uid)
+        slippage_in = amount_out - action_out.amount
+        self._update_balance(slippage_in, action_out.token_uid)
         self._update_reserve(amount_in, action_in.token_uid)
         self._update_reserve(-amount_out, action_out.token_uid)
+        self.transactions += 1
+
+        if action_in.token_uid == self.token_a:
+            self.volume_a += amount_in
+        if action_in.token_uid == self.token_b:
+            self.volume_b += amount_in
 
         return SwapResult(
             action_in.amount,
-            0,
+            slippage_in,
             action_in.token_uid,
             amount_out,
-            change_out,
             action_out.token_uid,
         )
 
     @public
-    def swap_tokens_for_exact_tokens(self, ctx: Context, to: Address) -> SwapResult:
+    def swap_tokens_for_exact_tokens(self, ctx: Context) -> SwapResult:
         """Receive an exact amount of output tokens for as few input tokens as possible."""
         action_in, action_out = self._get_actions_in_out(ctx)
         reserve_in = self._get_reserve(action_in.token_uid)
@@ -275,26 +300,34 @@ class LiquidityPool(Blueprint):
             raise NCFail("insufficient funds")
 
         amount_in = self.get_amount_in(action_out.amount, reserve_in, reserve_out)
+        self.accumulated_fee[action_in.token_uid] += (
+            amount_in * self.fee_numerator // self.fee_denominator
+        )
         if action_in.amount < amount_in:
             raise NCFail("amount in is too low")
 
-        change_in = action_in.amount - amount_in
-        self._update_balance(to, change_in, action_in.token_uid)
+        slippage_in = action_in.amount - amount_in
+        self._update_balance(slippage_in, action_in.token_uid)
         self._update_reserve(amount_in, action_in.token_uid)
         self._update_reserve(-amount_out, action_out.token_uid)
 
+        self.transactions += 1
+        if action_in.token_uid == self.token_a:
+            self.volume_a += amount_in
+        if action_in.token_uid == self.token_b:
+            self.volume_b += amount_in
+
         return SwapResult(
-            amount_in,
-            change_in,
+            action_in.amount,
+            slippage_in,
             action_in.token_uid,
-            action_out.amount,
-            0,
+            amount_out,
             action_out.token_uid,
         )
 
     def balance_of(self, owner: Address) -> tuple[Amount, Amount]:
         """Get owner's balance."""
-        return (self.balance_a.get(owner, 0), self.balance_b.get(owner, 0))
+        return (self.balance_a, self.balance_b)
 
     def get_amount_out(
         self, amount_in: Amount, reserve_in: Amount, reserve_out: Amount
@@ -303,6 +336,8 @@ class LiquidityPool(Blueprint):
         a = self.fee_denominator - self.fee_numerator
         b = self.fee_denominator
         amount_out = (reserve_out * amount_in * a) // (reserve_in * b + amount_in * a)
+        if amount_out > reserve_out:
+            amount_out = reserve_out**0.99
         return amount_out
 
     def get_amount_in(
@@ -311,7 +346,12 @@ class LiquidityPool(Blueprint):
         """Return the minimum amount_in for an exact amount_out."""
         a = self.fee_denominator - self.fee_numerator
         b = self.fee_denominator
-        amount_in = (reserve_in * amount_out * b) // ((reserve_out - amount_out) * a)
+        if amount_out >= reserve_out:
+            amount_in = self.quote(amount_out, reserve_out, reserve_in)
+        else:
+            amount_in = (reserve_in * amount_out * b) // (
+                (reserve_out - amount_out) * a
+            )
         return amount_in
 
     def quote(self, amount_a: Amount, reserve_a: Amount, reserve_b: Amount) -> Amount:
@@ -328,10 +368,10 @@ class LiquidityPool(Blueprint):
 
         optimal_b = self.quote(action_a.amount, self.reserve_a, self.reserve_b)
         if optimal_b <= action_b.amount:
-            require(optimal_b >= amount_b_min, NCFail, "insufficient b amount")
+            require(optimal_b >= amount_b_min, "insufficient b amount")
 
             change = action_b.amount - optimal_b
-            self._update_balance(to, change, self.token_b)
+            self._update_balance(change, self.token_b)
 
             self.reserve_a += action_a.amount
             self.reserve_b += optimal_b
@@ -339,41 +379,119 @@ class LiquidityPool(Blueprint):
         else:
             optimal_a = self.quote(action_b.amount, self.reserve_b, self.reserve_a)
             assert optimal_a <= action_a.amount
-            require(optimal_a >= amount_a_min, NCFail, "insufficient a amount")
+            require(optimal_a >= amount_a_min, "insufficient a amount")
 
             change = action_a.amount - optimal_a
-            self._update_balance(to, change, self.token_a)
+            self._update_balance(change, self.token_a)
 
             self.reserve_a += optimal_a
             self.reserve_b += action_b.amount
 
     @public
-    def remove_liquidity(
-        self, ctx: Context, amount_a_min: Amount, amount_b_min: Amount, to: Address
-    ) -> None:
-        """Remove liquidity from the pool."""
-        action_a, action_b = self._get_actions_in_in(ctx)
-
-        raise NCFail("not implemented yet")
-
-    @public
-    def set_owner(self, ctx: Context, owner: TxOutputScript) -> None:
+    def set_fee_to(self, ctx: Context, fee_to: AddressB58) -> None:
         if len(ctx.actions) != 0:
             raise NCFail("must be a single call")
-        self.owner = owner
+        if ctx.address != self.owner:
+            raise NCFail("only owner can set fee destination")
+        self.fee_to = decode_address(fee_to)
 
     @public
-    def mint(self, ctx: Context, to: Address) -> None:
-        pass
+    def withdrawal_fee(self, ctx: Context) -> None:
+        if ctx.address != self.fee_to:
+            raise NCFail("only fee destination can withdraw")
+        action_a, action_b = self._get_actions_out_out(ctx)
 
-    @public
-    def burn(self, ctx: Context, to: Address) -> None:
-        pass
+    def front_quote_exact_tokens_for_tokens(
+        self, amount_in: Amount, token_in: TokenUid
+    ) -> dict[str, float]:
+        """
+        Calculate the amount of tokens received for a given input amount.
 
-    @public
-    def skim(self, ctx: Context, to: Address) -> None:
-        pass
+        This method provides a quote for the exact amount of tokens one would receive
+        for a specified amount of input tokens, based on the current reserves.
 
-    @public
-    def sync(self, ctx: Context) -> None:
-        pass
+        Parameters:
+        - amount_in (Amount): The amount of input tokens.
+
+        Returns:
+        - Amount: The calculated amount of tokens that would be received.
+        """
+        if token_in == self.token_a:
+            amount_out = self.get_amount_out(amount_in, self.reserve_a, self.reserve_b)
+            quote = self.quote(amount_in, self.reserve_a, self.reserve_b)
+        else:
+            amount_out = self.get_amount_out(amount_in, self.reserve_b, self.reserve_a)
+            quote = self.quote(amount_in, self.reserve_b, self.reserve_a)
+        if amount_out == 0:
+            price_impact = 0
+        else:
+            price_impact = (
+                100 * (quote - amount_out) / amount_out - self.fee_numerator / 10
+            )
+        if price_impact < 0:
+            price_impact = 0
+        return {"amount_out": amount_out, "price_impact": price_impact}
+
+    def front_quote_tokens_for_exact_tokens(
+        self, amount_out: Amount, token_in: TokenUid
+    ) -> dict[str, float]:
+        """
+        Calculate the required amount of input tokens to obtain a specific amount of output tokens.
+
+        This method uses the reserves of two tokens (A and B) to determine how much of token A is needed
+        to receive a specific amount of token B.
+
+        Parameters:
+        - amount_out (Amount): The desired amount of output tokens.
+
+        Returns:
+        - Amount: The required amount of input tokens to achieve the desired output.
+        """
+        # amount_in = self.get_amount_in(amount_out, self.reserve_a, self.reserve_b)
+        # quote = self.quote(amount_out, self.reserve_a, self.reserve_b)
+        if token_in == self.token_a:
+            amount_in = self.get_amount_in(amount_out, self.reserve_a, self.reserve_b)
+            quote = self.quote(amount_in, self.reserve_a, self.reserve_b)
+        else:
+            amount_in = self.get_amount_in(amount_out, self.reserve_b, self.reserve_a)
+            quote = self.quote(amount_in, self.reserve_b, self.reserve_a)
+
+        price_impact = 100 * (quote - amount_out) / amount_out - self.fee_numerator / 10
+        if price_impact < 0:
+            price_impact = 0
+        if price_impact >= 100:
+            price_impact = 100
+        return {"amount_in": amount_in, "price_impact": price_impact}
+
+    def pool_info(
+        self,
+    ) -> dict[str, str]:
+
+        return {
+            "name": self.name,
+            "version": "0.1",
+            "owner": self.owner.hex(),
+            "fee_to": self.fee_to.hex(),
+            "token0": self.token_a.hex(),
+            "token1": self.token_b.hex(),
+            "fee": str(self.fee_numerator / 10),
+        }
+
+    def pool_data(
+        self,
+    ) -> dict[str, float]:
+
+        return {
+            "reserve0": self.reserve_a,
+            "reserve1": self.reserve_b,
+            "fee": self.fee_numerator / 10,
+            "volume0": self.volume_a,
+            "volume1": self.volume_b,
+            "fee0": self.accumulated_fee[self.token_a],
+            "fee1": self.accumulated_fee[self.token_b],
+            "slippage0": self.balance_a,
+            "slippage1": self.balance_b,
+            "dzr_rewards": 1000,
+            "transactions": self.transactions,
+            "last_actvity_timestamp": self.last_activity_timestamp,
+        }
