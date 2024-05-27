@@ -378,7 +378,7 @@ class MVP_Pool(Blueprint):
             "reserve0": self.reserve_a,
             "reserve1": self.reserve_b,
             "fee": self.fee_numerator / self.fee_denominator,
-            "volume": self.volume,
+            "volume": self.volume_a,
             "fee0": self.accumulated_fee[self.token_a],
             "fee1": self.accumulated_fee[self.token_b],
             "slippage0": self.balance_a,
