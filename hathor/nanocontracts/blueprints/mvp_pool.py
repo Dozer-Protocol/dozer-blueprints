@@ -3,7 +3,7 @@ from typing import NamedTuple
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import Context, NCAction, NCActionType, public
-from hathor.types import Address, Amount, TokenUid, TxOutputScript
+from hathor.types import Address, Amount, Timestamp, TokenUid, TxOutputScript
 
 
 class SwapResult(NamedTuple):
@@ -97,8 +97,11 @@ class MVP_Pool(Blueprint):
     fee_denominator: int
 
     accumulated_fee: dict[TokenUid, Amount]
-    volume: Amount
+    # volume: Amount
     transactions: int
+    last_activity_timestamp: Timestamp
+    volume_a: Amount
+    volume_b: Amount
 
     @public
     def initialize(
@@ -118,7 +121,7 @@ class MVP_Pool(Blueprint):
         if token_a > token_b:
             raise NCFail("token_a must be smaller than token_b by sort order")
 
-        self.volume = 0
+        # self.volume = 0
         self.transactions = 0
         # self.accumulated_fee = 0
 
@@ -140,6 +143,9 @@ class MVP_Pool(Blueprint):
 
         self.balance_a = 0
         self.balance_b = 0
+
+        self.volume_a = 0
+        self.volume_b = 0
 
         # self.total_balance_a = 0
         # self.total_balance_b = 0
@@ -172,6 +178,7 @@ class MVP_Pool(Blueprint):
             raise NCFail("only token_a and token_b are allowed")
         action_a = ctx.actions[self.token_a]
         action_b = ctx.actions[self.token_b]
+        self.last_activity_timestamp = ctx.timestamp
         return action_a, action_b
 
     def _get_actions_in_out(self, ctx: Context) -> tuple[NCAction, NCAction]:
@@ -200,10 +207,8 @@ class MVP_Pool(Blueprint):
 
         if token == self.token_a:
             self.balance_a = self.balance_a + amount
-            # self.total_balance_a += amount
         elif token == self.token_b:
             self.balance_b = self.balance_b + amount
-            # self.total_balance_b += amount
         else:
             raise NCFail("should never happen")
 
@@ -245,7 +250,7 @@ class MVP_Pool(Blueprint):
         self._update_reserve(amount_in, action_in.token_uid)
         self._update_reserve(-amount_out, action_out.token_uid)
         self.transactions += 1
-        self.volume += amount_in
+        # self.volume += amount_in
 
         return SwapResult(
             action_in.amount,
@@ -278,7 +283,7 @@ class MVP_Pool(Blueprint):
         self._update_reserve(amount_in, action_in.token_uid)
         self._update_reserve(-amount_out, action_out.token_uid)
         self.transactions += 1
-        self.volume += amount_in
+        # self.volume += amount_in
 
         return SwapResult(
             action_in.amount,
@@ -443,3 +448,36 @@ class MVP_Pool(Blueprint):
         if price_impact >= 100:
             price_impact = 100
         return {"amount_in": amount_in, "price_impact": price_impact}
+
+    def pool_info(
+        self,
+    ) -> dict[str, str]:
+
+        return {
+            # "name": self.name,
+            "version": "0.1",
+            # "owner": self.owner.hex(),
+            # "fee_to": self.fee_to.hex(),
+            "token0": self.token_a.hex(),
+            "token1": self.token_b.hex(),
+            "fee": str(self.fee_numerator / 10),
+        }
+
+    def pool_data(
+        self,
+    ) -> dict[str, float]:
+
+        return {
+            "reserve0": self.reserve_a,
+            "reserve1": self.reserve_b,
+            "fee": self.fee_numerator / 10,
+            "volume0": self.volume_a,
+            "volume1": self.volume_b,
+            "fee0": self.accumulated_fee[self.token_a],
+            "fee1": self.accumulated_fee[self.token_b],
+            "slippage0": self.balance_a,
+            "slippage1": self.balance_b,
+            "dzr_rewards": 1000,
+            "transactions": self.transactions,
+            "last_actvity_timestamp": self.last_activity_timestamp,
+        }

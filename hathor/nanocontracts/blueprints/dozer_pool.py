@@ -228,11 +228,9 @@ class Liquidity_Pool(Blueprint):
             return
 
         if token == self.token_a:
-            self.balance_a = self.balance_a + amount
-            # self.total_balance_a += amount
+            self.balance_a += amount
         elif token == self.token_b:
-            self.balance_b = self.balance_b + amount
-            # self.total_balance_b += amount
+            self.balance_b += amount
         else:
             raise NCFail("should never happen")
 
