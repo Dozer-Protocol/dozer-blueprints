@@ -470,7 +470,7 @@ class MVP_Pool(Blueprint):
         return {
             "reserve0": self.reserve_a,
             "reserve1": self.reserve_b,
-            # "fee": self.fee_numerator / 10,
+            "fee": self.fee_numerator / 10,
             "volume0": self.volume_a + self.volume_b * self.reserve_a / self.reserve_b,
             "volume1": self.volume_b + self.volume_a * self.reserve_b / self.reserve_a,
             "fee0": self.accumulated_fee[self.token_a]
