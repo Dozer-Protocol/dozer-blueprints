@@ -479,16 +479,12 @@ class MVP_Pool(Blueprint):
             "reserve0": self.reserve_a,
             "reserve1": self.reserve_b,
             "fee": self.fee_numerator / 10,
-            "volume0": self.volume_a + self.volume_b * self.reserve_a / self.reserve_b,
-            "volume1": self.volume_b + self.volume_a * self.reserve_b / self.reserve_a,
-            "fee0": self.accumulated_fee[self.token_a]
-            + self.accumulated_fee[self.token_b] * self.reserve_a / self.reserve_b,
-            "fee1": self.accumulated_fee[self.token_b]
-            + self.accumulated_fee[self.token_a] * self.reserve_b / self.reserve_a,
-            "slippage0": self.balance_a
-            + self.balance_b * self.reserve_a / self.reserve_b,
-            "slippage1": self.balance_b
-            + self.balance_a * self.reserve_b / self.reserve_a,
+            "volume0": self.volume_a,
+            "volume1": self.volume_b,
+            "fee0": self.accumulated_fee[self.token_a],
+            "fee1": self.accumulated_fee[self.token_b],
+            "slippage0": self.balance_a,
+            "slippage1": self.balance_b,
             "dzr_rewards": 1000,
             "transactions": self.transactions,
             "last_actvity_timestamp": self.last_activity_timestamp,
