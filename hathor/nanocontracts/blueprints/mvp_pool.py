@@ -250,7 +250,11 @@ class MVP_Pool(Blueprint):
         self._update_reserve(amount_in, action_in.token_uid)
         self._update_reserve(-amount_out, action_out.token_uid)
         self.transactions += 1
-        # self.volume += amount_in
+
+        if action_in.token_uid == self.token_a:
+            self.volume_a += amount_in
+        if action_in.token_uid == self.token_b:
+            self.volume_b += amount_in
 
         return SwapResult(
             action_in.amount,
@@ -283,7 +287,11 @@ class MVP_Pool(Blueprint):
         self._update_reserve(amount_in, action_in.token_uid)
         self._update_reserve(-amount_out, action_out.token_uid)
         self.transactions += 1
-        # self.volume += amount_in
+
+        if action_in.token_uid == self.token_a:
+            self.volume_a += amount_in
+        if action_in.token_uid == self.token_b:
+            self.volume_b += amount_in
 
         return SwapResult(
             action_in.amount,
