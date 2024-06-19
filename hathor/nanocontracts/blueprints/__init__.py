@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Type
 
 from hathor.nanocontracts.blueprints.bet import Bet
 from hathor.nanocontracts.blueprints.mvp_pool import MVP_Pool
+from hathor.nanocontracts.blueprints.dozer_pool import Dozer_Pool
 
 if TYPE_CHECKING:
     from hathor.nanocontracts.blueprint import Blueprint
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 _blueprints_mapper: dict[str, Type["Blueprint"]] = {
     "Bet": Bet,
     "MVP_Pool": MVP_Pool,
+    "Dozer_Pool": Dozer_Pool,
 }
 
 __all__ = ["Bet", "MVP_Pool"]

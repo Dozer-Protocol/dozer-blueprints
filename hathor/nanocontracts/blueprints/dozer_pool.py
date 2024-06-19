@@ -141,7 +141,6 @@ class Dozer_Pool(Blueprint):
         self.accumulated_fee[token_a] = 0
         self.accumulated_fee[token_b] = 0
 
-        self.total_liquidity = 0
         # self.user_liquidity = {}
 
         self.token_a = token_a
@@ -161,6 +160,7 @@ class Dozer_Pool(Blueprint):
         action_a, action_b = self._get_actions_in_in(ctx)
         self.reserve_a = action_a.amount
         self.reserve_b = action_b.amount
+        self.total_liquidity = action_a.amount
 
     def get_reserves(self) -> tuple[Amount, Amount]:
         """Return the current reserves."""
@@ -178,6 +178,15 @@ class Dozer_Pool(Blueprint):
             raise NCFail("only deposits allowed for token_a")
         if action_b.type != NCActionType.DEPOSIT:
             raise NCFail("only deposits allowed for token_b")
+        return action_a, action_b
+
+    def _get_actions_out_out(self, ctx: Context) -> tuple[NCAction, NCAction]:
+        """Return token_a and token_b actions. It also validates that both are withdrawals."""
+        action_a, action_b = self._get_actions_a_b(ctx)
+        if action_a.type != NCActionType.WITHDRAWAL:
+            raise NCFail("only withdrawals allowed for token_a")
+        if action_b.type != NCActionType.WITHDRAWAL:
+            raise NCFail("only withdrawals allowed for token_b")
         return action_a, action_b
 
     def _get_actions_a_b(self, ctx: Context) -> tuple[NCAction, NCAction]:
@@ -346,21 +355,26 @@ class Dozer_Pool(Blueprint):
 
     @public
     def add_liquidity(
-        self, ctx: Context, amount_a_min: Amount, amount_b_min: Amount
+        self,
+        ctx: Context,
+        # amount_a_min: Amount, amount_b_min: Amount
     ) -> None:
         """Add liquidity to the pool."""
         action_a, action_b = self._get_actions_in_in(ctx)
 
         optimal_b = self.quote(action_a.amount, self.reserve_a, self.reserve_b)
         if optimal_b <= action_b.amount:
-            require(optimal_b >= amount_b_min, "insufficient b amount")
+            # require(optimal_b >= amount_b_min, "insufficient b amount")
 
             change = action_b.amount - optimal_b
             self._update_balance(ctx.address, change, self.token_b)
 
-            self.total_liquidity += action_a.amount
             self.user_liquidity[ctx.address] = (
-                self.user_liquidity.get(ctx.address, 0) + action_a.amount
+                self.user_liquidity.get(ctx.address, 0)
+                + self.total_liquidity * action_a.amount / self.reserve_a
+            )
+            self.total_liquidity += (
+                self.total_liquidity * action_a.amount / self.reserve_a
             )
             self.reserve_a += action_a.amount
             self.reserve_b += optimal_b
@@ -368,16 +382,39 @@ class Dozer_Pool(Blueprint):
         else:
             optimal_a = self.quote(action_b.amount, self.reserve_b, self.reserve_a)
             assert optimal_a <= action_a.amount
-            require(optimal_a >= amount_a_min, "insufficient a amount")
+            # require(optimal_a >= amount_a_min, "insufficient a amount")
 
             change = action_a.amount - optimal_a
             self._update_balance(ctx.address, change, self.token_a)
-            self.total_liquidity += optimal_a
             self.user_liquidity[ctx.address] = (
-                self.user_liquidity.get(ctx.address, 0) + optimal_a
+                self.user_liquidity.get(ctx.address, 0)
+                + self.total_liquidity * optimal_a / self.reserve_a
             )
+            self.total_liquidity += self.total_liquidity * optimal_a / self.reserve_a
             self.reserve_a += optimal_a
             self.reserve_b += action_b.amount
+
+    @public
+    def remove_liquidity(self, ctx: Context):
+        """Remove liquidity from the pool."""
+        action_a, action_b = self._get_actions_out_out(ctx)
+        max_withdraw = (
+            self.user_liquidity[ctx.address] * self.reserve_a // self.total_liquidity
+        )
+        if max_withdraw < action_a.amount:
+            raise NCFail("insufficient liquidity")
+        optimal_b = self.quote(action_a.amount, self.reserve_a, self.reserve_b)
+        if optimal_b < action_b.amount:
+            raise NCFail("insufficient b amount")
+        change = optimal_b - action_b.amount
+        self._update_balance(ctx.address, change, self.token_b)
+        self.total_liquidity -= self.total_liquidity * action_a.amount / self.reserve_a
+        self.user_liquidity[ctx.address] = (
+            self.user_liquidity.get(ctx.address, 0)
+            - self.total_liquidity * action_a.amount / self.reserve_a
+        )
+        self.reserve_a -= action_a.amount
+        self.reserve_b -= optimal_b
 
     def front_end_api_pool(
         self,
