@@ -368,14 +368,12 @@ class Dozer_Pool(Blueprint):
 
             change = action_b.amount - optimal_b
             self._update_balance(ctx.address, change, self.token_b)
+            liquidity_increase = self.total_liquidity * action_a.amount / self.reserve_a
 
             self.user_liquidity[ctx.address] = (
-                self.user_liquidity.get(ctx.address, 0)
-                + self.total_liquidity * action_a.amount / self.reserve_a
+                self.user_liquidity.get(ctx.address, 0) + liquidity_increase
             )
-            self.total_liquidity += (
-                self.total_liquidity * action_a.amount / self.reserve_a
-            )
+            self.total_liquidity += liquidity_increase
             self.reserve_a += action_a.amount
             self.reserve_b += optimal_b
 
@@ -386,11 +384,11 @@ class Dozer_Pool(Blueprint):
 
             change = action_a.amount - optimal_a
             self._update_balance(ctx.address, change, self.token_a)
+            liquidity_increase = self.total_liquidity * optimal_a / self.reserve_a
             self.user_liquidity[ctx.address] = (
-                self.user_liquidity.get(ctx.address, 0)
-                + self.total_liquidity * optimal_a / self.reserve_a
+                self.user_liquidity.get(ctx.address, 0) + liquidity_increase
             )
-            self.total_liquidity += self.total_liquidity * optimal_a / self.reserve_a
+            self.total_liquidity += liquidity_increase
             self.reserve_a += optimal_a
             self.reserve_b += action_b.amount
 
@@ -398,6 +396,8 @@ class Dozer_Pool(Blueprint):
     def remove_liquidity(self, ctx: Context):
         """Remove liquidity from the pool."""
         action_a, action_b = self._get_actions_out_out(ctx)
+        if self.user_liquidity[ctx.address] == 0:
+            raise NCFail("no liquidity to remove")
         max_withdraw = (
             self.user_liquidity[ctx.address] * self.reserve_a // self.total_liquidity
         )
