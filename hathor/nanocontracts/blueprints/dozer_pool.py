@@ -154,8 +154,8 @@ class Dozer_Pool(Blueprint):
         self.volume_a = 0
         self.volume_b = 0
 
-        # self.total_balance_a = 0
-        # self.total_balance_b = 0
+        self.total_balance_a = 0
+        self.total_balance_b = 0
 
         action_a, action_b = self._get_actions_in_in(ctx)
         self.reserve_a = action_a.amount
@@ -321,7 +321,7 @@ class Dozer_Pool(Blueprint):
 
     def balance_of(self, owner: Address) -> tuple[Amount, Amount]:
         """Get owner's balance."""
-        return (self.balance_a[owner], self.balance_b[owner])
+        return (self.balance_a.get(owner, 0), self.balance_b.get(owner, 0))
 
     def get_amount_out(
         self, amount_in: Amount, reserve_in: Amount, reserve_out: Amount
