@@ -301,7 +301,7 @@ class Dozer_Pool(Blueprint):
             raise NCFail("amount in is too low")
 
         slippage_in = action_in.amount - amount_in
-        self._update_balance(ctx.address, slippage_in, action_out.token_uid)
+        self._update_balance(ctx.address, slippage_in, action_in.token_uid)
         self._update_reserve(amount_in, action_in.token_uid)
         self._update_reserve(-amount_out, action_out.token_uid)
         self.transactions += 1
