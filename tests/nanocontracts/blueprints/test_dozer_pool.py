@@ -337,7 +337,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
 
         return storage, ctx
 
-    def test_add_liquidity_change_a(self) -> None:
+    def test_add_liquidity_change_a(self) -> tuple[NCMemoryStorage, Context]:
         storage = self.nc_storage
         self._initialize_contract(1_000_00, 500_000)
 
@@ -377,8 +377,9 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         self.assertEqual(
             get_liquidity, self.runner.call_private_method("liquidity_of", ctx.address)
         )
+        return storage, ctx
 
-    def test_add_liquidity_change_b(self) -> None:
+    def test_add_liquidity_change_b(self) -> tuple[NCMemoryStorage, Context]:
         storage = self.nc_storage
         self._initialize_contract(1_000_00, 500_000)
 
@@ -418,6 +419,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         self.assertEqual(
             get_liquidity, self.runner.call_private_method("liquidity_of", ctx.address)
         )
+        return storage, ctx
 
     def test_remove_liquidity_no_change(self) -> None:
         storage, ctx_add = self.test_add_liquidity_no_change()
@@ -451,6 +453,48 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
 
         self.assertEqual(
             (0, 0), self.runner.call_private_method("balance_of", ctx.address)
+        )
+        self.assertBalanceReserve(storage)
+
+        user_liquidity_after = user_liquidity - (amount_a) * total_liquidity / reserve_a
+
+        self.assertEqual(
+            user_liquidity_after,
+            self.runner.call_private_method("liquidity_of", ctx.address),
+        )
+
+    def test_remove_liquidity_with_change(self) -> None:
+        storage, ctx_add = self.test_add_liquidity_no_change()
+
+        reserve_a = storage.get_balance(self.token_a)
+        reserve_b = storage.get_balance(self.token_b)
+
+        amount_a = 10_00
+        amount_b = self.runner.call_private_method(
+            "quote", amount_a, reserve_a, reserve_b
+        )
+        change = 10
+
+        amount_b -= change  # in this case the user is asking for less b tokens than he has right to receive
+
+        reserve_a = storage.get("reserve_a")
+        total_liquidity = storage.get("total_liquidity")
+
+        ctx = self._prepare_remove_liquidity_context(amount_a, amount_b)
+
+        ctx.address = ctx_add.address
+        user_liquidity = self.runner.call_private_method("liquidity_of", ctx.address)
+
+        self.runner.call_public_method("remove_liquidity", ctx)
+
+        self.assertEqual(reserve_a - amount_a, storage.get_balance(self.token_a))
+        self.assertEqual(reserve_b - amount_b, storage.get_balance(self.token_b))
+
+        reserve_after = (reserve_a - amount_a, reserve_b - amount_b - change)
+        self.assertEqual(reserve_after, self.runner.call_private_method("get_reserves"))
+
+        self.assertEqual(
+            (0, change), self.runner.call_private_method("balance_of", ctx.address)
         )
         self.assertBalanceReserve(storage)
 
