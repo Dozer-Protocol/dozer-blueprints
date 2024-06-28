@@ -323,6 +323,10 @@ class Dozer_Pool(Blueprint):
         """Get owner's balance."""
         return (self.balance_a.get(owner, 0), self.balance_b.get(owner, 0))
 
+    def liquidity_of(self, owner: Address) -> float:
+        """Get owner's balance."""
+        return self.user_liquidity.get(owner, 0)
+
     def get_amount_out(
         self, amount_in: Amount, reserve_in: Amount, reserve_out: Amount
     ) -> Amount:
@@ -408,11 +412,12 @@ class Dozer_Pool(Blueprint):
             raise NCFail("insufficient b amount")
         change = optimal_b - action_b.amount
         self._update_balance(ctx.address, change, self.token_b)
-        self.total_liquidity -= self.total_liquidity * action_a.amount / self.reserve_a
         self.user_liquidity[ctx.address] = (
             self.user_liquidity.get(ctx.address, 0)
             - self.total_liquidity * action_a.amount / self.reserve_a
         )
+        self.total_liquidity -= self.total_liquidity * action_a.amount / self.reserve_a
+        ## makes sense change total liquidity after removing user liquidity?
         self.reserve_a -= action_a.amount
         self.reserve_b -= optimal_b
 

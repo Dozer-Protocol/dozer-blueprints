@@ -8,6 +8,7 @@ from hathor.nanocontracts.runner import Runner
 from hathor.nanocontracts.storage import NCMemoryStorage
 from hathor.nanocontracts.storage.memory_storage import NCMemoryStorageFactory
 from hathor.nanocontracts.types import Context, NCAction, NCActionType
+from hathor.types import Amount
 from hathor.util import not_none
 from hathor.wallet import KeyPair
 from tests import unittest
@@ -291,7 +292,20 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             timestamp=self.get_current_timestamp(),
         )
 
-    def test_add_liquidity_no_change(self) -> None:
+    def _prepare_remove_liquidity_context(self, amount_a, amount_b):
+        actions = [
+            NCAction(NCActionType.WITHDRAWAL, self.token_a, amount_a),
+            NCAction(NCActionType.WITHDRAWAL, self.token_b, amount_b),
+        ]
+        address, _ = self._get_any_address()
+        return Context(
+            actions,
+            self._get_any_tx(),
+            address,  # type: ignore
+            timestamp=self.get_current_timestamp(),
+        )
+
+    def test_add_liquidity_no_change(self) -> tuple[NCMemoryStorage, Context]:
         storage = self.nc_storage
         self._initialize_contract(1_000_00, 500_000)
 
@@ -303,6 +317,9 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             "quote", amount_a, reserve_a, reserve_b
         )
 
+        reserve_a = storage.get("reserve_a")
+        total_liquidity = storage.get("total_liquidity")
+
         ctx = self._prepare_add_liquidity_context(amount_a, amount_b)
         self.runner.call_public_method("add_liquidity", ctx)
 
@@ -311,6 +328,14 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
 
         reserve_after = (reserve_a + amount_a, reserve_b + amount_b)
         self.assertEqual(reserve_after, self.runner.call_private_method("get_reserves"))
+
+        get_liquidity = (amount_a) * total_liquidity / reserve_a
+
+        self.assertEqual(
+            get_liquidity, self.runner.call_private_method("liquidity_of", ctx.address)
+        )
+
+        return storage, ctx
 
     def test_add_liquidity_change_a(self) -> None:
         storage = self.nc_storage
@@ -325,10 +350,10 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         )
         change = 1
 
-        amount_a_min = amount_a
-        amount_b_min = amount_b
-
         amount_a += change
+
+        reserve_a = storage.get("reserve_a")
+        total_liquidity = storage.get("total_liquidity")
 
         ctx = self._prepare_add_liquidity_context(amount_a, amount_b)
         self.runner.call_public_method("add_liquidity", ctx)
@@ -347,6 +372,12 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         )
         self.assertBalanceReserve(storage)
 
+        get_liquidity = (amount_a - change) * total_liquidity / reserve_a
+
+        self.assertEqual(
+            get_liquidity, self.runner.call_private_method("liquidity_of", ctx.address)
+        )
+
     def test_add_liquidity_change_b(self) -> None:
         storage = self.nc_storage
         self._initialize_contract(1_000_00, 500_000)
@@ -360,10 +391,10 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         )
         change = 1
 
-        amount_a_min = amount_a
-        amount_b_min = amount_b
-
         amount_b += change
+
+        reserve_a = storage.get("reserve_a")
+        total_liquidity = storage.get("total_liquidity")
 
         ctx = self._prepare_add_liquidity_context(amount_a, amount_b)
         self.runner.call_public_method("add_liquidity", ctx)
@@ -381,3 +412,51 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             (0, change), self.runner.call_private_method("balance_of", ctx.address)
         )
         self.assertBalanceReserve(storage)
+
+        get_liquidity = (amount_a) * total_liquidity / reserve_a
+
+        self.assertEqual(
+            get_liquidity, self.runner.call_private_method("liquidity_of", ctx.address)
+        )
+
+    def test_remove_liquidity_no_change(self) -> None:
+        storage, ctx_add = self.test_add_liquidity_no_change()
+
+        reserve_a = storage.get_balance(self.token_a)
+        reserve_b = storage.get_balance(self.token_b)
+
+        amount_a = 10_00
+        amount_b = self.runner.call_private_method(
+            "quote", amount_a, reserve_a, reserve_b
+        )
+
+        reserve_a = storage.get("reserve_a")
+        total_liquidity = storage.get("total_liquidity")
+
+        ctx = self._prepare_remove_liquidity_context(amount_a, amount_b)
+
+        ctx.address = ctx_add.address
+        user_liquidity = self.runner.call_private_method("liquidity_of", ctx.address)
+
+        self.runner.call_public_method("remove_liquidity", ctx)
+
+        self.assertEqual(reserve_a - amount_a, storage.get_balance(self.token_a))
+        self.assertEqual(reserve_b - amount_b, storage.get_balance(self.token_b))
+
+        reserve_after = (reserve_a - amount_a, reserve_b - amount_b)
+        self.assertEqual(reserve_after, self.runner.call_private_method("get_reserves"))
+
+        # self.assertEqual(0, storage.get(f"balance_a:{ctx.address}"))
+        # self.assertEqual(0, storage.get(f"balance_b:{ctx.address}"))
+
+        self.assertEqual(
+            (0, 0), self.runner.call_private_method("balance_of", ctx.address)
+        )
+        self.assertBalanceReserve(storage)
+
+        user_liquidity_after = user_liquidity - (amount_a) * total_liquidity / reserve_a
+
+        self.assertEqual(
+            user_liquidity_after,
+            self.runner.call_private_method("liquidity_of", ctx.address),
+        )
