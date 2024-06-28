@@ -534,8 +534,9 @@ class Dozer_Pool(Blueprint):
         address: Address,
     ) -> dict[str, float]:
         return {
-            "balance_a": self.balance_a[address],
-            "balance_b": self.balance_b[address],
+            "balance_a": self.balance_a.get(address, 0),
+            "balance_b": self.balance_b.get(address, 0),
+            "liquidity": self.user_liquidity.get(address, 0),
         }
 
     def pool_data(
