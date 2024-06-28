@@ -453,6 +453,44 @@ class Dozer_Pool(Blueprint):
             "transactions": self.transactions,
         }
 
+    def front_quote_add_liquidity_in(
+        self, amount_in: Amount, token_in: TokenUid
+    ) -> float:
+        """
+        Calculate the amount of other tokens to include for a given input amount in add liquidity event.
+
+        Parameters:
+        - amount_in (Amount): The amount of input tokens.
+        - token_in (TokenUid): The token to be used as input.
+
+        Returns:
+        - Amount: The calculated amount of other tokens to include.
+        """
+        if token_in == self.token_a:
+            quote = self.quote(amount_in, self.reserve_a, self.reserve_b)
+        else:
+            quote = self.quote(amount_in, self.reserve_b, self.reserve_a)
+        return quote
+
+    def front_quote_add_liquidity_out(
+        self, amount_out: Amount, token_in: TokenUid
+    ) -> float:
+        """
+        Calculate the amount of other tokens to include for a given output amount in add liquidity event.
+
+        Parameters:
+        - amount_out (Amount): The amount of output tokens.
+        - token_in (TokenUid): The token to be used as input.
+
+        Returns:
+        - Amount: The calculated amount of other tokens to include.
+        """
+        if token_in == self.token_a:
+            quote = self.quote(amount_out, self.reserve_b, self.reserve_a)
+        else:
+            quote = self.quote(amount_out, self.reserve_a, self.reserve_b)
+        return quote
+
     def front_quote_exact_tokens_for_tokens(
         self, amount_in: Amount, token_in: TokenUid
     ) -> dict[str, float]:
