@@ -571,10 +571,17 @@ class Dozer_Pool(Blueprint):
         self,
         address: Address,
     ) -> dict[str, float]:
+        max_withdraw_a = int(
+            (self.user_liquidity.get(address, 0) / self.total_liquidity)
+            * self.reserve_a
+        )
+        max_withdraw_b = self.quote(max_withdraw_a, self.reserve_a, self.reserve_b)
         return {
             "balance_a": self.balance_a.get(address, 0),
             "balance_b": self.balance_b.get(address, 0),
             "liquidity": self.user_liquidity.get(address, 0),
+            "max_withdraw_a": max_withdraw_a,
+            "max_withdraw_b": max_withdraw_b,
         }
 
     def pool_data(
@@ -582,6 +589,7 @@ class Dozer_Pool(Blueprint):
     ) -> dict[str, float]:
 
         return {
+            "total_liquidity": self.total_liquidity,
             "reserve0": self.reserve_a,
             "reserve1": self.reserve_b,
             "fee": self.fee_numerator / 10,
