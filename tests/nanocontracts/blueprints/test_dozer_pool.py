@@ -611,3 +611,78 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             (reserve_a_after_remove, reserve_b_after_remove),
             self.runner.call_private_method("get_reserves"),
         )
+
+    def test_multiple_add_and_remove_liquidity(self) -> None:
+        storage = self.nc_storage
+        users = 10
+        ctx_adds = []
+        amounts_a = [
+            100_00,
+            200_00,
+            300_00,
+            400_00,
+            500_00,
+            600_00,
+            700_00,
+            800_00,
+            900_00,
+            1000_00,
+        ]
+        users_liquidity = []
+        self._initialize_contract(1_000_00, 500_000)
+        total_liquidity = storage.get("total_liquidity")
+        reserve_a = storage.get("reserve_a")
+        reserve_b = storage.get("reserve_b")
+        for i in range(users):
+            amount_a = amounts_a[i]
+            amount_b = self.runner.call_private_method(
+                "quote", amount_a, reserve_a, reserve_b
+            )
+
+            ctx = self._prepare_add_liquidity_context(amount_a, amount_b)
+            self.runner.call_public_method("add_liquidity", ctx)
+
+            self.assertEqual(reserve_a + amount_a, storage.get("reserve_a"))
+            self.assertEqual(reserve_b + amount_b, storage.get("reserve_b"))
+
+            user_liquidity = amounts_a[i] * total_liquidity / reserve_a
+            self.assertEqual(
+                total_liquidity + user_liquidity, storage.get("total_liquidity")
+            )
+
+            users_liquidity.append(user_liquidity)
+            ctx_adds.append(ctx)
+
+            reserve_a += amount_a
+            reserve_b += amount_b
+            total_liquidity += user_liquidity
+
+        for i in range(users):
+            self.assertEqual(
+                users_liquidity[i],
+                self.runner.call_private_method("liquidity_of", ctx_adds[i].address),
+            )
+
+        total_liquidity = storage.get("total_liquidity")
+        reserve_a = storage.get("reserve_a")
+        reserve_b = storage.get("reserve_b")
+        for i in range(users):
+            amount_a = amounts_a[i]
+            amount_b = self.runner.call_private_method(
+                "quote", amount_a, reserve_a, reserve_b
+            )
+            ctx = self._prepare_remove_liquidity_context(amount_a, amount_b)
+            ctx.address = ctx_adds[i].address
+            self.runner.call_public_method("remove_liquidity", ctx)
+
+            self.assertEqual(reserve_a - amount_a, storage.get("reserve_a"))
+            self.assertEqual(reserve_b - amount_b, storage.get("reserve_b"))
+
+            user_liquidity = amounts_a[i] * total_liquidity / reserve_a
+            self.assertEqual(
+                total_liquidity - user_liquidity, storage.get("total_liquidity")
+            )
+
+            reserve_a -= amount_a
+            reserve_b -= amount_b
+            total_liquidity -= user_liquidity
