@@ -49,7 +49,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
     def get_current_timestamp(self):
         return int(self.clock.seconds())
 
-    def _initialize_contract(self, reserve_a, reserve_b):
+    def _initialize_contract(self, reserve_a, reserve_b, fee=0):
         tx = self._get_any_tx()
         actions = [
             NCAction(NCActionType.DEPOSIT, self.token_a, reserve_a),
@@ -59,13 +59,13 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             actions, tx, self._get_any_address()[0], timestamp=self.get_current_timestamp()  # type: ignore
         )
         self.runner.call_public_method(
-            "initialize", context, self.token_a, self.token_b, 0
+            "initialize", context, self.token_a, self.token_b, fee
         )
 
         storage = self.nc_storage
         self.assertEqual(storage.get("token_a"), self.token_a)
         self.assertEqual(storage.get("token_b"), self.token_b)
-        self.assertEqual(storage.get("fee_numerator"), 0)
+        self.assertEqual(storage.get("fee_numerator"), fee)
 
     def _prepare_swap_context(self, token_in, amount_in, token_out, amount_out):
         tx = self._get_any_tx()
@@ -686,3 +686,102 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             reserve_a -= amount_a
             reserve_b -= amount_b
             total_liquidity -= user_liquidity
+
+    def test_multiple_add_swap_and_remove_liquidity(self) -> None:
+        storage = self.nc_storage
+        users = 10
+        ctx_adds = []
+        amounts_a = [
+            100_00,
+            200_00,
+            300_00,
+            400_00,
+            500_00,
+            600_00,
+            700_00,
+            800_00,
+            900_00,
+            1000_00,
+        ]
+
+        swaps_amounts_a = [
+            10_00,
+            20_00,
+            30_00,
+            40_00,
+            50_00,
+            60_00,
+            70_00,
+            80_00,
+            90_00,
+            100_00,
+        ]
+        users_liquidity = []
+        self._initialize_contract(1_000_00, 500_000, fee=5)
+        fee_numerator = storage.get("fee_numerator")
+        fee_denominator = storage.get("fee_denominator")
+        total_liquidity = storage.get("total_liquidity")
+        reserve_a = storage.get("reserve_a")
+        reserve_b = storage.get("reserve_b")
+        for i in range(users):
+            amount_a = amounts_a[i]
+            amount_b = self.runner.call_private_method(
+                "quote", amount_a, reserve_a, reserve_b
+            )
+
+            ctx = self._prepare_add_liquidity_context(amount_a, amount_b)
+            self.runner.call_public_method("add_liquidity", ctx)
+
+            self.assertEqual(reserve_a + amount_a, storage.get("reserve_a"))
+            self.assertEqual(reserve_b + amount_b, storage.get("reserve_b"))
+
+            user_liquidity = amounts_a[i] * total_liquidity / reserve_a
+            self.assertEqual(
+                total_liquidity + user_liquidity, storage.get("total_liquidity")
+            )
+
+            users_liquidity.append(user_liquidity)
+            ctx_adds.append(ctx)
+
+            reserve_a += amount_a
+            reserve_b += amount_b
+            total_liquidity += user_liquidity
+
+        for i in range(users):
+            self.assertEqual(
+                users_liquidity[i],
+                self.runner.call_private_method("liquidity_of", ctx_adds[i].address),
+            )
+
+        fee_accumulated = 0
+
+        reserve_a_before_swaps = reserve_a
+        reserve_b_before_swaps = reserve_b
+
+        for i in range(users):
+            amount_a = swaps_amounts_a[i]
+            amount_b = self.runner.call_private_method(
+                "get_amount_out", amount_a, reserve_a, reserve_b
+            )
+            a = storage.get("fee_denominator") - storage.get("fee_numerator")
+            b = storage.get("fee_denominator")
+            amount_out = (reserve_b * amount_a * a) // (reserve_a * b + amount_a * a)
+
+            self.assertEqual(amount_b, amount_out)
+
+            ctx, result = self._swap1(self.token_a, amount_a, self.token_b, amount_b)
+            fee_accumulated += amount_a * fee_numerator // fee_denominator
+            self.assertEqual(
+                fee_accumulated,
+                self.runner.call_private_method("accumulated_fee_of", self.token_a),
+            )
+
+            reserve_a += amount_a
+            reserve_b -= amount_b
+
+        self.assertEqual(
+            fee_accumulated,
+            self.runner.call_private_method("accumulated_fee_of", self.token_a),
+        )
+
+        # test the remove with increased reserves

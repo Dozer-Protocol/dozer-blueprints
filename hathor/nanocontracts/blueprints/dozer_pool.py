@@ -327,6 +327,10 @@ class Dozer_Pool(Blueprint):
         """Get owner's balance."""
         return self.user_liquidity.get(owner, 0)
 
+    def accumulated_fee_of(self, token_uid: TokenUid) -> Amount:
+        """Get accumulated fee of a token."""
+        return self.accumulated_fee.get(token_uid, 0)
+
     def get_amount_out(
         self, amount_in: Amount, reserve_in: Amount, reserve_out: Amount
     ) -> Amount:
