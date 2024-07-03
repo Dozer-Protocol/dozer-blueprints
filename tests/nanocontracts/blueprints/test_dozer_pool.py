@@ -755,9 +755,6 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
 
         fee_accumulated = 0
 
-        reserve_a_before_swaps = reserve_a
-        reserve_b_before_swaps = reserve_b
-
         for i in range(users):
             amount_a = swaps_amounts_a[i]
             amount_b = self.runner.call_private_method(
@@ -784,4 +781,43 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             self.runner.call_private_method("accumulated_fee_of", self.token_a),
         )
 
-        # test the remove with increased reserves
+        self.assertEqual(storage.get("reserve_a"), reserve_a)
+        self.assertEqual(storage.get("reserve_b"), reserve_b)
+        self.assertEqual(storage.get("total_liquidity"), total_liquidity)
+
+        for i in range(users):
+            user_liquidity = users_liquidity[i]
+            self.assertEqual(
+                user_liquidity,
+                self.runner.call_private_method("liquidity_of", ctx_adds[i].address),
+            )
+
+            print(
+                f"user_liquidity: {user_liquidity}, total_liquidity: {total_liquidity}, amounts_a[i]: {amounts_a[i]}"
+            )
+
+            remove_amount_a = user_liquidity * reserve_a // total_liquidity
+            remove_amount_b = self.runner.call_private_method(
+                "quote", remove_amount_a, reserve_a, reserve_b
+            )
+
+            self.assertGreater(remove_amount_a, amounts_a[i])
+
+            ctx = self._prepare_remove_liquidity_context(
+                remove_amount_a, remove_amount_b
+            )
+            ctx.address = ctx_adds[i].address
+            self.runner.call_public_method("remove_liquidity", ctx)
+
+            self.assertEqual(reserve_a - remove_amount_a, storage.get("reserve_a"))
+            self.assertEqual(reserve_b - remove_amount_b, storage.get("reserve_b"))
+
+            total_liquidity -= total_liquidity * remove_amount_a / reserve_a
+            reserve_a -= remove_amount_a
+            reserve_b -= remove_amount_b
+
+            self.assertEqual(
+                self.runner.call_private_method("liquidity_of", ctx.address),
+                user_liquidity - total_liquidity * remove_amount_a / reserve_a,
+            )
+            ## failing in decimal cases, need to think in a better way to store liquidity
