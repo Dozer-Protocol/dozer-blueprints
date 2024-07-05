@@ -1,4 +1,7 @@
+PRECISION = 10**18
+
 from typing import NamedTuple
+
 
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.exception import NCFail
@@ -74,8 +77,8 @@ class Dozer_Pool(Blueprint):
     reserve_a: Amount
     reserve_b: Amount
 
-    user_liquidity: dict[Address, float]
-    total_liquidity: float
+    user_liquidity: dict[Address, int]
+    total_liquidity: int
 
     # Balance of users. These are the amounts available for users to withdrawal.
     balance_a: dict[Address, Amount]
