@@ -1,4 +1,4 @@
-PRECISION = 10**18
+PRECISION = 10**20
 import os
 
 from hathor.conf import HathorSettings
@@ -316,7 +316,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         reserve_after = (reserve_a + amount_a, reserve_b + amount_b)
         self.assertEqual(reserve_after, self.runner.call_private_method("get_reserves"))
 
-        liquidity_increase = (total_liquidity // PRECISION) * amount_a / reserve_a
+        liquidity_increase = (total_liquidity / PRECISION) * amount_a / reserve_a
         get_liquidity = int(PRECISION * liquidity_increase)
 
         self.assertEqual(
@@ -358,7 +358,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         self.assertBalanceReserve(storage)
 
         liquidity_increase = (
-            (total_liquidity // PRECISION) * (amount_a - change) / reserve_a
+            (total_liquidity / PRECISION) * (amount_a - change) / reserve_a
         )
         get_liquidity = int(PRECISION * liquidity_increase)
 
@@ -399,7 +399,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         )
         self.assertBalanceReserve(storage)
 
-        liquidity_increase = (total_liquidity // PRECISION) * amount_a / reserve_a
+        liquidity_increase = (total_liquidity / PRECISION) * amount_a / reserve_a
         get_liquidity = int(PRECISION * liquidity_increase)
 
         self.assertEqual(
@@ -440,7 +440,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         )
         self.assertBalanceReserve(storage)
 
-        liquidity_decrease = (total_liquidity // PRECISION) * amount_a / reserve_a
+        liquidity_decrease = (total_liquidity / PRECISION) * amount_a / reserve_a
         get_liquidity = int(PRECISION * liquidity_decrease)
 
         user_liquidity_after = user_liquidity - get_liquidity
@@ -487,7 +487,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         )
         self.assertBalanceReserve(storage)
 
-        liquidity_decrease = (total_liquidity // PRECISION) * amount_a / reserve_a
+        liquidity_decrease = (total_liquidity / PRECISION) * amount_a / reserve_a
         get_liquidity = int(PRECISION * liquidity_decrease)
 
         user_liquidity_after = user_liquidity - get_liquidity
@@ -608,7 +608,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         self.assertBalanceReserve(storage)
 
         liquidity_decrease = (
-            (total_liquidity // PRECISION) * amount_a_remove / reserve_a_after
+            (total_liquidity / PRECISION) * amount_a_remove / reserve_a_after
         )
         get_liquidity = int(PRECISION * liquidity_decrease)
 
@@ -660,7 +660,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             self.assertEqual(reserve_a + amount_a, storage.get("reserve_a"))
             self.assertEqual(reserve_b + amount_b, storage.get("reserve_b"))
 
-            liquidity_increase = (total_liquidity // PRECISION) * amount_a / reserve_a
+            liquidity_increase = (total_liquidity / PRECISION) * amount_a / reserve_a
             user_liquidity = int(PRECISION * liquidity_increase)
 
             self.assertEqual(
@@ -695,7 +695,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             self.assertEqual(reserve_a - amount_a, storage.get("reserve_a"))
             self.assertEqual(reserve_b - amount_b, storage.get("reserve_b"))
 
-            liquidity_decrease = (total_liquidity // PRECISION) * amount_a / reserve_a
+            liquidity_decrease = (total_liquidity / PRECISION) * amount_a / reserve_a
             user_liquidity = users_liquidity[i] - int(PRECISION * liquidity_decrease)
             print(
                 f"user_liquidity_befor:{users_liquidity[i]}\n user_liquidity_after: {user_liquidity} \n \
@@ -762,7 +762,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             self.assertEqual(reserve_a + amount_a, storage.get("reserve_a"))
             self.assertEqual(reserve_b + amount_b, storage.get("reserve_b"))
 
-            liquidity_increase = (total_liquidity // PRECISION) * amount_a / reserve_a
+            liquidity_increase = (total_liquidity / PRECISION) * amount_a / reserve_a
             user_liquidity = int(PRECISION * liquidity_increase)
 
             self.assertEqual(
@@ -826,9 +826,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             )
 
             remove_amount_a = int(
-                (user_liquidity / PRECISION)
-                * reserve_a
-                // (total_liquidity / PRECISION)
+                (user_liquidity / PRECISION) * reserve_a / (total_liquidity / PRECISION)
             )
             remove_amount_b = self.runner.call_private_method(
                 "quote", remove_amount_a, reserve_a, reserve_b
@@ -847,7 +845,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
 
             liquidity_decrease = int(
                 PRECISION
-                * ((total_liquidity // PRECISION) * remove_amount_a / reserve_a)
+                * ((total_liquidity / PRECISION) * remove_amount_a / reserve_a)
             )
 
             total_liquidity -= liquidity_decrease

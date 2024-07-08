@@ -1,4 +1,4 @@
-PRECISION = 10**18
+PRECISION = 10**20
 
 from typing import NamedTuple
 
@@ -379,7 +379,7 @@ class Dozer_Pool(Blueprint):
             change = action_b.amount - optimal_b
             self._update_balance(ctx.address, change, self.token_b)
             liquidity_increase = (
-                (self.total_liquidity // PRECISION) * action_a.amount / self.reserve_a
+                (self.total_liquidity / PRECISION) * action_a.amount / self.reserve_a
             )
             self.user_liquidity[ctx.address] = self.user_liquidity.get(
                 ctx.address, 0
@@ -396,7 +396,7 @@ class Dozer_Pool(Blueprint):
             change = action_a.amount - optimal_a
             self._update_balance(ctx.address, change, self.token_a)
             liquidity_increase = (
-                (self.total_liquidity // PRECISION) * optimal_a / self.reserve_a
+                (self.total_liquidity / PRECISION) * optimal_a / self.reserve_a
             )
             self.user_liquidity[ctx.address] = self.user_liquidity.get(
                 ctx.address, 0
@@ -411,10 +411,10 @@ class Dozer_Pool(Blueprint):
         action_a, action_b = self._get_actions_out_out(ctx)
         if self.user_liquidity[ctx.address] == 0:
             raise NCFail("no liquidity to remove")
-        max_withdraw = (
+        max_withdraw = int(
             (self.user_liquidity[ctx.address] / PRECISION)
             * self.reserve_a
-            // (self.total_liquidity / PRECISION)
+            / (self.total_liquidity / PRECISION)
         )
         if max_withdraw < action_a.amount:
             raise NCFail(f"insufficient liquidity: {max_withdraw} < {action_a.amount}")
@@ -424,7 +424,7 @@ class Dozer_Pool(Blueprint):
         change = optimal_b - action_b.amount
         self._update_balance(ctx.address, change, self.token_b)
         liquidity_decrease = (
-            (self.total_liquidity // PRECISION) * action_a.amount / self.reserve_a
+            (self.total_liquidity / PRECISION) * action_a.amount / self.reserve_a
         )
         self.user_liquidity[ctx.address] = self.user_liquidity.get(
             ctx.address, 0
@@ -585,8 +585,9 @@ class Dozer_Pool(Blueprint):
         address: Address,
     ) -> dict[str, float]:
         max_withdraw_a = int(
-            (self.user_liquidity.get(address, 0) / self.total_liquidity)
+            (self.user_liquidity[address] / PRECISION)
             * self.reserve_a
+            / (self.total_liquidity / PRECISION)
         )
         max_withdraw_b = self.quote(max_withdraw_a, self.reserve_a, self.reserve_b)
         return {
