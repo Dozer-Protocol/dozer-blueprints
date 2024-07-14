@@ -1,4 +1,4 @@
-# Copyright 2023 Hathor Labs
+# Copyright 2024 Hathor Labs
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,21 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import TYPE_CHECKING, Type
-
-from hathor.nanocontracts.blueprints.bet import Bet
-from hathor.nanocontracts.blueprints.dozer_pool import Dozer_Pool
-
-if TYPE_CHECKING:
-    from hathor.nanocontracts.blueprint import Blueprint
-
-
-_blueprints_mapper: dict[str, Type["Blueprint"]] = {
-    "Bet": Bet,
-    "Dozer_Pool": Dozer_Pool,
-}
+from .bootstrap import BootstrapPeerDiscovery
+from .dns import DNSPeerDiscovery
+from .peer_discovery import PeerDiscovery
 
 __all__ = [
-    "Bet",
-    "Dozer_Pool",
+    'PeerDiscovery',
+    'BootstrapPeerDiscovery',
+    'DNSPeerDiscovery',
 ]
