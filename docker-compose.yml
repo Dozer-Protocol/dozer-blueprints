@@ -10,5 +10,5 @@ services:
       - ./tests/nanocontracts/blueprints:/app/tests/nanocontracts/blueprints
 
    # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_rewards.py"] # with stdout
-    command: ["poetry", "run", "pytest", "tests/nanocontracts/blueprints/test_dozer_pool.py"] # without stdout
+    command: ["poetry", "run", "pytest", "tests/nanocontracts/blueprints/test_dozer_pool.py", "-q"] # without stdout
    # command: ["poetry", "run", "pytest","-rP", "tests/nanocontracts/blueprints/test_dozer_pool.py"] # with stdout
