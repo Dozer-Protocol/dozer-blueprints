@@ -284,7 +284,9 @@ class Dozer_Pool(Blueprint):
         self.balance_a[ctx.address] -= action_a.amount
         self.balance_b[ctx.address] -= action_b.amount
 
-    def _mint_protocol_fee(self, protocol_fee_amount: Amount, token: TokenUid) -> None:
+    def _get_protocol_liquidity_increase(
+        self, protocol_fee_amount: Amount, token: TokenUid
+    ) -> int:
         """Mint new liquidity equivalent to half of the collected fee to the dev address."""
         if token == self.token_a:
             liquidity_increase = int(
@@ -297,10 +299,7 @@ class Dozer_Pool(Blueprint):
             liquidity_increase = int(
                 (self.total_liquidity / PRECISION) * (optimal_a / 2) / self.reserve_a
             )
-        self.user_liquidity[self.dev_address] = (
-            self.user_liquidity.get(self.dev_address, 0) + liquidity_increase
-        )
-        self.total_liquidity += int(PRECISION * liquidity_increase)
+        return liquidity_increase
 
     @public
     def swap_exact_tokens_for_tokens(self, ctx: Context) -> SwapResult:
@@ -313,7 +312,13 @@ class Dozer_Pool(Blueprint):
         fee_amount = int(amount_in * self.fee_numerator / self.fee_denominator)
         self.accumulated_fee[action_in.token_uid] += fee_amount
         protocol_fee_amount = int(fee_amount * self.protocol_fee / 100)
-        self._mint_protocol_fee(protocol_fee_amount, action_in.token_uid)
+        liquidity_increase = self._get_protocol_liquidity_increase(
+            protocol_fee_amount, action_in.token_uid
+        )
+        self.user_liquidity[self.dev_address] = (
+            self.user_liquidity.get(self.dev_address, 0) + liquidity_increase
+        )
+        self.total_liquidity += int(PRECISION * liquidity_increase)
         amount_out = self.get_amount_out(action_in.amount, reserve_in, reserve_out)
         if reserve_out < amount_out:  # type: ignore
             raise NCFail("insufficient funds")
@@ -356,7 +361,13 @@ class Dozer_Pool(Blueprint):
         fee_amount = int(amount_in * self.fee_numerator / self.fee_denominator)
         self.accumulated_fee[action_in.token_uid] += fee_amount
         protocol_fee_amount = int(fee_amount * self.protocol_fee / 100)
-        self._mint_protocol_fee(protocol_fee_amount, action_in.token_uid)
+        liquidity_increase = self._get_protocol_liquidity_increase(
+            protocol_fee_amount, action_in.token_uid
+        )
+        self.user_liquidity[self.dev_address] = (
+            self.user_liquidity.get(self.dev_address, 0) + liquidity_increase
+        )
+        self.total_liquidity += int(PRECISION * liquidity_increase)
         if action_in.amount < amount_in:
             raise NCFail("amount in is too low")
 

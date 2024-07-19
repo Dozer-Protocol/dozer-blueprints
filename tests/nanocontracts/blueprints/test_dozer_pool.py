@@ -50,7 +50,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
     def get_current_timestamp(self):
         return int(self.clock.seconds())
 
-    def _initialize_contract(self, reserve_a, reserve_b, fee=0):
+    def _initialize_contract(self, reserve_a, reserve_b, fee=0, protocol_fee=50):
         tx = self._get_any_tx()
         actions = [
             NCAction(NCActionType.DEPOSIT, self.token_a, reserve_a),
@@ -60,7 +60,12 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             actions, tx, self._get_any_address()[0], timestamp=self.get_current_timestamp()  # type: ignore
         )
         self.runner.call_public_method(
-            "initialize", context, self.token_a, self.token_b, fee
+            "initialize",
+            context,
+            self.token_a,
+            self.token_b,
+            fee,
+            protocol_fee,
         )
 
         storage = self.nc_storage
@@ -747,6 +752,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         self._initialize_contract(1_000_00, 500_000, fee=5)
         fee_numerator = storage.get("fee_numerator")
         fee_denominator = storage.get("fee_denominator")
+        protocol_fee = storage.get("protocol_fee")
         total_liquidity = storage.get("total_liquidity")
         reserve_a = storage.get("reserve_a")
         reserve_b = storage.get("reserve_b")
@@ -796,12 +802,27 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             self.assertEqual(amount_b, amount_out)
 
             ctx, result = self._swap1(self.token_a, amount_a, self.token_b, amount_b)
-            fee_accumulated += amount_a * fee_numerator // fee_denominator
+            fee_amount = int(amount_a * fee_numerator / fee_denominator)
+            fee_accumulated += fee_amount
+            protocol_fee_amount = int(fee_amount * protocol_fee / 100)
+            liquidity_increase = int(
+                (total_liquidity / PRECISION) * (protocol_fee_amount / 2) / reserve_a
+            )
+            self.assertEqual(
+                liquidity_increase,
+                self.runner.call_private_method(
+                    "_get_protocol_liquidity_increase",
+                    protocol_fee_amount,
+                    self.token_a,
+                ),
+            )
+
             self.assertEqual(
                 fee_accumulated,
                 self.runner.call_private_method("accumulated_fee_of", self.token_a),
             )
 
+            total_liquidity += int(PRECISION * liquidity_increase)
             reserve_a += amount_a
             reserve_b -= amount_b
 
