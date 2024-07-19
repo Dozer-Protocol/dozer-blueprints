@@ -69,6 +69,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         )
 
         storage = self.nc_storage
+        self.admin_address = context.address
         self.assertEqual(storage.get("token_a"), self.token_a)
         self.assertEqual(storage.get("token_b"), self.token_b)
         self.assertEqual(storage.get("fee_numerator"), fee)
@@ -790,6 +791,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
 
         fee_accumulated = 0
 
+        dev_liquidity = 0
         for i in range(users):
             amount_a = swaps_amounts_a[i]
             amount_b = self.runner.call_private_method(
@@ -801,12 +803,12 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
 
             self.assertEqual(amount_b, amount_out)
 
-            ctx, result = self._swap1(self.token_a, amount_a, self.token_b, amount_b)
             fee_amount = int(amount_a * fee_numerator / fee_denominator)
             fee_accumulated += fee_amount
             protocol_fee_amount = int(fee_amount * protocol_fee / 100)
             liquidity_increase = int(
-                (total_liquidity / PRECISION) * (protocol_fee_amount / 2) / reserve_a
+                ((total_liquidity / PRECISION) * (protocol_fee_amount / 2) / reserve_a)
+                * PRECISION
             )
             self.assertEqual(
                 liquidity_increase,
@@ -817,12 +819,20 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
                 ),
             )
 
+            ctx, result = self._swap1(self.token_a, amount_a, self.token_b, amount_b)
+
+            dev_liquidity += liquidity_increase
+            self.assertEqual(
+                dev_liquidity,
+                self.runner.call_private_method("liquidity_of", self.admin_address),
+            )
+
             self.assertEqual(
                 fee_accumulated,
                 self.runner.call_private_method("accumulated_fee_of", self.token_a),
             )
 
-            total_liquidity += int(PRECISION * liquidity_increase)
+            total_liquidity += liquidity_increase
             reserve_a += amount_a
             reserve_b -= amount_b
 

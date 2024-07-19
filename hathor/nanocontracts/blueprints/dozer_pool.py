@@ -287,17 +287,21 @@ class Dozer_Pool(Blueprint):
     def _get_protocol_liquidity_increase(
         self, protocol_fee_amount: Amount, token: TokenUid
     ) -> int:
-        """Mint new liquidity equivalent to half of the collected fee to the dev address."""
+        """Calculate the liquidity increase equivalent to a defined percentage of the collected fee to be minted to the dev address."""
         if token == self.token_a:
             liquidity_increase = int(
-                (self.total_liquidity / PRECISION)
-                * (protocol_fee_amount / 2)
-                / self.reserve_a
+                (
+                    (self.total_liquidity / PRECISION)
+                    * (protocol_fee_amount / 2)
+                    / self.reserve_a
+                )
+                * PRECISION
             )
         else:
             optimal_a = self.quote(protocol_fee_amount, self.reserve_b, self.reserve_a)
             liquidity_increase = int(
-                (self.total_liquidity / PRECISION) * (optimal_a / 2) / self.reserve_a
+                ((self.total_liquidity / PRECISION) * (optimal_a / 2) / self.reserve_a)
+                * PRECISION
             )
         return liquidity_increase
 
@@ -318,7 +322,7 @@ class Dozer_Pool(Blueprint):
         self.user_liquidity[self.dev_address] = (
             self.user_liquidity.get(self.dev_address, 0) + liquidity_increase
         )
-        self.total_liquidity += int(PRECISION * liquidity_increase)
+        self.total_liquidity += liquidity_increase
         amount_out = self.get_amount_out(action_in.amount, reserve_in, reserve_out)
         if reserve_out < amount_out:  # type: ignore
             raise NCFail("insufficient funds")
@@ -367,7 +371,7 @@ class Dozer_Pool(Blueprint):
         self.user_liquidity[self.dev_address] = (
             self.user_liquidity.get(self.dev_address, 0) + liquidity_increase
         )
-        self.total_liquidity += int(PRECISION * liquidity_increase)
+        self.total_liquidity += liquidity_increase
         if action_in.amount < amount_in:
             raise NCFail("amount in is too low")
 
