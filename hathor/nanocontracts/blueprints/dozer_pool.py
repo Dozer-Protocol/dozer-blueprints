@@ -98,6 +98,8 @@ class Dozer_Pool(Blueprint):
     fee_numerator: int
     fee_denominator: int
 
+    protocol_fee: Amount
+
     accumulated_fee: dict[TokenUid, Amount]
     transactions: int
     last_activity_timestamp: Timestamp
@@ -111,7 +113,7 @@ class Dozer_Pool(Blueprint):
         token_a: TokenUid,
         token_b: TokenUid,
         fee: Amount,
-        protocol_fee: Amount = 50,
+        protocol_fee: Amount,
     ) -> None:
         """Initialize the liquidity pool for the pair token_a/token_b.
 
