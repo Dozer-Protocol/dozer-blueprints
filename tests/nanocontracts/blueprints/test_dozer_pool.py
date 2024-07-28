@@ -1037,3 +1037,115 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         self.assertEqual(final_pool_info["reserve1"], final_reserve_b)
         self.assertEqual(final_pool_info["volume"], total_amount_a_swapped)
         self.assertEqual(final_pool_info["transactions"], num_swaps)
+
+    def test_random_user_interactions(self):
+        # Initialize contract with fees
+        self._initialize_contract(10_000_00, 5_000_000, fee=5)
+        storage = self.nc_storage
+
+        # Organize 4 users with different addresses and random balances
+        users = [self._get_any_address() for _ in range(4)]
+        user_balances = {
+            user[0]: {
+                self.token_a: random.randint(100_00, 1000_00),
+                self.token_b: random.randint(100_00, 1000_00),
+            }
+            for user in users
+        }
+
+        # Helper functions
+        def get_reserves():
+            return self.runner.call_private_method("get_reserves")
+
+        def get_amount_out(amount_in, reserve_in, reserve_out):
+            return self.runner.call_private_method(
+                "get_amount_out", amount_in, reserve_in, reserve_out
+            )
+
+        def perform_swap(user, token_in, amount_in):
+            reserve_in, reserve_out = get_reserves()
+            if token_in == self.token_a:
+                amount_out = get_amount_out(amount_in, reserve_in, reserve_out)
+                token_out = self.token_b
+            else:
+                amount_out = get_amount_out(amount_in, reserve_out, reserve_in)
+                token_out = self.token_a
+
+            result, _ = self._swap1(token_in, amount_in, token_out, amount_out)
+
+            # user_balances[user][token_in] -= amount_in
+            # user_balances[user][token_out] += result.get("amount_out", 0)
+            # return result.get("amount_out", 0)
+
+        def add_liquidity(user, amount_a):
+            reserve_a, reserve_b = get_reserves()
+            amount_b = self.runner.call_private_method(
+                "quote", amount_a, reserve_a, reserve_b
+            )
+            ctx = self._prepare_add_liquidity_context(amount_a, amount_b)
+            ctx.address = user
+            self.runner.call_public_method("add_liquidity", ctx)
+
+            user_balances[user][self.token_a] -= amount_a
+            user_balances[user][self.token_b] -= amount_b
+            return amount_b
+
+        def remove_liquidity(user):
+            user_liquidity = self.runner.call_private_method("liquidity_of", user)
+            if user_liquidity == 0:
+                return 0, 0
+
+            total_liquidity = storage.get("total_liquidity")
+            reserve_a, reserve_b = get_reserves()
+
+            remove_amount_a = int(
+                (user_liquidity / PRECISION) * reserve_a / (total_liquidity / PRECISION)
+            )
+            remove_amount_b = self.runner.call_private_method(
+                "quote", remove_amount_a, reserve_a, reserve_b
+            )
+
+            ctx = self._prepare_remove_liquidity_context(
+                remove_amount_a, remove_amount_b
+            )
+            ctx.address = user
+            self.runner.call_public_method("remove_liquidity", ctx)
+
+            user_balances[user][self.token_a] += remove_amount_a
+            user_balances[user][self.token_b] += remove_amount_b
+            return remove_amount_a, remove_amount_b
+
+        # Generate random sequence of actions
+        actions = ["swap", "add_liquidity", "remove_liquidity"] * 20
+        random.shuffle(actions)
+
+        # Execute random actions and assert
+        for action in actions:
+            user = random.choice([u[0] for u in users])
+
+            if action == "swap":
+                token_in = random.choice([self.token_a, self.token_b])
+                max_amount = min(user_balances[user][token_in], 50_00)
+                amount_in = random.randint(1_00, max_amount)
+                perform_swap(user, token_in, amount_in)
+
+            elif action == "add_liquidity":
+                max_amount = min(user_balances[user][self.token_a], 100_00)
+                amount_a = random.randint(10_00, max_amount)
+                add_liquidity(user, amount_a)
+
+            elif action == "remove_liquidity":
+                remove_liquidity(user)
+
+            # Assert user balances
+            for token in [self.token_a, self.token_b]:
+                self.assertGreaterEqual(user_balances[user][token], 0)
+
+        # Final assertions
+        pool_info = self.runner.call_private_method("front_end_api_pool")
+        reserve_a, reserve_b = get_reserves()
+        self.assertEqual(pool_info["reserve0"], reserve_a)
+        self.assertEqual(pool_info["reserve1"], reserve_b)
+        self.assertGreater(pool_info["volume"], 0)
+        self.assertGreater(pool_info["transactions"], 0)
+        self.assertGreater(pool_info["fee0"], 0)
