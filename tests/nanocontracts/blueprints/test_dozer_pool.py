@@ -1060,7 +1060,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         actions = ["add_liquidity", "remove_liquidity", "swap_a_to_b", "swap_b_to_a"]
 
         # Perform random actions
-        num_actions = random.randint(10, 20)
+        num_actions = random.randint(20, 40)
         total_volume = 0
         transactions = 0
 
@@ -1102,12 +1102,14 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
             elif action == "remove_liquidity" and users_with_liquidity:
                 user = random.choice(list(users_with_liquidity))
                 user_liquidity = self.runner.call_private_method("liquidity_of", user)
+                percentage_to_remove = random.randint(1, 100) / 100
                 if user_liquidity > 0:
                     total_liquidity = storage.get("total_liquidity")
 
                     remove_amount_a = int(
-                        (user_liquidity / PRECISION)
-                        * reserve_a
+                        percentage_to_remove
+                        * (user_liquidity / PRECISION)
+                        * new_reserve_a
                         / (total_liquidity / PRECISION)
                     )
                     remove_amount_b = self.runner.call_private_method(
@@ -1173,7 +1175,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
                 self.assertEqual(new_reserve_a, reserve_a - expected_amount_a)
                 self.assertEqual(new_reserve_b, reserve_b + swap_amount_b)
 
-                # Check total liquidity remains unchanged after swap
+                # Check total liquidity change for protocol fee
                 new_total_liquidity = storage.get("total_liquidity")
                 # self.assertEqual(new_total_liquidity, total_liquidity)
 
@@ -1209,8 +1211,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
 
         # Check that the sum of all user liquidities plus admin liquidity equals total liquidity
         total_user_liquidity = sum(
-            self.runner.call_private_method("liquidity_of", user)
-            for user in users_with_liquidity
+            self.runner.call_private_method("liquidity_of", user) for user in all_users
         )
         admin_liquidity = self.runner.call_private_method(
             "liquidity_of", self.admin_address
