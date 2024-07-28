@@ -1078,8 +1078,10 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
                 users_with_liquidity.add(ctx_add.address)
                 all_users.add(ctx_add.address)
                 self.runner.call_public_method("add_liquidity", ctx_add)
-
-                transactions += 1
+                # Assert reserves after adding liquidity
+                new_reserve_a, new_reserve_b = get_reserves()
+                self.assertEqual(new_reserve_a, reserve_a + add_amount_a)
+                self.assertEqual(new_reserve_b, reserve_b + add_amount_b)
 
             elif action == "remove_liquidity" and users_with_liquidity:
                 user = random.choice(list(users_with_liquidity))
@@ -1104,7 +1106,10 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
                     ctx_remove.address = user
                     self.runner.call_public_method("remove_liquidity", ctx_remove)
 
-                    transactions += 1
+                    # Assert reserves after removing liquidity
+                    new_reserve_a, new_reserve_b = get_reserves()
+                    self.assertEqual(new_reserve_a, reserve_a - remove_amount_a)
+                    self.assertEqual(new_reserve_b, reserve_b - remove_amount_b)
 
             elif action == "swap_a_to_b":
                 swap_amount_a = random.randint(1_00, 50_00)
@@ -1117,6 +1122,10 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
                 all_users.add(ctx.address)
                 total_volume += swap_amount_a
                 transactions += 1
+                # Assert reserves after swapping A to B
+                new_reserve_a, new_reserve_b = get_reserves()
+                self.assertEqual(new_reserve_a, reserve_a + swap_amount_a)
+                self.assertEqual(new_reserve_b, reserve_b - expected_amount_b)
 
             elif action == "swap_b_to_a":
                 swap_amount_b = random.randint(1_00, 50_00)
@@ -1129,6 +1138,10 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
                 all_users.add(ctx.address)
                 total_volume += swap_amount_b
                 transactions += 1
+                # Assert reserves after swapping B to A
+                new_reserve_a, new_reserve_b = get_reserves()
+                self.assertEqual(new_reserve_a, reserve_a - expected_amount_a)
+                self.assertEqual(new_reserve_b, reserve_b + swap_amount_b)
 
         # Final assertions
         final_reserve_a, final_reserve_b = get_reserves()
@@ -1137,7 +1150,7 @@ class MVP_PoolBlueprintTestCase(unittest.TestCase):
         self.assertEqual(pool_info["reserve0"], final_reserve_a)
         self.assertEqual(pool_info["reserve1"], final_reserve_b)
         # self.assertEqual(pool_info["volume"], total_volume)
-        # self.assertEqual(pool_info["transactions"], transactions)
+        self.assertEqual(pool_info["transactions"], transactions)
 
         # Check that reserves are still positive
         self.assertGreater(final_reserve_a, 0)
