@@ -158,6 +158,7 @@ class Dozer_Pool(Blueprint):
         self.reserve_a = action_a.amount
         self.reserve_b = action_b.amount
         self.total_liquidity = PRECISION * action_a.amount
+        self.user_liquidity[ctx.address] = self.total_liquidity
 
     def get_reserves(self) -> tuple[Amount, Amount]:
         """Return the current reserves."""
