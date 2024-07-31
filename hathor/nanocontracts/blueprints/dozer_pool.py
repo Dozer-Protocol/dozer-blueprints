@@ -75,6 +75,8 @@ class Dozer_Pool(Blueprint):
     reserve_b: Amount
 
     user_liquidity: dict[Address, Amount]
+    user_deposited_a: dict[Address, Amount]
+    user_deposited_b: dict[Address, Amount]
     total_liquidity: Amount
 
     # Balance of users. These are the cashback amounts available for users to withdrawal.
@@ -458,6 +460,12 @@ class Dozer_Pool(Blueprint):
             self.user_liquidity[ctx.address] = self.user_liquidity.get(
                 ctx.address, 0
             ) + int(PRECISION * liquidity_increase)
+            self.user_deposited_a[ctx.address] = (
+                self.user_deposited_a.get(ctx.address, 0) + action_a.amount
+            )
+            self.user_deposited_b[ctx.address] = (
+                self.user_deposited_b.get(ctx.address, 0) + optimal_b
+            )
             self.total_liquidity += int(PRECISION * liquidity_increase)
             self.reserve_a += action_a.amount
             self.reserve_b += optimal_b
@@ -475,6 +483,12 @@ class Dozer_Pool(Blueprint):
             self.user_liquidity[ctx.address] = self.user_liquidity.get(
                 ctx.address, 0
             ) + int(PRECISION * liquidity_increase)
+            self.user_deposited_a[ctx.address] = (
+                self.user_deposited_a.get(ctx.address, 0) + optimal_a
+            )
+            self.user_deposited_b[ctx.address] = (
+                self.user_deposited_b.get(ctx.address, 0) + action_b.amount
+            )
             self.total_liquidity += int(PRECISION * liquidity_increase)
             self.reserve_a += optimal_a
             self.reserve_b += action_b.amount
@@ -503,6 +517,8 @@ class Dozer_Pool(Blueprint):
         self.user_liquidity[ctx.address] = self.user_liquidity.get(
             ctx.address, 0
         ) - int(PRECISION * liquidity_decrease)
+        self.user_deposited_a = max_withdraw
+        self.user_deposited_b = self.quote(max_withdraw, self.reserve_a, self.reserve_b)
         self.total_liquidity -= int(PRECISION * liquidity_decrease)
         ## makes sense change total liquidity after removing user liquidity?
         self.reserve_a -= action_a.amount
@@ -667,6 +683,8 @@ class Dozer_Pool(Blueprint):
         return {
             "balance_a": self.balance_a.get(address, 0),
             "balance_b": self.balance_b.get(address, 0),
+            "user_deposited_a": self.user_deposited_a.get(address, 0),
+            "user_deposited_b": self.user_deposited_b.get(address, 0),
             "liquidity": self.user_liquidity.get(address, 0),
             "max_withdraw_a": max_withdraw_a,
             "max_withdraw_b": max_withdraw_b,
