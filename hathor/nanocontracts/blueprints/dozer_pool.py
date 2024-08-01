@@ -517,10 +517,11 @@ class Dozer_Pool(Blueprint):
         self.user_liquidity[ctx.address] = self.user_liquidity.get(
             ctx.address, 0
         ) - int(PRECISION * liquidity_decrease)
-        self.user_deposited_a = max_withdraw
-        self.user_deposited_b = self.quote(max_withdraw, self.reserve_a, self.reserve_b)
+        self.user_deposited_a[ctx.address] = max_withdraw
+        self.user_deposited_b[ctx.address] = self.quote(
+            max_withdraw, self.reserve_a, self.reserve_b
+        )
         self.total_liquidity -= int(PRECISION * liquidity_decrease)
-        ## makes sense change total liquidity after removing user liquidity?
         self.reserve_a -= action_a.amount
         self.reserve_b -= optimal_b
 
