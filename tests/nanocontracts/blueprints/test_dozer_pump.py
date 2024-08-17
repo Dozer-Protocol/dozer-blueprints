@@ -343,7 +343,7 @@ class DozerPumpBlueprintTestCase(unittest.TestCase):
                     self.runner.call_public_method("buy", ctx)
 
                     avg_price = htr_amount / tokens_to_buy
-                    elta = avg_price - current_price
+                    delta = avg_price - current_price
                     print(
                         f"Buy  - Supply: {LAUNCHPAD_SUPPLY-storage.get('curve_token_balance')}, Size: {tokens_to_buy}, Avg Price: {avg_price:.6f}, Delta: {delta:.6f}"
                     )

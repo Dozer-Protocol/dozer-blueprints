@@ -159,6 +159,16 @@ class Dozer_Pump(Blueprint):
         self.fee_numerator = new_fee
         self.fee_denominator = 1000
 
+    @public
+    def withdraw_fees(self, ctx: Context) -> None:
+        """Withdraw accumulated fees"""
+        require(ctx.address == self.dev_address, "only dev can withdraw fees")
+        action = self._get_action(ctx)
+        require(action.type == NCActionType.WITHDRAWAL, "action must be withdrawal")
+        require(action.token_uid == HATHOR_TOKEN_UID, "invalid token")
+        require(action.amount <= self.accumulated_fee, "invalid amount")
+        self.accumulated_fee -= action.amount
+
     def _quote_price(self) -> float:
         x = LAUNCHPAD_SUPPLY - self.curve_token_balance
         return A * (math.exp(B * x) - 1) + C
@@ -193,10 +203,15 @@ class Dozer_Pump(Blueprint):
         """
         Calculate the amount of tokens received for a given input amount."""
         estimated_amount = int(self._quote_price() * (htr_amount))
-        fixed_htr_amount = self.quote_htr_for_exact_tokens(estimated_amount, True)[
-            "htr_amount"
-        ]
-        return {"htr_amount": fixed_htr_amount, "token_amount": estimated_amount}
+        quote = self.quote_htr_for_exact_tokens(estimated_amount, True)
+        fee = quote["fee"]
+        fixed_htr_amount = quote["htr_amount"]
+
+        return {
+            "htr_amount": fixed_htr_amount,
+            "token_amount": estimated_amount,
+            "fee": fee,
+        }
 
     @public
     def buy(self, ctx: Context) -> None:
