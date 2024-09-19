@@ -47,6 +47,70 @@ class TransactionConsensusAlgorithm:
         self.mark_inputs_as_used(tx)
         self.update_voided_info(tx)
         self.set_conflict_twins(tx)
+        self.execute_nano_contracts(tx)
+
+    def execute_nano_contracts(self, tx: Transaction) -> None:
+        """This method is called when the transaction is added to the mempool.
+
+        The method is currently only executed when the transaction is confirmed by a block.
+        Hence, we do nothing here.
+        """
+        from hathor.nanocontracts import NanoContract, NCFail
+
+        assert self._settings.ENABLE_NANO_CONTRACTS
+
+        if not isinstance(tx, NanoContract):
+            # Skip other type of transactions.
+            return
+
+        mempool_trie = self.context.consensus.nc_storage_factory.get_mempool_trie()
+
+        nc_id = tx.get_nanocontract_id()
+
+        tx_meta = tx.get_metadata()
+        if tx_meta.voided_by:
+            # Skip voided transactions. This might happen if a previous tx in nc_calls fails and
+            # mark this tx as voided.
+            return
+
+        if tx.is_creating_a_new_contract():
+            # A contract tree cannot exist before the contract is created.
+            assert not mempool_trie.has_key(nc_id)
+        else:
+            try:
+                # A contract tree must always exist after the contract is created.
+                mempool_trie.get(nc_id)
+            except KeyError:
+                # This case might only happen if the contract creation tx is voided.
+                # So this transaction cannot be executed and it will be marked as if its execution has failed.
+                self.mark_as_nc_fail_execution(tx)
+                return
+
+        from hathor.nanocontracts.runner import Runner
+
+        assert tx.storage is not None
+        storage_factory = self.context.consensus.nc_storage_factory
+        runner = Runner(tx.storage, storage_factory, mempool_trie)
+        try:
+            tx.execute(runner)
+            runner.commit()
+        except NCFail:
+            self.log.exception('nc execution failed', tx=tx.hash.hex())
+            self.mark_as_nc_fail_execution(tx)
+
+        # Save block state root id. If nothings happens, it should be the same as its block parent.
+        mempool_trie.commit()
+        assert mempool_trie.root.id is not None
+        self.context.consensus.nc_storage_factory.save_mempool_root_id(mempool_trie.root.id)
+
+    def mark_as_nc_fail_execution(self, tx: BaseTransaction) -> None:
+        assert tx.storage is not None
+        tx_meta = tx.get_metadata()
+        tx_meta.add_voided_by(self._settings.NC_EXECUTION_FAIL_ID)
+        self.context.save(tx)
+        self.add_voided_by(tx,
+                           tx.hash,
+                           is_dag_verifications=False)
 
     def mark_inputs_as_used(self, tx: Transaction) -> None:
         """ Mark all its inputs as used
@@ -173,8 +237,11 @@ class TransactionConsensusAlgorithm:
         for parent in tx.get_parents():
             parent_meta = parent.get_metadata()
             if parent_meta.voided_by:
-                voided_by.update(self.context.consensus.filter_out_soft_voided_entries(parent, parent_meta.voided_by))
+                voided_by.update(
+                    self.context.consensus.filter_out_voided_by_entries_from_parents(parent, parent_meta.voided_by)
+                )
         assert self._settings.SOFT_VOIDED_ID not in voided_by
+        assert self._settings.NC_EXECUTION_FAIL_ID not in voided_by
         assert not (self.context.consensus.soft_voided_tx_ids & voided_by)
 
         # Union of voided_by of inputs
@@ -184,7 +251,9 @@ class TransactionConsensusAlgorithm:
             if spent_meta.voided_by:
                 voided_by.update(spent_meta.voided_by)
                 voided_by.discard(self._settings.SOFT_VOIDED_ID)
+                voided_by.discard(self._settings.NC_EXECUTION_FAIL_ID)
         assert self._settings.SOFT_VOIDED_ID not in voided_by
+        assert self._settings.NC_EXECUTION_FAIL_ID not in voided_by
 
         # Update accumulated weight of the transactions voiding us.
         assert tx.hash not in voided_by
@@ -231,8 +300,8 @@ class TransactionConsensusAlgorithm:
             if conflict_tx_meta.voided_by:
                 if conflict_tx_meta.first_block is not None:
                     # do nothing
-                    assert bool(self.context.consensus.soft_voided_tx_ids & conflict_tx_meta.voided_by)
-                    self.log.info('skipping soft voided conflict', conflict_tx=conflict_tx.hash_hex)
+                    self.assert_voided_with_first_block(conflict_tx)
+                    self.log.info('skipping voided conflict with first block', conflict_tx=conflict_tx.hash_hex)
                 else:
                     self.mark_as_voided(conflict_tx)
 
@@ -243,6 +312,30 @@ class TransactionConsensusAlgorithm:
 
         # Assert the final state is valid.
         self.assert_valid_consensus(tx)
+
+    def assert_voided_with_first_block(self, tx: BaseTransaction) -> None:
+        """Assert the voided transaction with first block is valid."""
+        from hathor.nanocontracts import NanoContract
+        assert tx.storage is not None
+
+        meta = tx.get_metadata()
+        assert meta.voided_by is not None
+        if bool(self.context.consensus.soft_voided_tx_ids & meta.voided_by):
+            # Soft voided txs can be confirmed by blocks.
+            return
+        if self._settings.NC_EXECUTION_FAIL_ID in meta.voided_by:
+            # Nano transactions that failed execution can be confirmed by blocks.
+            assert isinstance(tx, NanoContract)
+            return
+        for h in meta.voided_by:
+            # Transactions voided by Nano transactions that failed execution can be confirmed by blocks.
+            tx2 = cast(Transaction, tx.storage.get_transaction(h))
+            tx2_meta = tx2.get_metadata()
+            assert tx2_meta.voided_by
+            if self._settings.NC_EXECUTION_FAIL_ID in tx2_meta.voided_by:
+                assert isinstance(tx2, NanoContract)
+                return
+        raise AssertionError
 
     def assert_valid_consensus(self, tx: BaseTransaction) -> None:
         """Assert the conflict resolution is valid."""
@@ -381,7 +474,7 @@ class TransactionConsensusAlgorithm:
         self.add_voided_by(tx, tx.hash)
         self.assert_valid_consensus(tx)
 
-    def add_voided_by(self, tx: Transaction, voided_hash: bytes) -> bool:
+    def add_voided_by(self, tx: Transaction, voided_hash: bytes, *, is_dag_verifications: bool = True) -> bool:
         """ Add a hash from `meta.voided_by` and its descendants (both from verification DAG
         and funds tree).
         """
@@ -393,7 +486,6 @@ class TransactionConsensusAlgorithm:
 
         self.log.debug('add_voided_by', tx=tx.hash_hex, voided_hash=voided_hash.hex())
 
-        is_dag_verifications = True
         if meta.voided_by and bool(self.context.consensus.soft_voided_tx_ids & meta.voided_by):
             # If tx is soft voided, we can only walk through the DAG of funds.
             is_dag_verifications = False
