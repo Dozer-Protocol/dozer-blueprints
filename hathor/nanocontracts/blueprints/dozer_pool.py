@@ -1,4 +1,4 @@
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.exception import NCFail
@@ -692,3 +692,10 @@ class Dozer_Pool(Blueprint):
             "transactions": self.transactions,
             "last_actvity_timestamp": self.last_activity_timestamp,
         }
+
+    def get_uuids(self) -> Any:
+        return self.token_a, self.token_b
+
+    def max_withdraw_b(self, address: Address) -> float:
+        user_info = self.user_info(address)
+        return user_info["max_withdraw_b"]

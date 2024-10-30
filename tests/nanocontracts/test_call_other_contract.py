@@ -356,6 +356,6 @@ class NCBlueprintTestCase(unittest.TestCase):
         self.assertEqual(storage2.get("counter"), 0)
         self.assertEqual(storage3.get("counter"), 3)
 
-        # For debugging:
-        # trace = self.runner.get_last_call_trace()
-        # trace.print_dump()
+        For debugging:
+        trace = self.runner.get_last_call_trace()
+        trace.print_dump()
