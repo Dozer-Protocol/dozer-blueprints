@@ -47,6 +47,7 @@ class Oasis(Blueprint):
         self.dev_address = ctx.address
         self.dozer_pool = dozer_pool
         self.dev_balance = action.amount
+        self.total_liquidity = 0
 
     @public
     def dev_deposit(self, ctx: Context) -> None:
@@ -81,7 +82,7 @@ class Oasis(Blueprint):
         self.user_balances[ctx.address] = (
             self.user_balances.get(ctx.address, 0) + amount
         )
-        if not self.total_liquidity:
+        if self.total_liquidity != 0:
             self.total_liquidity = amount * PRECISION
             self.user_liquidity[ctx.address] = amount * PRECISION
         else:
@@ -104,8 +105,13 @@ class Oasis(Blueprint):
         else:
             self.user_withdrawal_time[ctx.address] = now + timelock * MONTHS_IN_SECONDS
 
-        self.dev_balance -= bonus
+        self.dev_balance -= bonus + htr_amount
         self.user_bonus[ctx.address] = self.user_bonus.get(ctx.address, 0) + bonus
+        actions = [
+            action,
+            NCAction(NCActionType.DEPOSIT, settings.HATHOR_TOKEN_UID, htr_amount),  # type: ignore
+        ]
+        ctx.call_public_method(self.dozer_pool, "add_liquidity", actions)
 
         # self.user_liquidity[self.dev_address] = (
         #     self.user_liquidity.get(self.dev_address, 0) + liquidity_increase
@@ -171,3 +177,16 @@ class Oasis(Blueprint):
         return ctx.call_private_method(
             self.dozer_pool, "front_quote_add_liquidity_in", amount, token_uid
         )
+
+    def user_info(
+        self,
+        address: Address,
+    ) -> dict[str, float]:
+        return {
+            "user_balance": self.user_balances.get(address, 0),
+            "user_liquidity": self.user_liquidity.get(address, 0),
+            "user_withdrawal_time": self.user_withdrawal_time.get(address, 0),
+            "dev_balance": self.dev_balance,
+            "total_liquidity": self.total_liquidity,
+            "user_bonus": self.user_bonus.get(address, 0),
+        }
