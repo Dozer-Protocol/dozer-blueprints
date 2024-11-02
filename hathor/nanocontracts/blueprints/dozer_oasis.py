@@ -3,6 +3,7 @@ from hathor.conf.get_settings import HathorSettings
 from hathor.types import Address, Amount, Timestamp, TokenUid
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.exception import NCFail
+from hathor.crypto.util import get_address_b58_from_bytes
 from hathor.nanocontracts.types import (
     Context,
     ContractId,
@@ -42,7 +43,7 @@ class Oasis(Blueprint):
             raise (NCFail)
         action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
         if action.amount < MIN_DEPOSIT or action.token_uid != settings.HATHOR_TOKEN_UID:
-            raise NCFail("Deposit amount too low")
+            raise NCFail("Deposit amount too low or token not HATHOR")
         self.token_b = token_b
         self.dev_address = ctx.address
         self.dozer_pool = dozer_pool
@@ -76,13 +77,13 @@ class Oasis(Blueprint):
         htr_amount = self._quote_add_liquidity_in(ctx, amount)
         bonus = self._get_user_bonus(timelock, htr_amount)
         now = ctx.timestamp
-        if htr_amount + bonus < self.dev_balance:
+        if htr_amount + bonus > self.dev_balance:
             raise NCFail("Not enough balance")
 
         self.user_balances[ctx.address] = (
             self.user_balances.get(ctx.address, 0) + amount
         )
-        if self.total_liquidity != 0:
+        if self.total_liquidity == 0:
             self.total_liquidity = amount * PRECISION
             self.user_liquidity[ctx.address] = amount * PRECISION
         else:
@@ -95,7 +96,7 @@ class Oasis(Blueprint):
                 ctx.address, 0
             ) + int(PRECISION * liquidity_increase)
             self.total_liquidity += int(PRECISION * liquidity_increase)
-        if ctx.address in self.user_balances:
+        if ctx.address in self.user_withdrawal_time:
             delta = now - self.user_withdrawal_time[ctx.address]
             height = delta * self.user_balances[ctx.address]
             self.user_withdrawal_time[ctx.address] = (
@@ -119,7 +120,9 @@ class Oasis(Blueprint):
 
     def _get_oasis_lp_amount_b(self, ctx: Context) -> Amount:
         return ctx.call_private_method(
-            self.dozer_pool, "max_withdraw_b", self._storage.nc_id
+            self.dozer_pool,
+            "max_withdraw_b",
+            ctx.get_nanocontract_id(),
         )
 
     def _quote_add_liquidity_in(self, ctx: Context, amount: Amount) -> Amount:
@@ -130,11 +133,11 @@ class Oasis(Blueprint):
     def _get_user_bonus(self, timelock: int, amount: Amount) -> Amount:
         """Calculates the bonus for a user based on the timelock and amount"""
         if timelock == 6:
-            return amount**0.1
+            return 0.1**amount
         elif timelock == 9:
-            return amount**0.15
+            return 0.15**amount
         elif timelock == 12:
-            return amount**0.2
+            return 0.2**amount
         else:
             raise NCFail("Invalid timelock")
 

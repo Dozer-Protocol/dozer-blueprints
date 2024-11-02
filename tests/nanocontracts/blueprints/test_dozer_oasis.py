@@ -12,6 +12,8 @@ from hathor.nanocontracts import Context, NCFail
 
 settings = HathorSettings()
 HTR_UID = settings.HATHOR_TOKEN_UID
+PRECISION = 10**20
+MONTHS_IN_SECONDS = 30 * 24 * 3600
 
 
 class OasisTestCase(BlueprintTestCase):
@@ -42,7 +44,7 @@ class OasisTestCase(BlueprintTestCase):
         address_bytes = decode_address(not_none(address_b58))
         return address_bytes, key
 
-    def initialize_oasis(self, amount: int = 10000000) -> None:
+    def initialize_oasis(self, amount: int = 10_000_000_00) -> None:
         """Test basic initialization"""
         ctx = Context(
             [
@@ -64,7 +66,7 @@ class OasisTestCase(BlueprintTestCase):
         # Initialize dozer pool first
         actions = [
             NCAction(NCActionType.DEPOSIT, HTR_UID, amount_htr),  # type: ignore
-            NCAction(NCActionType.DEPOSIT, self.token_b, amount_htr),  # type: ignore
+            NCAction(NCActionType.DEPOSIT, self.token_b, amount_b),  # type: ignore
         ]
         pool_ctx = Context(actions, self.tx, self.dev_address, timestamp=0)  # type: ignore
         self.runner.call_public_method(
@@ -78,9 +80,39 @@ class OasisTestCase(BlueprintTestCase):
         )
 
     def test_initialize(self) -> None:
+        dev_initial_deposit = 10_000_000_00
         self.initialiaze_pool()
         self.initialize_oasis()
-        self.assertEqual(self.oasis_storage.get("dev_balance"), 10000000)
+        self.assertEqual(self.oasis_storage.get("dev_balance"), dev_initial_deposit)
+
+    def test_user_deposit(self) -> None:
+        dev_initial_deposit = 10_000_000_00
+        self.initialiaze_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+        user_address = self._get_any_address()
+        now = self.clock.seconds()
+        deposit_amount = 1_000_00
+        timelock = 6
+        ctx = Context(
+            [
+                NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount),  # type: ignore
+            ],
+            self.tx,
+            user_address,  # type: ignore
+            timestamp=now,
+        )
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        user_info = self.runner.call_public_method(
+            self.oasis_id, "user_info", ctx, user_address
+        )
+        self.assertEqual(user_info["user_balance"], deposit_amount)
+        self.assertEqual(user_info["user_liquidity"], deposit_amount * PRECISION)
+        self.assertEqual(
+            user_info["user_withdrawal_time"], now + timelock * MONTHS_IN_SECONDS
+        )
+        self.assertEqual(user_info["dev_balance"], dev_initial_deposit - deposit_amount)
+        self.assertEqual(user_info["total_liquidity"], deposit_amount * PRECISION)
+        self.assertEqual(user_info["user_bonus"], 0)
 
     # def test_set_dozer_pool(self):
     #     """Test setting dozer pool contract"""
