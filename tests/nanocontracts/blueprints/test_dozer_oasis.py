@@ -52,9 +52,9 @@ class OasisTestCase(BlueprintTestCase):
         elif timelock == 9:
             return 0.15**amount
         elif timelock == 12:
-            return 0.2**amount
+            return 0.2**amount  # type: ignore
         else:
-            raise "Invalid timelock"
+            raise "Invalid timelock"  # type: ignore
 
     def _quote_add_liquidity_in(self, amount: int) -> int:
         return self.runner.call_private_method(
@@ -203,7 +203,7 @@ class OasisTestCase(BlueprintTestCase):
         self.initialize_pool()
         self.initialize_oasis(amount=dev_initial_deposit)
         n_users = 10
-        n_transactions = 50
+        n_transactions = 500
         user_addresses = [self._get_any_address()[0] for _ in range(n_users)]
         user_liquidity = [0] * n_users
         user_bonus = [0] * n_users
@@ -211,11 +211,12 @@ class OasisTestCase(BlueprintTestCase):
         user_withdrawal_time = [0] * n_users
         total_liquidity = 0
         dev_balance = dev_initial_deposit
+        initial_time = self.clock.seconds()
         for transaction in range(n_transactions):
-            self.log.info(f"transaction {transaction}")
+            # self.log.info(f"transaction {transaction}")
             i = random.randint(0, n_users - 1)
             user_address = user_addresses[i]
-            now = self.clock.seconds()
+            now = initial_time + transaction * 50
             deposit_amount = 1_000_00
             ## random choice of timelock between the possibilities: 6,9 and 12
             timelock = random.choice([6, 9, 12])
@@ -249,9 +250,9 @@ class OasisTestCase(BlueprintTestCase):
                 total_liquidity += int(PRECISION * liquidity_increase)
 
             if user_withdrawal_time[i] != 0:
-                self.log.info(
-                    f"test user {i} withdrawal time antes {user_withdrawal_time[i]}"
-                )
+                # self.log.info(
+                #     f"test user {i} withdrawal time antes {user_withdrawal_time[i]}"
+                # )
                 delta = now - user_withdrawal_time[i]
                 user_withdrawal_time[i] = (
                     (
@@ -260,15 +261,15 @@ class OasisTestCase(BlueprintTestCase):
                     )
                     // (delta + timelock * MONTHS_IN_SECONDS)
                 ) + 1
-                self.log.info(f"user {i} already deposited")
-                self.log.info(f"test now {now}")
-                self.log.info(f"test delta {delta}")
-                self.log.info(f"test deposit amount {deposit_amount}")
-                self.log.info(f"test timelock {timelock}")
-                self.log.info(f"test user_balances {user_balances[i]}")
-                self.log.info(
-                    f"test user {i} withdrawal time depois {user_withdrawal_time[i]}"
-                )
+                # self.log.info(f"user {i} already deposited")
+                # self.log.info(f"test now {now}")
+                # self.log.info(f"test delta {delta}")
+                # self.log.info(f"test deposit amount {deposit_amount}")
+                # self.log.info(f"test timelock {timelock}")
+                # self.log.info(f"test user_balances {user_balances[i]}")
+                # self.log.info(
+                #     f"test user {i} withdrawal time depois {user_withdrawal_time[i]}"
+                # )
             else:
                 user_withdrawal_time[i] = now + timelock * MONTHS_IN_SECONDS
 
