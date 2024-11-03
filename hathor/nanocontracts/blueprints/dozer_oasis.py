@@ -101,11 +101,25 @@ class Oasis(Blueprint):
             ) + int(PRECISION * liquidity_increase)
             self.total_liquidity += int(PRECISION * liquidity_increase)
         if ctx.address in self.user_withdrawal_time:
+            self.log.info(
+                f"inside user withdrawal time antes {self.user_withdrawal_time[ctx.address]}"
+            )
             delta = now - self.user_withdrawal_time[ctx.address]
-            height = delta * self.user_balances[ctx.address]
             self.user_withdrawal_time[ctx.address] = (
-                height + amount
-            ) * timelock * MONTHS_IN_SECONDS // (delta + 6 * MONTHS_IN_SECONDS) + 1
+                (
+                    (delta * self.user_balances[ctx.address])
+                    + (amount * timelock * MONTHS_IN_SECONDS)
+                )
+                // (delta + timelock * MONTHS_IN_SECONDS)
+            ) + 1
+            self.log.info(f"inside now {now}")
+            self.log.info(f"inside delta {delta}")
+            self.log.info(f"inside amount {amount}")
+            self.log.info(f"inside timelock {timelock}")
+            self.log.info(f"inside user_balances {self.user_balances[ctx.address]}")
+            self.log.info(
+                f"inside user withdrawal time depois {self.user_withdrawal_time[ctx.address]}"
+            )
 
         else:
             self.user_withdrawal_time[ctx.address] = now + timelock * MONTHS_IN_SECONDS

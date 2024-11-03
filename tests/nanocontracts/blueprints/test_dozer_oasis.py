@@ -198,6 +198,89 @@ class OasisTestCase(BlueprintTestCase):
             self.assertEqual(user_info["total_liquidity"], total_liquidity)
             self.assertEqual(user_info["dev_balance"], dev_balance)
 
+    def test_multiple_user_deposit_with_repeat(self) -> None:
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+        n_users = 10
+        n_transactions = 50
+        user_addresses = [self._get_any_address()[0] for _ in range(n_users)]
+        user_liquidity = [0] * n_users
+        user_bonus = [0] * n_users
+        user_balances = [0] * n_users
+        user_withdrawal_time = [0] * n_users
+        total_liquidity = 0
+        dev_balance = dev_initial_deposit
+        for transaction in range(n_transactions):
+            self.log.info(f"transaction {transaction}")
+            i = random.randint(0, n_users - 1)
+            user_address = user_addresses[i]
+            now = self.clock.seconds()
+            deposit_amount = 1_000_00
+            ## random choice of timelock between the possibilities: 6,9 and 12
+            timelock = random.choice([6, 9, 12])
+            ctx = Context(
+                [
+                    NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount),  # type: ignore
+                ],
+                self.tx,
+                user_address,
+                timestamp=now,
+            )
+            lp_amount_b = self._get_oasis_lp_amount_b()
+            self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+            htr_amount = self._quote_add_liquidity_in(deposit_amount)
+            bonus = self._get_user_bonus(timelock, htr_amount)
+            user_info = self.runner.call_private_method(
+                self.oasis_id, "user_info", user_address
+            )
+            user_balances[i] = user_balances[i] + deposit_amount
+            if total_liquidity == 0:
+                self.log.info("first user")
+                total_liquidity = deposit_amount * PRECISION
+                user_liquidity[i] = deposit_amount * PRECISION
+            else:
+                liquidity_increase = (
+                    (total_liquidity / PRECISION) * deposit_amount / lp_amount_b
+                )
+                user_liquidity[i] = user_liquidity[i] + int(
+                    PRECISION * liquidity_increase
+                )
+                total_liquidity += int(PRECISION * liquidity_increase)
+
+            if user_withdrawal_time[i] != 0:
+                self.log.info(
+                    f"test user {i} withdrawal time antes {user_withdrawal_time[i]}"
+                )
+                delta = now - user_withdrawal_time[i]
+                user_withdrawal_time[i] = (
+                    (
+                        (delta * user_balances[i])
+                        + (deposit_amount * timelock * MONTHS_IN_SECONDS)
+                    )
+                    // (delta + timelock * MONTHS_IN_SECONDS)
+                ) + 1
+                self.log.info(f"user {i} already deposited")
+                self.log.info(f"test now {now}")
+                self.log.info(f"test delta {delta}")
+                self.log.info(f"test deposit amount {deposit_amount}")
+                self.log.info(f"test timelock {timelock}")
+                self.log.info(f"test user_balances {user_balances[i]}")
+                self.log.info(
+                    f"test user {i} withdrawal time depois {user_withdrawal_time[i]}"
+                )
+            else:
+                user_withdrawal_time[i] = now + timelock * MONTHS_IN_SECONDS
+
+            dev_balance -= bonus + htr_amount
+            user_bonus[i] = user_bonus[i] + bonus
+            self.assertEqual(user_info["dev_balance"], dev_balance)
+            self.assertEqual(user_info["user_balance"], user_balances[i])
+            self.assertEqual(user_info["user_liquidity"], user_liquidity[i])
+            self.assertEqual(user_info["user_withdrawal_time"], user_withdrawal_time[i])
+            self.assertEqual(user_info["total_liquidity"], total_liquidity)
+            self.assertEqual(user_info["dev_balance"], dev_balance)
+
     # def test_set_dozer_pool(self):
     #     """Test setting dozer pool contract"""
     #     # Initialize first
