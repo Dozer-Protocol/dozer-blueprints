@@ -41,7 +41,9 @@ class Oasis(Blueprint):
         pool_token_a, pool_token_b = ctx.call_private_method(dozer_pool, "get_uuids")
         if pool_token_a != settings.HATHOR_TOKEN_UID or pool_token_b != token_b:
             raise (NCFail)
-        action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
+        action = self._get_token_action(
+            ctx, NCActionType.DEPOSIT, settings.HATHOR_TOKEN_UID, auth=False
+        )
         if action.amount < MIN_DEPOSIT or action.token_uid != settings.HATHOR_TOKEN_UID:
             raise NCFail("Deposit amount too low or token not HATHOR")
         self.token_b = token_b
@@ -70,7 +72,9 @@ class Oasis(Blueprint):
     def user_deposit(
         self, ctx: Context, timelock: int  # 0 6 months, 1 9 months, 2 1 year
     ) -> None:
-        action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
+        action = self._get_token_action(
+            ctx, NCActionType.DEPOSIT, self.token_b, auth=False
+        )
         if action.token_uid != self.token_b:
             raise NCFail("Deposit token not B")
         amount = action.amount
@@ -150,6 +154,25 @@ class Oasis(Blueprint):
         # if ctx.actions.keys not in rewardable_indexs:
         #     raise InvalidTokens()
         output = ctx.actions.popitem()[1]
+        if output.type != action_type:
+            raise NCFail
+        if auth:
+            if ctx.address != self.dev_address:
+                raise NCFail
+
+        return output
+
+    def _get_token_action(
+        self, ctx: Context, action_type: NCActionType, token: TokenUid, auth: bool
+    ) -> NCAction:
+        """Returns one action tested by type and index"""
+        if len(ctx.actions) > 2:
+            raise NCFail
+        try:
+            output = ctx.actions.get(token)
+        except:
+            raise NCFail
+
         if output.type != action_type:
             raise NCFail
         if auth:
