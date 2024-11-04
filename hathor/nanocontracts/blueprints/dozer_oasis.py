@@ -12,10 +12,10 @@ from hathor.nanocontracts.types import (
     public,
 )
 
-settings = HathorSettings()
 MIN_DEPOSIT = 10000_00
 PRECISION = 10**20
 MONTHS_IN_SECONDS = 30 * 24 * 3600
+HATHOR_UID = HathorSettings().HATHOR_TOKEN_UID  # type: ignore
 
 
 class Oasis(Blueprint):
@@ -39,12 +39,12 @@ class Oasis(Blueprint):
         """Initialize the contract with no dozer pool set."""
 
         pool_token_a, pool_token_b = ctx.call_private_method(dozer_pool, "get_uuids")
-        if pool_token_a != settings.HATHOR_TOKEN_UID or pool_token_b != token_b:
+        if pool_token_a != HATHOR_UID or pool_token_b != token_b:
             raise (NCFail)
         action = self._get_token_action(
-            ctx, NCActionType.DEPOSIT, settings.HATHOR_TOKEN_UID, auth=False
+            ctx, NCActionType.DEPOSIT, HATHOR_UID, auth=False
         )
-        if action.amount < MIN_DEPOSIT or action.token_uid != settings.HATHOR_TOKEN_UID:
+        if action.amount < MIN_DEPOSIT or action.token_uid != HATHOR_UID:
             raise NCFail("Deposit amount too low or token not HATHOR")
         self.token_b = token_b
         self.dev_address = ctx.address
@@ -54,15 +54,24 @@ class Oasis(Blueprint):
 
     @public
     def dev_deposit(self, ctx: Context) -> None:
+        """Deposits token B with a timelock period for bonus rewards.
+
+        Args:
+            ctx: Execution context
+            timelock: Lock period in months (6, 9, or 12)
+
+        Raises:
+            NCFail: If deposit requirements not met or invalid timelock
+        """
         action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
-        if action.token_uid != settings.HATHOR_TOKEN_UID:
+        if action.token_uid != HATHOR_UID:
             raise NCFail("Deposit token not HATHOR")
         self.dev_balance += action.amount
 
     @public
     def dev_withdraw(self, ctx: Context) -> None:
         action = self._get_action(ctx, NCActionType.WITHDRAWAL, auth=True)
-        if action.token_uid != settings.HATHOR_TOKEN_UID:
+        if action.token_uid != HATHOR_UID:
             raise NCFail("Withdrawal token not HATHOR")
         if action.amount > self.dev_balance:
             raise NCFail("Withdrawal amount too high")
@@ -118,8 +127,7 @@ class Oasis(Blueprint):
         partial = self.user_balances.get(ctx.address, {})
         partial.update(
             {
-                settings.HATHOR_TOKEN_UID: partial.get(settings.HATHOR_TOKEN_UID, 0)
-                + bonus,
+                HATHOR_UID: partial.get(HATHOR_UID, 0) + bonus,
             }
         )
         self.user_balances[ctx.address] = partial
@@ -129,7 +137,7 @@ class Oasis(Blueprint):
 
         actions = [
             action,
-            NCAction(NCActionType.DEPOSIT, settings.HATHOR_TOKEN_UID, htr_amount),  # type: ignore
+            NCAction(NCActionType.DEPOSIT, HATHOR_UID, htr_amount),  # type: ignore
         ]
         ctx.call_public_method(self.dozer_pool, "add_liquidity", actions)
 
@@ -141,9 +149,7 @@ class Oasis(Blueprint):
         action_token_b = self._get_token_action(
             ctx, NCActionType.WITHDRAWAL, self.token_b
         )
-        action_htr = self._get_token_action(
-            ctx, NCActionType.WITHDRAWAL, settings.HATHOR_TOKEN_UID
-        )
+        action_htr = self._get_token_action(ctx, NCActionType.WITHDRAWAL, HATHOR_UID)
         if ctx.timestamp < self.user_withdrawal_time[ctx.address]:
             raise NCFail("Withdrawal locked")
         oasis_quote = self._quote_remove_liquidity_oasis(ctx)
@@ -161,9 +167,7 @@ class Oasis(Blueprint):
             / (self.total_liquidity / PRECISION)
         )
         actions = [
-            NCAction(
-                NCActionType.WITHDRAWAL, settings.HATHOR_TOKEN_UID, user_lp_htr  # type: ignore
-            ),
+            NCAction(NCActionType.WITHDRAWAL, HATHOR_UID, user_lp_htr),  # type: ignore
             NCAction(NCActionType.WITHDRAWAL, self.token_b, user_lp_b),  # type: ignore
         ]
         ctx.call_public_method(self.dozer_pool, "remove_liquidity", actions)
@@ -191,21 +195,18 @@ class Oasis(Blueprint):
                 if loss_htr > user_lp_htr:
                     loss_htr = user_lp_htr
                 max_withdraw_htr = (
-                    self.user_balances[ctx.address].get(settings.HATHOR_TOKEN_UID, 0)
-                    + loss_htr
+                    self.user_balances[ctx.address].get(HATHOR_UID, 0) + loss_htr
                 )
             # without impermanent loss
             else:
-                max_withdraw_htr = self.user_balances[ctx.address].get(
-                    settings.HATHOR_TOKEN_UID, 0
-                )
+                max_withdraw_htr = self.user_balances[ctx.address].get(HATHOR_UID, 0)
 
             if action_htr.amount > max_withdraw_htr:
                 raise NCFail("Not enough balance")
             partial = self.user_balances.get(ctx.address, {})
             partial.update(
                 {
-                    settings.HATHOR_TOKEN_UID: max_withdraw_htr - action_htr.amount,
+                    HATHOR_UID: max_withdraw_htr - action_htr.amount,
                 }
             )
             self.user_balances[ctx.address] = partial
@@ -231,14 +232,11 @@ class Oasis(Blueprint):
 
     def _get_user_balances(self, timelock: int, amount: Amount) -> Amount:
         """Calculates the bonus for a user based on the timelock and amount"""
-        if timelock == 6:
-            return 0.1**amount  # type: ignore
-        elif timelock == 9:
-            return 0.15**amount  # type: ignore
-        elif timelock == 12:
-            return 0.2**amount  # type: ignore
-        else:
-            raise NCFail("Invalid timelock")
+        if timelock not in [6, 9, 12]:  # Assuming these are the only valid values
+            raise NCFail("Invalid timelock value")
+        bonus_multiplier = {6: 0.1, 9: 0.15, 12: 0.2}
+
+        return bonus_multiplier[timelock] ** amount  # type: ignore
 
     def _get_action(
         self, ctx: Context, action_type: NCActionType, auth: bool
@@ -313,9 +311,9 @@ class Oasis(Blueprint):
             "user_withdrawal_time": self.user_withdrawal_time.get(address, 0),
             "dev_balance": self.dev_balance,
             "total_liquidity": self.total_liquidity,
-            "user_balance_a": self.user_balances.get(
-                address, {settings.HATHOR_TOKEN_UID: 0}
-            ).get(settings.HATHOR_TOKEN_UID, 0),
+            "user_balance_a": self.user_balances.get(address, {HATHOR_UID: 0}).get(
+                HATHOR_UID, 0
+            ),
             "user_balance_b": self.user_balances.get(address, {self.token_b: 0}).get(
                 self.token_b, 0
             ),
