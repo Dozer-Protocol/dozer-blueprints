@@ -78,7 +78,7 @@ class OasisTestCase(BlueprintTestCase):
                 NCAction(NCActionType.DEPOSIT, self.token_b, token_b_amount),  # type: ignore
             ],
             self.tx,
-            self.dev_address[0],
+            self.dev_address,
             timestamp=0,
         )
         self.runner.call_public_method(
@@ -134,8 +134,10 @@ class OasisTestCase(BlueprintTestCase):
         )
         user_bonus = self._get_user_bonus(timelock, deposit_amount)
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
-        self.assertEqual(user_info["user_bonus"], user_bonus)
-        self.assertEqual(user_info["user_balance"], deposit_amount)
+        user_balance_a = user_bonus
+        self.assertEqual(user_info["user_deposit_b"], deposit_amount)
+        self.assertEqual(user_info["user_balance_a"], user_balance_a)
+        self.assertEqual(user_info["user_balance_b"], 0)
         self.assertEqual(user_info["user_liquidity"], deposit_amount * PRECISION)
         self.assertEqual(
             user_info["user_withdrawal_time"], now + timelock * MONTHS_IN_SECONDS
@@ -152,7 +154,8 @@ class OasisTestCase(BlueprintTestCase):
         n_users = 100
         user_addresses = [self._get_any_address()[0] for _ in range(n_users)]
         user_liquidity = [0] * n_users
-        user_bonus = [0] * n_users
+        user_balances_a = [0] * n_users
+        user_deposit_b = [0] * n_users
         total_liquidity = 0
         dev_balance = dev_initial_deposit
         for i, user_address in enumerate(user_addresses):
@@ -188,9 +191,11 @@ class OasisTestCase(BlueprintTestCase):
                 total_liquidity += int(PRECISION * liquidity_increase)
 
             dev_balance -= bonus + htr_amount
-            user_bonus[i] = user_bonus[i] + bonus
+            user_balances_a[i] = user_balances_a[i] + bonus
+            user_deposit_b[i] = deposit_amount
             self.assertEqual(user_info["dev_balance"], dev_balance)
-            self.assertEqual(user_info["user_balance"], deposit_amount)
+            self.assertEqual(user_info["user_balance_a"], user_balances_a[i])
+            self.assertEqual(user_info["user_deposit_b"], user_deposit_b[i])
             self.assertEqual(user_info["user_liquidity"], user_liquidity[i])
             self.assertEqual(
                 user_info["user_withdrawal_time"], now + timelock * MONTHS_IN_SECONDS
@@ -206,14 +211,13 @@ class OasisTestCase(BlueprintTestCase):
         n_transactions = 500
         user_addresses = [self._get_any_address()[0] for _ in range(n_users)]
         user_liquidity = [0] * n_users
-        user_bonus = [0] * n_users
-        user_balances = [0] * n_users
+        user_balances_a = [0] * n_users
+        user_deposit_b = [0] * n_users
         user_withdrawal_time = [0] * n_users
         total_liquidity = 0
         dev_balance = dev_initial_deposit
         initial_time = self.clock.seconds()
         for transaction in range(n_transactions):
-            # self.log.info(f"transaction {transaction}")
             i = random.randint(0, n_users - 1)
             user_address = user_addresses[i]
             now = initial_time + transaction * 50
@@ -235,9 +239,8 @@ class OasisTestCase(BlueprintTestCase):
             user_info = self.runner.call_private_method(
                 self.oasis_id, "user_info", user_address
             )
-            user_balances[i] = user_balances[i] + deposit_amount
+            user_balances_a[i] += bonus
             if total_liquidity == 0:
-                self.log.info("first user")
                 total_liquidity = deposit_amount * PRECISION
                 user_liquidity[i] = deposit_amount * PRECISION
             else:
@@ -250,37 +253,25 @@ class OasisTestCase(BlueprintTestCase):
                 total_liquidity += int(PRECISION * liquidity_increase)
 
             if user_withdrawal_time[i] != 0:
-                # self.log.info(
-                #     f"test user {i} withdrawal time antes {user_withdrawal_time[i]}"
-                # )
                 delta = now - user_withdrawal_time[i]
                 user_withdrawal_time[i] = (
                     (
-                        (delta * user_balances[i])
+                        (delta * user_deposit_b[i])
                         + (deposit_amount * timelock * MONTHS_IN_SECONDS)
                     )
                     // (delta + timelock * MONTHS_IN_SECONDS)
                 ) + 1
-                # self.log.info(f"user {i} already deposited")
-                # self.log.info(f"test now {now}")
-                # self.log.info(f"test delta {delta}")
-                # self.log.info(f"test deposit amount {deposit_amount}")
-                # self.log.info(f"test timelock {timelock}")
-                # self.log.info(f"test user_balances {user_balances[i]}")
-                # self.log.info(
-                #     f"test user {i} withdrawal time depois {user_withdrawal_time[i]}"
-                # )
             else:
                 user_withdrawal_time[i] = now + timelock * MONTHS_IN_SECONDS
 
             dev_balance -= bonus + htr_amount
-            user_bonus[i] = user_bonus[i] + bonus
+            user_deposit_b[i] += deposit_amount
             self.assertEqual(user_info["dev_balance"], dev_balance)
-            self.assertEqual(user_info["user_balance"], user_balances[i])
+            self.assertEqual(user_info["user_balance_a"], user_balances_a[i])
+            self.assertEqual(user_info["user_deposit_b"], user_deposit_b[i])
             self.assertEqual(user_info["user_liquidity"], user_liquidity[i])
             self.assertEqual(user_info["user_withdrawal_time"], user_withdrawal_time[i])
             self.assertEqual(user_info["total_liquidity"], total_liquidity)
-            self.assertEqual(user_info["dev_balance"], dev_balance)
 
     # def test_set_dozer_pool(self):
     #     """Test setting dozer pool contract"""

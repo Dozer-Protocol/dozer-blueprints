@@ -84,9 +84,6 @@ class Oasis(Blueprint):
         if htr_amount + bonus > self.dev_balance:
             raise NCFail("Not enough balance")
 
-        self.user_deposit_b[ctx.address] = (
-            self.user_deposit_b.get(ctx.address, 0) + amount
-        )
         if self.total_liquidity == 0:
             self.total_liquidity = amount * PRECISION
             self.user_liquidity[ctx.address] = amount * PRECISION
@@ -126,6 +123,9 @@ class Oasis(Blueprint):
             }
         )
         self.user_balances[ctx.address] = partial
+        self.user_deposit_b[ctx.address] = (
+            self.user_deposit_b.get(ctx.address, 0) + amount
+        )
 
         actions = [
             action,
