@@ -25,11 +25,11 @@ class Oasis(Blueprint):
 
     dev_address: Address
     dev_balance: Amount
-    user_balances: dict[Address, Amount]
+    user_deposit_b: dict[Address, Amount]
     user_liquidity: dict[Address, Amount]
     total_liquidity: Amount
     user_withdrawal_time: dict[Address, Timestamp]
-    user_bonus: dict[Address, Amount]
+    user_balances: dict[Address, dict[TokenUid, Amount]]
     token_b: TokenUid
 
     @public
@@ -79,13 +79,13 @@ class Oasis(Blueprint):
             raise NCFail("Deposit token not B")
         amount = action.amount
         htr_amount = self._quote_add_liquidity_in(ctx, amount)
-        bonus = self._get_user_bonus(timelock, htr_amount)
+        bonus = self._get_user_balances(timelock, htr_amount)
         now = ctx.timestamp
         if htr_amount + bonus > self.dev_balance:
             raise NCFail("Not enough balance")
 
-        self.user_balances[ctx.address] = (
-            self.user_balances.get(ctx.address, 0) + amount
+        self.user_deposit_b[ctx.address] = (
+            self.user_deposit_b.get(ctx.address, 0) + amount
         )
         if self.total_liquidity == 0:
             self.total_liquidity = amount * PRECISION
@@ -107,25 +107,26 @@ class Oasis(Blueprint):
             delta = now - self.user_withdrawal_time[ctx.address]
             self.user_withdrawal_time[ctx.address] = (
                 (
-                    (delta * self.user_balances[ctx.address])
+                    (delta * self.user_deposit_b[ctx.address])
                     + (amount * timelock * MONTHS_IN_SECONDS)
                 )
                 // (delta + timelock * MONTHS_IN_SECONDS)
             ) + 1
-            # self.log.info(f"inside now {now}")
-            # self.log.info(f"inside delta {delta}")
-            # self.log.info(f"inside amount {amount}")
-            # self.log.info(f"inside timelock {timelock}")
-            # self.log.info(f"inside user_balances {self.user_balances[ctx.address]}")
-            # self.log.info(
-            #     f"inside user withdrawal time depois {self.user_withdrawal_time[ctx.address]}"
-            # )
 
         else:
             self.user_withdrawal_time[ctx.address] = now + timelock * MONTHS_IN_SECONDS
 
         self.dev_balance -= bonus + htr_amount
-        self.user_bonus[ctx.address] = self.user_bonus.get(ctx.address, 0) + bonus
+        # Update dict indexed by address
+        partial = self.user_balances.get(ctx.address, {})
+        partial.update(
+            {
+                settings.HATHOR_TOKEN_UID: partial.get(settings.HATHOR_TOKEN_UID, 0)
+                + bonus,
+            }
+        )
+        self.user_balances[ctx.address] = partial
+
         actions = [
             action,
             NCAction(NCActionType.DEPOSIT, settings.HATHOR_TOKEN_UID, htr_amount),  # type: ignore
@@ -135,6 +136,81 @@ class Oasis(Blueprint):
         # self.user_liquidity[self.dev_address] = (
         #     self.user_liquidity.get(self.dev_address, 0) + liquidity_increase
         # )
+
+    def user_withdraw(self, ctx: Context) -> None:
+        action_token_b = self._get_token_action(
+            ctx, NCActionType.WITHDRAWAL, self.token_b
+        )
+        action_htr = self._get_token_action(
+            ctx, NCActionType.WITHDRAWAL, settings.HATHOR_TOKEN_UID
+        )
+        if ctx.timestamp < self.user_withdrawal_time[ctx.address]:
+            raise NCFail("Withdrawal locked")
+        oasis_quote = self._quote_remove_liquidity_oasis(ctx)
+        htr_oasis_amount = oasis_quote["max_withdraw_a"]
+        token_b_oasis_amount = oasis_quote["user_lp_b"]
+        user_liquidity = self.user_liquidity.get(ctx.address, 0)
+        user_lp_b = int(
+            (user_liquidity / PRECISION)
+            * token_b_oasis_amount
+            / (self.total_liquidity / PRECISION)
+        )
+        user_lp_htr = int(
+            (user_liquidity / PRECISION)
+            * htr_oasis_amount
+            / (self.total_liquidity / PRECISION)
+        )
+        actions = [
+            NCAction(
+                NCActionType.WITHDRAWAL, settings.HATHOR_TOKEN_UID, user_lp_htr  # type: ignore
+            ),
+            NCAction(NCActionType.WITHDRAWAL, self.token_b, user_lp_b),  # type: ignore
+        ]
+        ctx.call_public_method(self.dozer_pool, "remove_liquidity", actions)
+        max_withdraw_b = user_lp_b + self.user_balances[ctx.address].get(
+            self.token_b, 0
+        )
+        if user_lp_b >= self.user_deposit_b[ctx.address]:  # without impermanent loss
+
+            if action_token_b.amount > max_withdraw_b:
+                raise NCFail("Not enough balance")
+            else:
+                partial = self.user_balances.get(ctx.address, {})
+                partial.update(
+                    {
+                        self.token_b: max_withdraw_b - action_token_b.amount,
+                    }
+                )
+                self.user_balances[ctx.address] = partial
+            # impermanent loss
+            if self.user_deposit_b[ctx.address] > user_lp_b:
+                loss = self.user_deposit_b[ctx.address] - user_lp_b
+                loss_htr = ctx.call_private_method(
+                    self.dozer_pool, "quote_token_b", loss
+                )
+                if loss_htr > user_lp_htr:
+                    loss_htr = user_lp_htr
+                max_withdraw_htr = (
+                    self.user_balances[ctx.address].get(settings.HATHOR_TOKEN_UID, 0)
+                    + loss_htr
+                )
+            # without impermanent loss
+            else:
+                max_withdraw_htr = self.user_balances[ctx.address].get(
+                    settings.HATHOR_TOKEN_UID, 0
+                )
+
+            if action_htr.amount > max_withdraw_htr:
+                raise NCFail("Not enough balance")
+            partial = self.user_balances.get(ctx.address, {})
+            partial.update(
+                {
+                    settings.HATHOR_TOKEN_UID: max_withdraw_htr - action_htr.amount,
+                }
+            )
+            self.user_balances[ctx.address] = partial
+            self.user_liquidity[ctx.address] = 0
+            self.user_deposit_b[ctx.address] = 0
 
     def _get_oasis_lp_amount_b(self, ctx: Context) -> Amount:
         return ctx.call_private_method(
@@ -148,14 +224,19 @@ class Oasis(Blueprint):
             self.dozer_pool, "front_quote_add_liquidity_in", amount, self.token_b
         )
 
-    def _get_user_bonus(self, timelock: int, amount: Amount) -> Amount:
+    def _quote_remove_liquidity_oasis(self, ctx: Context) -> dict[str, float]:
+        return ctx.call_private_method(
+            self.dozer_pool, "quote_remove_liquidity", ctx.get_nanocontract_id()
+        )
+
+    def _get_user_balances(self, timelock: int, amount: Amount) -> Amount:
         """Calculates the bonus for a user based on the timelock and amount"""
         if timelock == 6:
-            return 0.1**amount
+            return 0.1**amount  # type: ignore
         elif timelock == 9:
-            return 0.15**amount
+            return 0.15**amount  # type: ignore
         elif timelock == 12:
-            return 0.2**amount
+            return 0.2**amount  # type: ignore
         else:
             raise NCFail("Invalid timelock")
 
@@ -177,7 +258,11 @@ class Oasis(Blueprint):
         return output
 
     def _get_token_action(
-        self, ctx: Context, action_type: NCActionType, token: TokenUid, auth: bool
+        self,
+        ctx: Context,
+        action_type: NCActionType,
+        token: TokenUid,
+        auth: bool = False,
     ) -> NCAction:
         """Returns one action tested by type and index"""
         if len(ctx.actions) > 2:
@@ -223,10 +308,15 @@ class Oasis(Blueprint):
         address: Address,
     ) -> dict[str, float]:
         return {
-            "user_balance": self.user_balances.get(address, 0),
+            "user_deposit_b": self.user_deposit_b.get(address, 0),
             "user_liquidity": self.user_liquidity.get(address, 0),
             "user_withdrawal_time": self.user_withdrawal_time.get(address, 0),
             "dev_balance": self.dev_balance,
             "total_liquidity": self.total_liquidity,
-            "user_bonus": self.user_bonus.get(address, 0),
+            "user_balance_a": self.user_balances.get(
+                address, {settings.HATHOR_TOKEN_UID: 0}
+            ).get(settings.HATHOR_TOKEN_UID, 0),
+            "user_balance_b": self.user_balances.get(address, {self.token_b: 0}).get(
+                self.token_b, 0
+            ),
         }

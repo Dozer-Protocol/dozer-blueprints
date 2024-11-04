@@ -663,6 +663,23 @@ class Dozer_Pool(Blueprint):
             "fee": str(self.fee_numerator / 10),
         }
 
+    def quote_token_b(self, amount_b: Amount) -> int:
+        return self.quote(amount_b, self.reserve_b, self.reserve_a)
+
+    def quote_remove_liquidity(self, address: Address) -> dict[str, float]:
+        user_liquidity = self.user_liquidity.get(address, 0)
+        max_withdraw_a = int(
+            (user_liquidity / PRECISION)
+            * self.reserve_a
+            / (self.total_liquidity / PRECISION)
+        )
+        max_withdraw_b = self.quote(max_withdraw_a, self.reserve_a, self.reserve_b)  # type: ignore
+        return {
+            "liquidity": user_liquidity / self.total_liquidity,
+            "max_withdraw_a": max_withdraw_a,
+            "max_withdraw_b": max_withdraw_b,
+        }
+
     def user_info(
         self,
         address: Address,
