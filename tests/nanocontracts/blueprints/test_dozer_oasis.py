@@ -4,6 +4,7 @@ from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprints.dozer_pool import Dozer_Pool
 from hathor.nanocontracts.blueprints.dozer_oasis import Oasis
 from hathor.nanocontracts.types import NCAction, NCActionType
+from hathor.pycoin import htr
 from hathor.util import not_none
 from hathor.conf.get_settings import HathorSettings
 from hathor.wallet.keypair import KeyPair
@@ -47,14 +48,11 @@ class OasisTestCase(BlueprintTestCase):
 
     def _get_user_bonus(self, timelock: int, amount: int) -> int:
         """Calculates the bonus for a user based on the timelock and amount"""
-        if timelock == 6:
-            return 0.1**amount
-        elif timelock == 9:
-            return 0.15**amount
-        elif timelock == 12:
-            return 0.2**amount  # type: ignore
-        else:
-            raise "Invalid timelock"  # type: ignore
+        if timelock not in [6, 9, 12]:  # Assuming these are the only valid values
+            raise NCFail("Invalid timelock value")
+        bonus_multiplier = {6: 0.1, 9: 0.15, 12: 0.2}
+
+        return int(bonus_multiplier[timelock] * amount)  # type: ignore
 
     def _quote_add_liquidity_in(self, amount: int) -> int:
         return self.runner.call_private_method(
@@ -112,7 +110,7 @@ class OasisTestCase(BlueprintTestCase):
         self.initialize_oasis()
         self.assertEqual(self.oasis_storage.get("dev_balance"), dev_initial_deposit)
 
-    def test_user_deposit(self) -> None:
+    def test_user_deposit(self) -> tuple[Context, int, int]:
         dev_initial_deposit = 10_000_000_00
         self.initialize_pool()
         self.initialize_oasis(amount=dev_initial_deposit)
@@ -132,11 +130,10 @@ class OasisTestCase(BlueprintTestCase):
         user_info = self.runner.call_private_method(
             self.oasis_id, "user_info", user_address
         )
-        user_bonus = self._get_user_bonus(timelock, deposit_amount)
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
-        user_balance_a = user_bonus
+        user_bonus = self._get_user_bonus(timelock, htr_amount)
         self.assertEqual(user_info["user_deposit_b"], deposit_amount)
-        self.assertEqual(user_info["user_balance_a"], user_balance_a)
+        self.assertEqual(user_info["user_balance_a"], user_bonus)
         self.assertEqual(user_info["user_balance_b"], 0)
         self.assertEqual(user_info["user_liquidity"], deposit_amount * PRECISION)
         self.assertEqual(
@@ -146,6 +143,7 @@ class OasisTestCase(BlueprintTestCase):
             user_info["dev_balance"], dev_initial_deposit - htr_amount - user_bonus
         )
         self.assertEqual(user_info["total_liquidity"], deposit_amount * PRECISION)
+        return ctx, timelock, htr_amount
 
     def test_multiple_user_deposit_no_repeat(self) -> None:
         dev_initial_deposit = 10_000_000_00
@@ -272,6 +270,35 @@ class OasisTestCase(BlueprintTestCase):
             self.assertEqual(user_info["user_liquidity"], user_liquidity[i])
             self.assertEqual(user_info["user_withdrawal_time"], user_withdrawal_time[i])
             self.assertEqual(user_info["total_liquidity"], total_liquidity)
+
+    def test_user_withdraw_exact_value(self):
+        ctx_deposit, timelock, htr_amount = self.test_user_deposit()
+        user_address = ctx_deposit.address
+        deposit_amount = ctx_deposit.actions.popitem()[1].amount
+        deposit_timestamp = ctx_deposit.timestamp
+        user_info = self.runner.call_private_method(
+            self.oasis_id, "user_info", user_address
+        )
+        bonus = self._get_user_bonus(timelock, htr_amount)
+        self.assertEqual(user_info["user_deposit_b"], deposit_amount)
+        self.assertEqual(user_info["user_balance_a"], bonus)
+        self.assertEqual(user_info["user_balance_b"], 0)
+        self.assertEqual(user_info["user_liquidity"], deposit_amount * PRECISION)
+        self.assertEqual(
+            user_info["user_withdrawal_time"],
+            deposit_timestamp + timelock * MONTHS_IN_SECONDS,
+        )
+        self.assertEqual(user_info["dev_balance"], 10_000_000_00 - htr_amount - bonus)
+        self.assertEqual(user_info["total_liquidity"], deposit_amount * PRECISION)
+        # Withdraw exact value
+        ctx = Context(
+            [
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, deposit_amount),  # type: ignore
+            ],
+            self.tx,
+            user_address,
+            timestamp=deposit_timestamp,
+        )
 
     # def test_set_dozer_pool(self):
     #     """Test setting dozer pool contract"""

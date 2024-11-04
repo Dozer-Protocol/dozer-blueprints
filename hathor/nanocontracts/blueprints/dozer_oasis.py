@@ -88,7 +88,7 @@ class Oasis(Blueprint):
             raise NCFail("Deposit token not B")
         amount = action.amount
         htr_amount = self._quote_add_liquidity_in(ctx, amount)
-        bonus = self._get_user_balances(timelock, htr_amount)
+        bonus = self._get_user_bonus(timelock, htr_amount)
         now = ctx.timestamp
         if htr_amount + bonus > self.dev_balance:
             raise NCFail("Not enough balance")
@@ -230,13 +230,13 @@ class Oasis(Blueprint):
             self.dozer_pool, "quote_remove_liquidity", ctx.get_nanocontract_id()
         )
 
-    def _get_user_balances(self, timelock: int, amount: Amount) -> Amount:
+    def _get_user_bonus(self, timelock: int, amount: Amount) -> Amount:
         """Calculates the bonus for a user based on the timelock and amount"""
         if timelock not in [6, 9, 12]:  # Assuming these are the only valid values
             raise NCFail("Invalid timelock value")
         bonus_multiplier = {6: 0.1, 9: 0.15, 12: 0.2}
 
-        return bonus_multiplier[timelock] ** amount  # type: ignore
+        return int(bonus_multiplier[timelock] * amount)  # type: ignore
 
     def _get_action(
         self, ctx: Context, action_type: NCActionType, auth: bool
