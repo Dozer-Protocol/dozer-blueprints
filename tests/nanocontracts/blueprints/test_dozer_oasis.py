@@ -66,14 +66,11 @@ class OasisTestCase(BlueprintTestCase):
             self.oasis_id,
         )
 
-    def initialize_oasis(
-        self, amount: int = 10_000_000_00, token_b_amount: int = 10_000_00
-    ) -> None:
+    def initialize_oasis(self, amount: int = 10_000_000_00) -> None:
         """Test basic initialization"""
         ctx = Context(
             [
                 NCAction(NCActionType.DEPOSIT, HTR_UID, amount),  # type: ignore
-                NCAction(NCActionType.DEPOSIT, self.token_b, token_b_amount),  # type: ignore
             ],
             self.tx,
             self.dev_address,

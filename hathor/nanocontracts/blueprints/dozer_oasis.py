@@ -1,3 +1,4 @@
+from curses.ascii import HT
 from enum import Enum
 from hathor.conf.get_settings import HathorSettings
 from hathor.types import Address, Amount, Timestamp, TokenUid
@@ -15,7 +16,7 @@ from hathor.nanocontracts.types import (
 MIN_DEPOSIT = 10000_00
 PRECISION = 10**20
 MONTHS_IN_SECONDS = 30 * 24 * 3600
-HATHOR_UID = HathorSettings().HATHOR_TOKEN_UID  # type: ignore
+HTR_UID = HathorSettings().HATHOR_TOKEN_UID  # type: ignore
 
 
 class Oasis(Blueprint):
@@ -39,12 +40,10 @@ class Oasis(Blueprint):
         """Initialize the contract with no dozer pool set."""
 
         pool_token_a, pool_token_b = ctx.call_private_method(dozer_pool, "get_uuids")
-        if pool_token_a != HATHOR_UID or pool_token_b != token_b:
+        if pool_token_a != HTR_UID or pool_token_b != token_b:
             raise (NCFail)
-        action = self._get_token_action(
-            ctx, NCActionType.DEPOSIT, HATHOR_UID, auth=False
-        )
-        if action.amount < MIN_DEPOSIT or action.token_uid != HATHOR_UID:
+        action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
+        if action.amount < MIN_DEPOSIT or action.token_uid != HTR_UID:
             raise NCFail("Deposit amount too low or token not HATHOR")
         self.token_b = token_b
         self.dev_address = ctx.address
@@ -64,14 +63,14 @@ class Oasis(Blueprint):
             NCFail: If deposit requirements not met or invalid timelock
         """
         action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
-        if action.token_uid != HATHOR_UID:
+        if action.token_uid != HTR_UID:
             raise NCFail("Deposit token not HATHOR")
         self.dev_balance += action.amount
 
     @public
     def dev_withdraw(self, ctx: Context) -> None:
         action = self._get_action(ctx, NCActionType.WITHDRAWAL, auth=True)
-        if action.token_uid != HATHOR_UID:
+        if action.token_uid != HTR_UID:
             raise NCFail("Withdrawal token not HATHOR")
         if action.amount > self.dev_balance:
             raise NCFail("Withdrawal amount too high")
@@ -127,7 +126,7 @@ class Oasis(Blueprint):
         partial = self.user_balances.get(ctx.address, {})
         partial.update(
             {
-                HATHOR_UID: partial.get(HATHOR_UID, 0) + bonus,
+                HTR_UID: partial.get(HTR_UID, 0) + bonus,
             }
         )
         self.user_balances[ctx.address] = partial
@@ -137,7 +136,7 @@ class Oasis(Blueprint):
 
         actions = [
             action,
-            NCAction(NCActionType.DEPOSIT, HATHOR_UID, htr_amount),  # type: ignore
+            NCAction(NCActionType.DEPOSIT, HTR_UID, htr_amount),  # type: ignore
         ]
         ctx.call_public_method(self.dozer_pool, "add_liquidity", actions)
 
@@ -149,7 +148,7 @@ class Oasis(Blueprint):
         action_token_b = self._get_token_action(
             ctx, NCActionType.WITHDRAWAL, self.token_b
         )
-        action_htr = self._get_token_action(ctx, NCActionType.WITHDRAWAL, HATHOR_UID)
+        action_htr = self._get_token_action(ctx, NCActionType.WITHDRAWAL, HTR_UID)
         if ctx.timestamp < self.user_withdrawal_time[ctx.address]:
             raise NCFail("Withdrawal locked")
         oasis_quote = self._quote_remove_liquidity_oasis(ctx)
@@ -167,7 +166,7 @@ class Oasis(Blueprint):
             / (self.total_liquidity / PRECISION)
         )
         actions = [
-            NCAction(NCActionType.WITHDRAWAL, HATHOR_UID, user_lp_htr),  # type: ignore
+            NCAction(NCActionType.WITHDRAWAL, HTR_UID, user_lp_htr),  # type: ignore
             NCAction(NCActionType.WITHDRAWAL, self.token_b, user_lp_b),  # type: ignore
         ]
         ctx.call_public_method(self.dozer_pool, "remove_liquidity", actions)
@@ -195,18 +194,18 @@ class Oasis(Blueprint):
                 if loss_htr > user_lp_htr:
                     loss_htr = user_lp_htr
                 max_withdraw_htr = (
-                    self.user_balances[ctx.address].get(HATHOR_UID, 0) + loss_htr
+                    self.user_balances[ctx.address].get(HTR_UID, 0) + loss_htr
                 )
             # without impermanent loss
             else:
-                max_withdraw_htr = self.user_balances[ctx.address].get(HATHOR_UID, 0)
+                max_withdraw_htr = self.user_balances[ctx.address].get(HTR_UID, 0)
 
             if action_htr.amount > max_withdraw_htr:
                 raise NCFail("Not enough balance")
             partial = self.user_balances.get(ctx.address, {})
             partial.update(
                 {
-                    HATHOR_UID: max_withdraw_htr - action_htr.amount,
+                    HTR_UID: max_withdraw_htr - action_htr.amount,
                 }
             )
             self.user_balances[ctx.address] = partial
@@ -246,7 +245,8 @@ class Oasis(Blueprint):
             raise NCFail
         # if ctx.actions.keys not in rewardable_indexs:
         #     raise InvalidTokens()
-        output = ctx.actions.popitem()[1]
+        keys = ctx.actions.keys()
+        output = ctx.actions.get(HTR_UID)
         if output.type != action_type:
             raise NCFail
         if auth:
@@ -311,8 +311,8 @@ class Oasis(Blueprint):
             "user_withdrawal_time": self.user_withdrawal_time.get(address, 0),
             "dev_balance": self.dev_balance,
             "total_liquidity": self.total_liquidity,
-            "user_balance_a": self.user_balances.get(address, {HATHOR_UID: 0}).get(
-                HATHOR_UID, 0
+            "user_balance_a": self.user_balances.get(address, {HTR_UID: 0}).get(
+                HTR_UID, 0
             ),
             "user_balance_b": self.user_balances.get(address, {self.token_b: 0}).get(
                 self.token_b, 0
