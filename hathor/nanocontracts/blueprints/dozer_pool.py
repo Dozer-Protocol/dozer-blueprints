@@ -717,3 +717,12 @@ class Dozer_Pool(Blueprint):
             "transactions": self.transactions,
             "last_actvity_timestamp": self.last_activity_timestamp,
         }
+
+    @view
+    def get_uuids(self) -> tuple[TokenUid, TokenUid]:
+        return self.token_a, self.token_b
+
+    @view
+    def max_withdraw_b(self, address: Address) -> float:
+        user_info = self.user_info(address)
+        return user_info["max_withdraw_b"]
