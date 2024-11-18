@@ -1,17 +1,16 @@
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
+    NCAction,
+    NCActionType,
+    public,
     Address,
     Amount,
     Timestamp,
     TokenUid,
-    NCAction,
-    NCActionType,
-    public,
-    view,
 )
 
 PRECISION = 10**20
@@ -169,13 +168,11 @@ class Dozer_Pool(Blueprint):
         self.total_liquidity = PRECISION * action_a.amount
         self.user_liquidity[ctx.address] = self.total_liquidity
 
-    @view
     def get_reserves(self) -> tuple[Amount, Amount]:
         """Return the current reserves."""
         # TODO Add latest_activity_timestamp
         return (self.reserve_a, self.reserve_b)
 
-    @view
     def get_k_last(self) -> Amount:
         """Return the last k."""
         return self.reserve_a * self.reserve_b
@@ -296,7 +293,6 @@ class Dozer_Pool(Blueprint):
         self.balance_a[ctx.address] -= action_a.amount
         self.balance_b[ctx.address] -= action_b.amount
 
-    @view
     def _get_protocol_liquidity_increase(
         self, protocol_fee_amount: Amount, token: TokenUid
     ) -> int:
@@ -408,22 +404,18 @@ class Dozer_Pool(Blueprint):
             action_out.token_uid,
         )
 
-    @view
     def balance_of(self, owner: Address) -> tuple[Amount, Amount]:
         """Get owner's balance."""
         return (self.balance_a.get(owner, 0), self.balance_b.get(owner, 0))
 
-    @view
     def liquidity_of(self, owner: Address) -> float:
         """Get owner's balance."""
         return self.user_liquidity.get(owner, 0)
 
-    @view
     def accumulated_fee_of(self, token_uid: TokenUid) -> Amount:
         """Get accumulated fee of a token."""
         return self.accumulated_fee.get(token_uid, 0)
 
-    @view
     def get_amount_out(
         self, amount_in: Amount, reserve_in: Amount, reserve_out: Amount
     ) -> Amount:
@@ -435,7 +427,6 @@ class Dozer_Pool(Blueprint):
             amount_out = reserve_out**0.99
         return amount_out
 
-    @view
     def get_amount_in(
         self, amount_out: Amount, reserve_in: Amount, reserve_out: Amount
     ) -> Amount:
@@ -450,7 +441,6 @@ class Dozer_Pool(Blueprint):
             )
         return amount_in
 
-    @view
     def quote(self, amount_a: Amount, reserve_a: Amount, reserve_b: Amount) -> Amount:
         """Return amount_b such that amount_b/amount_a = reserve_b/reserve_a = k"""
         amount_b = (amount_a * reserve_b) // reserve_a
@@ -527,7 +517,6 @@ class Dozer_Pool(Blueprint):
         self.reserve_a -= action_a.amount
         self.reserve_b -= optimal_b
 
-    @view
     def front_end_api_pool(
         self,
     ) -> dict[str, float]:
@@ -579,7 +568,6 @@ class Dozer_Pool(Blueprint):
             quote = self.quote(amount_in, self.reserve_b, self.reserve_a)
         return quote
 
-    @view
     def front_quote_add_liquidity_out(
         self, amount_out: Amount, token_in: TokenUid
     ) -> float:
@@ -599,7 +587,6 @@ class Dozer_Pool(Blueprint):
             quote = self.quote(amount_out, self.reserve_a, self.reserve_b)
         return quote
 
-    @view
     def front_quote_exact_tokens_for_tokens(
         self, amount_in: Amount, token_in: TokenUid
     ) -> dict[str, float]:
@@ -631,7 +618,6 @@ class Dozer_Pool(Blueprint):
             price_impact = 0
         return {"amount_out": amount_out, "price_impact": price_impact}
 
-    @view
     def front_quote_tokens_for_exact_tokens(
         self, amount_out: Amount, token_in: TokenUid
     ) -> dict[str, float]:
@@ -663,7 +649,6 @@ class Dozer_Pool(Blueprint):
             price_impact = 100
         return {"amount_in": amount_in, "price_impact": price_impact}
 
-    @view
     def pool_info(
         self,
     ) -> dict[str, str]:
@@ -678,13 +663,30 @@ class Dozer_Pool(Blueprint):
             "fee": str(self.fee_numerator / 10),
         }
 
-    @view
+    def quote_token_b(self, amount_b: Amount) -> int:
+        return self.quote(amount_b, self.reserve_b, self.reserve_a)
+
+    def quote_remove_liquidity(self, address: Address) -> dict[str, float]:
+        user_liquidity = self.user_liquidity.get(address, 0)
+        max_withdraw_a = int(
+            (user_liquidity / PRECISION)
+            * self.reserve_a
+            / (self.total_liquidity / PRECISION)
+        )
+        max_withdraw_b = self.quote(max_withdraw_a, self.reserve_a, self.reserve_b)  # type: ignore
+        return {
+            "liquidity": user_liquidity / self.total_liquidity,
+            "max_withdraw_a": max_withdraw_a,
+            "max_withdraw_b": max_withdraw_b,
+        }
+
     def user_info(
         self,
         address: Address,
     ) -> dict[str, float]:
+        user_liquidity = self.user_liquidity.get(address, 0)
         max_withdraw_a = int(
-            (self.user_liquidity[address] / PRECISION)
+            (user_liquidity / PRECISION)
             * self.reserve_a
             / (self.total_liquidity / PRECISION)
         )
@@ -692,12 +694,11 @@ class Dozer_Pool(Blueprint):
         return {
             "balance_a": self.balance_a.get(address, 0),
             "balance_b": self.balance_b.get(address, 0),
-            "liquidity": self.user_liquidity.get(address, 0),
+            "liquidity": user_liquidity,
             "max_withdraw_a": max_withdraw_a,
             "max_withdraw_b": max_withdraw_b,
         }
 
-    @view
     def pool_data(
         self,
     ) -> dict[str, float]:
@@ -717,3 +718,10 @@ class Dozer_Pool(Blueprint):
             "transactions": self.transactions,
             "last_actvity_timestamp": self.last_activity_timestamp,
         }
+
+    def get_uuids(self) -> Any:
+        return self.token_a, self.token_b
+
+    def max_withdraw_b(self, address: Address) -> float:
+        user_info = self.user_info(address)
+        return user_info["max_withdraw_b"]
