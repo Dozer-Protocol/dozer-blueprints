@@ -560,6 +560,7 @@ class Dozer_Pool(Blueprint):
             "transactions": self.transactions,
         }
 
+    @view
     def front_quote_add_liquidity_in(
         self, amount_in: Amount, token_in: TokenUid
     ) -> float:
@@ -684,7 +685,7 @@ class Dozer_Pool(Blueprint):
         address: Address,
     ) -> dict[str, float]:
         max_withdraw_a = int(
-            (self.user_liquidity[address] / PRECISION)
+            (self.user_liquidity.get(address, 0) / PRECISION)
             * self.reserve_a
             / (self.total_liquidity / PRECISION)
         )

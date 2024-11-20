@@ -271,7 +271,7 @@ class OasisTestCase(BlueprintTestCase):
     def test_user_withdraw_exact_value(self):
         ctx_deposit, timelock, htr_amount = self.test_user_deposit()
         user_address = ctx_deposit.address
-        deposit_amount = ctx_deposit.actions.popitem()[1].amount
+        deposit_amount = ctx_deposit.actions.get(self.token_b).amount
         deposit_timestamp = ctx_deposit.timestamp
         user_info = self.runner.call_view_method(
             self.oasis_id, "user_info", user_address

@@ -11,6 +11,7 @@ from hathor.nanocontracts.types import (
     NCAction,
     NCActionType,
     public,
+    view,
 )
 
 MIN_DEPOSIT = 10000_00
@@ -299,6 +300,7 @@ class Oasis(Blueprint):
             self.dozer_pool, "front_quote_add_liquidity_in", amount, token_uid
         )
 
+    @view
     def user_info(
         self,
         address: Address,
