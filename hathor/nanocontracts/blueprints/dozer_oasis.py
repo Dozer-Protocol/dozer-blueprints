@@ -1,11 +1,9 @@
-from curses.ascii import HT
-from enum import Enum
+from functools import partial
 from hathor.conf.get_settings import HathorSettings
 from hathor.nanocontracts.context import Context
 from hathor.types import Address, Amount, Timestamp, TokenUid
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.exception import NCFail
-from hathor.crypto.util import get_address_b58_from_bytes
 from hathor.nanocontracts.types import (
     ContractId,
     NCAction,
@@ -13,6 +11,7 @@ from hathor.nanocontracts.types import (
     public,
     view,
 )
+from hathor.wallet.resources import balance
 
 MIN_DEPOSIT = 10000_00
 PRECISION = 10**20
@@ -145,6 +144,7 @@ class Oasis(Blueprint):
         #     self.user_liquidity.get(self.dev_address, 0) + liquidity_increase
         # )
 
+    @public
     def user_withdraw(self, ctx: Context) -> None:
         action_token_b = self._get_token_action(
             ctx, NCActionType.WITHDRAWAL, self.token_b
@@ -155,6 +155,10 @@ class Oasis(Blueprint):
         oasis_quote = self._quote_remove_liquidity_oasis(ctx)
         htr_oasis_amount = oasis_quote["max_withdraw_a"]
         token_b_oasis_amount = oasis_quote["user_lp_b"]
+        balance_b_oasis_amount = oasis_quote["balance_b"]
+        self.log.info(f"htr_oasis_amount {htr_oasis_amount}")
+        self.log.info(f"token_b_oasis_amount {token_b_oasis_amount}")
+        self.log.info(f"balance_b_oasis_amount {balance_b_oasis_amount}")
         user_liquidity = self.user_liquidity.get(ctx.address, 0)
         user_lp_b = int(
             (user_liquidity / PRECISION)
@@ -167,49 +171,70 @@ class Oasis(Blueprint):
             / (self.total_liquidity / PRECISION)
         )
         actions = [
-            NCAction(NCActionType.WITHDRAWAL, HTR_UID, user_lp_htr),  # type: ignore
-            NCAction(NCActionType.WITHDRAWAL, self.token_b, user_lp_b),  # type: ignore
+            NCAction(NCActionType.WITHDRAWAL, HTR_UID, user_lp_htr),
+            NCAction(NCActionType.WITHDRAWAL, self.token_b, user_lp_b),
         ]
         ctx.call_public_method(self.dozer_pool, "remove_liquidity", actions)
         max_withdraw_b = user_lp_b + self.user_balances[ctx.address].get(
             self.token_b, 0
         )
-        if user_lp_b >= self.user_deposit_b[ctx.address]:  # without impermanent loss
+        self.log.info(f"max_withdraw_b {max_withdraw_b}")
+        self.log.info(f"action_token_b {action_token_b.amount}")
 
-            if action_token_b.amount > max_withdraw_b:
-                raise NCFail("Not enough balance")
-            else:
-                partial = self.user_balances.get(ctx.address, {})
-                partial.update(
-                    {
-                        self.token_b: max_withdraw_b - action_token_b.amount,
-                    }
-                )
-                self.user_balances[ctx.address] = partial
-            # impermanent loss
-            if self.user_deposit_b[ctx.address] > user_lp_b:
-                loss = self.user_deposit_b[ctx.address] - user_lp_b
-                loss_htr = ctx.call_view_method(self.dozer_pool, "quote_token_b", loss)
-                if loss_htr > user_lp_htr:
-                    loss_htr = user_lp_htr
-                max_withdraw_htr = (
-                    self.user_balances[ctx.address].get(HTR_UID, 0) + loss_htr
-                )
-            # without impermanent loss
-            else:
-                max_withdraw_htr = self.user_balances[ctx.address].get(HTR_UID, 0)
-
-            if action_htr.amount > max_withdraw_htr:
-                raise NCFail("Not enough balance")
+        ## token_b handling
+        if action_token_b.amount > max_withdraw_b:
+            raise NCFail("Not enough balance")
+        else:
             partial = self.user_balances.get(ctx.address, {})
             partial.update(
                 {
-                    HTR_UID: max_withdraw_htr - action_htr.amount,
+                    self.token_b: max_withdraw_b - action_token_b.amount,
                 }
             )
             self.user_balances[ctx.address] = partial
-            self.user_liquidity[ctx.address] = 0
-            self.user_deposit_b[ctx.address] = 0
+
+        ## htr handling
+        # impermanent loss
+        if self.user_deposit_b[ctx.address] > user_lp_b:
+            loss = self.user_deposit_b[ctx.address] - user_lp_b
+            loss_htr = ctx.call_view_method(self.dozer_pool, "quote_token_b", loss)
+            if loss_htr > user_lp_htr:
+                loss_htr = user_lp_htr
+            max_withdraw_htr = (
+                self.user_balances[ctx.address].get(HTR_UID, 0) + loss_htr
+            )
+        # without impermanent loss
+        else:
+            max_withdraw_htr = self.user_balances[ctx.address].get(HTR_UID, 0)
+
+        if action_htr.amount > max_withdraw_htr:
+            raise NCFail("Not enough balance")
+        partial = self.user_balances.get(ctx.address, {})
+        partial.update(
+            {
+                HTR_UID: max_withdraw_htr - action_htr.amount,
+            }
+        )
+        self.user_balances[ctx.address] = partial
+        self.user_liquidity[ctx.address] = 0
+        self.user_deposit_b[ctx.address] = 0
+
+    @public
+    def user_withdraw_bonus(self, ctx: Context) -> None:
+        action = self._get_action(ctx, NCActionType.WITHDRAWAL, auth=False)
+        if action.token_uid != HTR_UID:
+            raise NCFail("Withdrawal token not HATHOR")
+        if action.amount > self.user_balances.get(ctx.address, {HTR_UID: 0}).get(
+            HTR_UID, 0
+        ):
+            raise NCFail("Withdrawal amount too high")
+        partial = self.user_balances.get(ctx.address, {})
+        partial.update(
+            {
+                HTR_UID: partial.get(HTR_UID, 0) - action.amount,
+            }
+        )
+        self.user_balances[ctx.address] = partial
 
     def _get_oasis_lp_amount_b(self, ctx: Context) -> Amount:
         return ctx.call_view_method(
@@ -246,6 +271,8 @@ class Oasis(Blueprint):
         #     raise InvalidTokens()
         keys = ctx.actions.keys()
         output = ctx.actions.get(HTR_UID)
+        if not output:
+            raise NCFail
         if output.type != action_type:
             raise NCFail
         if auth:
@@ -267,6 +294,9 @@ class Oasis(Blueprint):
         try:
             output = ctx.actions.get(token)
         except:
+            raise NCFail
+
+        if not output:
             raise NCFail
 
         if output.type != action_type:

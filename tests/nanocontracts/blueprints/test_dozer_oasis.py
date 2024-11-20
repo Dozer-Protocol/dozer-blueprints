@@ -107,14 +107,13 @@ class OasisTestCase(BlueprintTestCase):
         self.initialize_oasis()
         self.assertEqual(self.oasis_storage.get("dev_balance"), dev_initial_deposit)
 
-    def test_user_deposit(self) -> tuple[Context, int, int]:
+    def test_user_deposit(self, timelock=6) -> tuple[Context, int, int]:
         dev_initial_deposit = 10_000_000_00
         self.initialize_pool()
         self.initialize_oasis(amount=dev_initial_deposit)
         user_address = self._get_any_address()[0]
         now = self.clock.seconds()
         deposit_amount = 1_000_00
-        timelock = 6
         ctx = Context(
             [
                 NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount),  # type: ignore
@@ -271,7 +270,10 @@ class OasisTestCase(BlueprintTestCase):
     def test_user_withdraw_exact_value(self):
         ctx_deposit, timelock, htr_amount = self.test_user_deposit()
         user_address = ctx_deposit.address
-        deposit_amount = ctx_deposit.actions.get(self.token_b).amount
+        action = ctx_deposit.actions.get(self.token_b) or NCAction(
+            NCActionType.WITHDRAWAL, self.token_b, 0
+        )
+        deposit_amount = action.amount
         deposit_timestamp = ctx_deposit.timestamp
         user_info = self.runner.call_view_method(
             self.oasis_id, "user_info", user_address
@@ -290,53 +292,287 @@ class OasisTestCase(BlueprintTestCase):
         # Withdraw exact value
         ctx = Context(
             [
-                NCAction(NCActionType.WITHDRAWAL, HTR_UID, deposit_amount),  # type: ignore
+                NCAction(NCActionType.WITHDRAWAL, self.token_b, deposit_amount),  # type: ignore
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, bonus),  # type: ignore
             ],
             self.tx,
             user_address,
-            timestamp=deposit_timestamp,
+            timestamp=deposit_timestamp + timelock * MONTHS_IN_SECONDS + 1,
+        )
+        self.runner.call_public_method(self.oasis_id, "user_withdraw", ctx)
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        self.assertEqual(user_info["user_deposit_b"], 0)
+        self.assertEqual(user_info["user_balance_a"], 0)
+        self.assertEqual(user_info["user_balance_b"], 0)
+        self.assertEqual(user_info["user_liquidity"], 0)
+        self.assertEqual(
+            user_info["user_withdrawal_time"],
+            deposit_timestamp + timelock * MONTHS_IN_SECONDS,
         )
 
-    # def test_set_dozer_pool(self):
-    #     """Test setting dozer pool contract"""
-    #     # Initialize first
-    #     ctx = Context([], self.tx, b"", timestamp=0)  # type: ignore
-    #     self.runner.call_public_method(self.oasis_id, "initialize", ctx)
+    def test_user_withdraw_bonus(self):
+        ctx_deposit, timelock, htr_amount = self.test_user_deposit()
+        user_address = ctx_deposit.address
+        action = ctx_deposit.actions.get(self.token_b) or NCAction(
+            NCActionType.WITHDRAWAL, self.token_b, 0
+        )
+        deposit_amount = action.amount
+        deposit_timestamp = ctx_deposit.timestamp
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        bonus = self._get_user_bonus(timelock, htr_amount)
+        self.assertEqual(user_info["user_deposit_b"], deposit_amount)
+        self.assertEqual(user_info["user_balance_a"], bonus)
+        self.assertEqual(user_info["user_balance_b"], 0)
+        self.assertEqual(user_info["user_liquidity"], deposit_amount * PRECISION)
+        self.assertEqual(
+            user_info["user_withdrawal_time"],
+            deposit_timestamp + timelock * MONTHS_IN_SECONDS,
+        )
+        ctx_withdraw_bonus = Context(
+            [
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, bonus),  # type: ignore
+            ],
+            self.tx,
+            user_address,
+            timestamp=deposit_timestamp + 1,
+        )
+        self.runner.call_public_method(
+            self.oasis_id, "user_withdraw_bonus", ctx_withdraw_bonus
+        )
+        self.log.info(f"{bonus=}")
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        self.assertEqual(user_info["user_balance_a"], 0)
+        self.assertEqual(user_info["user_balance_b"], 0)
+        ctx_withdraw_bonus_wrong = Context(
+            [
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, bonus + 1),  # type: ignore
+            ],
+            self.tx,
+            user_address,
+            timestamp=deposit_timestamp + 1,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.oasis_id, "user_withdraw_bonus", ctx_withdraw_bonus_wrong
+            )
 
-    #     # Set dozer pool
-    #     self.runner.call_public_method(
-    #         self.oasis_id, "set_dozer_pool", ctx, self.dozer_id
-    #     )
-    #     self.assertEqual(self.oasis_storage.get("dozer_pool"), self.dozer_id)
+    # def test_impermanent_loss_protection_scenarios(self):
+    #     """Test various impermanent loss scenarios to verify protection mechanism works correctly.
 
-    # def test_check_liquidity(self):
-    #     """Test checking liquidity from dozer pool"""
+    #     Scenarios tested:
+    #     1. Token B outperforms HTR by 4x (protection limit)
+    #     2. Token B outperforms HTR by >4x (partial protection)
+    #     3. HTR outperforms Token B (no protection needed)
+    #     4. Multiple users with different IL conditions
+    #     """
+    #     # Initialize with substantial liquidity
+    #     dev_initial_deposit = 100_000_000_00  # 100M HTR
+    #     pool_initial_htr = 10_000_000_00  # 10M HTR
+    #     pool_initial_token_b = 10_000_000_00  # 10M Token B
+
     #     # Initialize contracts
-    #     ctx = Context([], self.tx, b"", timestamp=0)  # type: ignore
-    #     self.runner.call_public_method(self.oasis_id, "initialize", ctx)
+    #     self.initialize_pool(amount_htr=pool_initial_htr, amount_b=pool_initial_token_b)
+    #     self.initialize_oasis(amount=dev_initial_deposit)
 
-    #     # Initialize dozer pool first
-    #     actions = [
-    #         NCAction(NCActionType.DEPOSIT, HTR_UID, 1000),  # type: ignore
-    #         NCAction(NCActionType.DEPOSIT, self.token_b, 1000),  # type: ignore
-    #     ]
-    #     pool_ctx = Context(actions, self.tx, self._get_any_address()[0], timestamp=0)  # type: ignore
+    #     # Setup test users
+    #     users = [self._get_any_address()[0] for _ in range(4)]
+    #     deposit_amounts = [1_000_000_00, 2_000_000_00, 3_000_000_00, 4_000_000_00]
+    #     timelocks = [6, 9, 12, 12]  # Months
+
+    #     # Store initial deposits for each user
+    #     user_deposits = {}
+    #     initial_time = self.clock.seconds()
+
+    #     # Make initial deposits
+    #     for i, user in enumerate(users):
+    #         ctx = Context(
+    #             [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amounts[i])],
+    #             self.tx,
+    #             user,
+    #             timestamp=initial_time,
+    #         )
+    #         self.runner.call_public_method(
+    #             self.oasis_id, "user_deposit", ctx, timelocks[i]
+    #         )
+
+    #         # Store deposit info
+    #         htr_amount = self._quote_add_liquidity_in(deposit_amounts[i])
+    #         user_deposits[user] = {
+    #             "deposit_amount": deposit_amounts[i],
+    #             "htr_amount": htr_amount,
+    #             "timelock": timelocks[i],
+    #             "timelock_end": initial_time + timelocks[i] * MONTHS_IN_SECONDS,
+    #             "bonus": self._get_user_bonus(timelocks[i], htr_amount),
+    #         }
+
+    #     # Scenario 1: Make Token B outperform HTR by 4x through swaps
+    #     # First add more liquidity to allow for large swaps
+    #     extra_liquidity_address = self._get_any_address()[0]
+    #     add_liquidity_ctx = Context(
+    #         [
+    #             NCAction(NCActionType.DEPOSIT, HTR_UID, pool_initial_htr),
+    #             NCAction(NCActionType.DEPOSIT, self.token_b, pool_initial_token_b),
+    #         ],
+    #         self.tx,
+    #         extra_liquidity_address,
+    #         timestamp=initial_time + MONTHS_IN_SECONDS,
+    #     )
     #     self.runner.call_public_method(
-    #         self.dozer_id,
-    #         "initialize",
-    #         pool_ctx,
-    #         HTR_UID,
-    #         self.token_b,
-    #         0,  # fee
-    #         50,  # protocol fee
+    #         self.dozer_id, "add_liquidity", add_liquidity_ctx
     #     )
 
-    #     # Set dozer pool in oasis
-    #     self.runner.call_public_method(
-    #         self.oasis_id, "set_dozer_pool", ctx, self.dozer_id
+    #     # Execute large HTR->Token B swaps to drive up Token B price
+    #     for _ in range(5):  # Multiple swaps to achieve desired price ratio
+    #         swap_amount = pool_initial_htr // 10
+    #         reserve_a = self.dozer_storage.get("reserve_a")
+    #         reserve_b = self.dozer_storage.get("reserve_b")
+    #         amount_out = self.runner.call_view_method(
+    #             self.dozer_id, "get_amount_out", swap_amount, reserve_a, reserve_b
+    #         )
+
+    #         swap_ctx = Context(
+    #             [
+    #                 NCAction(NCActionType.DEPOSIT, HTR_UID, swap_amount),
+    #                 NCAction(NCActionType.WITHDRAWAL, self.token_b, amount_out),
+    #             ],
+    #             self.tx,
+    #             extra_liquidity_address,
+    #             timestamp=initial_time + MONTHS_IN_SECONDS + 100,
+    #         )
+    #         self.runner.call_public_method(
+    #             self.dozer_id, "swap_exact_tokens_for_tokens", swap_ctx
+    #         )
+
+    #     # Test withdrawal for first user under 4x scenario
+    #     withdraw_time = user_deposits[users[0]]["timelock_end"] + 1
+    #     withdraw_ctx = Context(
+    #         [
+    #             NCAction(NCActionType.WITHDRAWAL, self.token_b, deposit_amounts[0]),
+    #             NCAction(
+    #                 NCActionType.WITHDRAWAL,
+    #                 HTR_UID,
+    #                 user_deposits[users[0]]["htr_amount"],
+    #             ),
+    #         ],
+    #         self.tx,
+    #         users[0],
+    #         timestamp=withdraw_time,
     #     )
 
-    #     # Test checking liquidity
-    #     result = self.runner.call_public_method(self.oasis_id, "return_ctx", ctx)
-    #     self.log.info(f"algumacoisa{result=}")
-    #     self.log.info(f"id{self.oasis_id=}")
+    #     self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
+
+    #     # Verify user received full protection
+    #     user_info = self.runner.call_view_method(self.oasis_id, "user_info", users[0])
+    #     self.assertEqual(user_info["user_deposit_b"], 0)  # User withdrew everything
+    #     self.assertGreater(
+    #         user_info["user_balance_a"], 0
+    #     )  # Should have protection payment
+
+    #     # Scenario 2: Push Token B outperformance to 8x with more swaps
+    #     for _ in range(5):
+    #         swap_amount = pool_initial_htr // 8
+    #         reserve_a = self.dozer_storage.get("reserve_a")
+    #         reserve_b = self.dozer_storage.get("reserve_b")
+    #         amount_out = self.runner.call_view_method(
+    #             self.dozer_id, "get_amount_out", swap_amount, reserve_a, reserve_b
+    #         )
+
+    #         swap_ctx = Context(
+    #             [
+    #                 NCAction(NCActionType.DEPOSIT, HTR_UID, swap_amount),
+    #                 NCAction(NCActionType.WITHDRAWAL, self.token_b, amount_out),
+    #             ],
+    #             self.tx,
+    #             extra_liquidity_address,
+    #             timestamp=initial_time + 2 * MONTHS_IN_SECONDS,
+    #         )
+    #         self.runner.call_public_method(
+    #             self.dozer_id, "swap_exact_tokens_for_tokens", swap_ctx
+    #         )
+
+    #     # Test withdrawal for second user under 8x scenario
+    #     withdraw_time = user_deposits[users[1]]["timelock_end"] + 1
+    #     withdraw_ctx = Context(
+    #         [
+    #             NCAction(NCActionType.WITHDRAWAL, self.token_b, deposit_amounts[1]),
+    #             NCAction(
+    #                 NCActionType.WITHDRAWAL,
+    #                 HTR_UID,
+    #                 user_deposits[users[1]]["htr_amount"],
+    #             ),
+    #         ],
+    #         self.tx,
+    #         users[1],
+    #         timestamp=withdraw_time,
+    #     )
+
+    #     self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
+
+    #     # Verify partial protection
+    #     user_info = self.runner.call_view_method(self.oasis_id, "user_info", users[1])
+    #     self.assertGreater(user_info["user_balance_a"], 0)
+    #     self.assertLess(
+    #         user_info["user_balance_a"], user_deposits[users[1]]["htr_amount"]
+    #     )
+
+    #     # Scenario 3: Make HTR outperform Token B through reverse swaps
+    #     for _ in range(5):
+    #         swap_amount = pool_initial_token_b // 10
+    #         reserve_b = self.dozer_storage.get("reserve_b")
+    #         reserve_a = self.dozer_storage.get("reserve_a")
+    #         amount_out = self.runner.call_view_method(
+    #             self.dozer_id, "get_amount_out", swap_amount, reserve_b, reserve_a
+    #         )
+
+    #         swap_ctx = Context(
+    #             [
+    #                 NCAction(NCActionType.DEPOSIT, self.token_b, swap_amount),
+    #                 NCAction(NCActionType.WITHDRAWAL, HTR_UID, amount_out),
+    #             ],
+    #             self.tx,
+    #             extra_liquidity_address,
+    #             timestamp=initial_time + 3 * MONTHS_IN_SECONDS,
+    #         )
+    #         self.runner.call_public_method(
+    #             self.dozer_id, "swap_exact_tokens_for_tokens", swap_ctx
+    #         )
+
+    #     # Test withdrawal for third user when HTR outperforms
+    #     withdraw_time = user_deposits[users[2]]["timelock_end"] + 1
+    #     withdraw_ctx = Context(
+    #         [
+    #             NCAction(NCActionType.WITHDRAWAL, self.token_b, deposit_amounts[2]),
+    #             NCAction(
+    #                 NCActionType.WITHDRAWAL,
+    #                 HTR_UID,
+    #                 user_deposits[users[2]]["htr_amount"],
+    #             ),
+    #         ],
+    #         self.tx,
+    #         users[2],
+    #         timestamp=withdraw_time,
+    #     )
+
+    #     self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
+
+    #     # Verify no protection needed
+    #     user_info = self.runner.call_view_method(self.oasis_id, "user_info", users[2])
+    #     self.assertEqual(user_info["user_deposit_b"], 0)
+    #     self.assertEqual(user_info["user_balance_a"], 0)  # No protection payment needed
+
+    #     # Verify overall contract state
+    #     total_protection_paid = sum(
+    #         self.runner.call_view_method(self.oasis_id, "user_info", user)[
+    #             "user_balance_a"
+    #         ]
+    #         for user in users
+    #     )
+
+    #     # Verify protection payments didn't exceed dev balance
+    #     self.assertLess(total_protection_paid, dev_initial_deposit)

@@ -13,6 +13,7 @@ from hathor.nanocontracts.types import (
     public,
     view,
 )
+from hathor.wallet.resources import balance
 
 PRECISION = 10**20
 
@@ -727,3 +728,23 @@ class Dozer_Pool(Blueprint):
     def max_withdraw_b(self, address: Address) -> float:
         user_info = self.user_info(address)
         return user_info["max_withdraw_b"]
+
+    def quote_token_b(self, amount_b: Amount) -> int:
+        return self.quote(amount_b, self.reserve_b, self.reserve_a)
+
+    @view
+    def quote_remove_liquidity(self, address: Address) -> dict[str, float]:
+        user_liquidity = self.user_liquidity.get(address, 0)
+        max_withdraw_a = int(
+            (user_liquidity / PRECISION)
+            * self.reserve_a
+            / (self.total_liquidity / PRECISION)
+        )
+        user_lp_b = self.quote(max_withdraw_a, self.reserve_a, self.reserve_b)  # type: ignore
+        balance_b = self.balance_b.get(address, 0)
+        return {
+            "liquidity": user_liquidity / self.total_liquidity,
+            "max_withdraw_a": max_withdraw_a,
+            "user_lp_b": user_lp_b,
+            "balance_b": balance_b,
+        }
