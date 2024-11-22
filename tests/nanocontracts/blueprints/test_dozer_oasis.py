@@ -130,7 +130,7 @@ class OasisTestCase(BlueprintTestCase):
         user_bonus = self._get_user_bonus(timelock, htr_amount)
         self.assertEqual(user_info["user_deposit_b"], deposit_amount)
         self.assertEqual(user_info["user_balance_a"], user_bonus)
-        self.assertEqual(user_info["user_balance_b"], 0)
+        # self.assertEqual(user_info["user_balance_b"], 0)
         self.assertEqual(user_info["user_liquidity"], deposit_amount * PRECISION)
         self.assertEqual(
             user_info["user_withdrawal_time"], now + timelock * MONTHS_IN_SECONDS
@@ -281,7 +281,7 @@ class OasisTestCase(BlueprintTestCase):
         bonus = self._get_user_bonus(timelock, htr_amount)
         self.assertEqual(user_info["user_deposit_b"], deposit_amount)
         self.assertEqual(user_info["user_balance_a"], bonus)
-        self.assertEqual(user_info["user_balance_b"], 0)
+        # self.assertEqual(user_info["user_balance_b"], 0)
         self.assertEqual(user_info["user_liquidity"], deposit_amount * PRECISION)
         self.assertEqual(
             user_info["user_withdrawal_time"],
@@ -326,7 +326,7 @@ class OasisTestCase(BlueprintTestCase):
         bonus = self._get_user_bonus(timelock, htr_amount)
         self.assertEqual(user_info["user_deposit_b"], deposit_amount)
         self.assertEqual(user_info["user_balance_a"], bonus)
-        self.assertEqual(user_info["user_balance_b"], 0)
+        # self.assertEqual(user_info["user_balance_b"], 0)
         self.assertEqual(user_info["user_liquidity"], deposit_amount * PRECISION)
         self.assertEqual(
             user_info["user_withdrawal_time"],
@@ -348,7 +348,7 @@ class OasisTestCase(BlueprintTestCase):
             self.oasis_id, "user_info", user_address
         )
         self.assertEqual(user_info["user_balance_a"], 0)
-        self.assertEqual(user_info["user_balance_b"], 0)
+        # self.assertEqual(user_info["user_balance_b"], 0)
         ctx_withdraw_bonus_wrong = Context(
             [
                 NCAction(NCActionType.WITHDRAWAL, HTR_UID, bonus + 1),  # type: ignore

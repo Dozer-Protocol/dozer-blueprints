@@ -290,12 +290,16 @@ class Dozer_Pool(Blueprint):
     def withdraw_cashback(self, ctx: Context) -> None:
         """Withdraw cashback"""
         action_a, action_b = self._get_actions_out_out(ctx)
-        if action_a.amount > self.balance_a[ctx.address]:
+        if action_a.amount > self.balance_a.get(ctx.address, 0):
             raise NCFail("not enough cashback")
-        if action_b.amount > self.balance_b[ctx.address]:
+        if action_b.amount > self.balance_b.get(ctx.address, 0):
             raise NCFail("not enough cashback")
-        self.balance_a[ctx.address] -= action_a.amount
-        self.balance_b[ctx.address] -= action_b.amount
+        self.balance_a[ctx.address] = (
+            self.balance_a.get(ctx.address, 0) - action_a.amount
+        )
+        self.balance_b[ctx.address] = (
+            self.balance_b.get(ctx.address, 0) - action_b.amount
+        )
 
     @view
     def _get_protocol_liquidity_increase(
@@ -462,7 +466,7 @@ class Dozer_Pool(Blueprint):
         self,
         ctx: Context,
         # amount_a_min: Amount, amount_b_min: Amount
-    ) -> None:
+    ) -> tuple[TokenUid, Amount]:
         """Add liquidity to the pool."""
         action_a, action_b = self._get_actions_in_in(ctx)
 
@@ -481,6 +485,7 @@ class Dozer_Pool(Blueprint):
             self.total_liquidity += int(PRECISION * liquidity_increase)
             self.reserve_a += action_a.amount
             self.reserve_b += optimal_b
+            return (self.token_b, change)
 
         else:
             optimal_a = self.quote(action_b.amount, self.reserve_b, self.reserve_a)
@@ -498,6 +503,7 @@ class Dozer_Pool(Blueprint):
             self.total_liquidity += int(PRECISION * liquidity_increase)
             self.reserve_a += optimal_a
             self.reserve_b += action_b.amount
+            return (self.token_a, change)
 
     @public
     def remove_liquidity(self, ctx: Context):
@@ -729,7 +735,8 @@ class Dozer_Pool(Blueprint):
         user_info = self.user_info(address)
         return user_info["max_withdraw_b"]
 
-    def quote_token_b(self, amount_b: Amount) -> int:
+    @view
+    def quote_token_b(self, amount_b: Amount) -> Amount:
         return self.quote(amount_b, self.reserve_b, self.reserve_a)
 
     @view
@@ -740,11 +747,13 @@ class Dozer_Pool(Blueprint):
             * self.reserve_a
             / (self.total_liquidity / PRECISION)
         )
-        user_lp_b = self.quote(max_withdraw_a, self.reserve_a, self.reserve_b)  # type: ignore
         balance_b = self.balance_b.get(address, 0)
+        balance_a = self.balance_a.get(address, 0)
+        user_lp_b = self.quote(max_withdraw_a, self.reserve_a, self.reserve_b)  # type: ignore
         return {
             "liquidity": user_liquidity / self.total_liquidity,
             "max_withdraw_a": max_withdraw_a,
             "user_lp_b": user_lp_b,
             "balance_b": balance_b,
+            "balance_a": balance_a,
         }

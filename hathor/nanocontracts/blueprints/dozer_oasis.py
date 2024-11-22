@@ -138,11 +138,26 @@ class Oasis(Blueprint):
             action,
             NCAction(NCActionType.DEPOSIT, HTR_UID, htr_amount),  # type: ignore
         ]
-        ctx.call_public_method(self.dozer_pool, "add_liquidity", actions)
-
-        # self.user_liquidity[self.dev_address] = (
-        #     self.user_liquidity.get(self.dev_address, 0) + liquidity_increase
-        # )
+        result = ctx.call_public_method(self.dozer_pool, "add_liquidity", actions)
+        if result[1] > 0:
+            if result[0] == self.token_b:
+                adjust_actions = [
+                    NCAction(NCActionType.WITHDRAWAL, HTR_UID, 0),
+                    NCAction(NCActionType.WITHDRAWAL, self.token_b, result[1]),
+                ]
+            else:
+                adjust_actions = [
+                    NCAction(NCActionType.WITHDRAWAL, HTR_UID, result[1]),
+                    NCAction(NCActionType.WITHDRAWAL, self.token_b, 0),
+                ]
+            ctx.call_public_method(self.dozer_pool, "withdraw_cashback", adjust_actions)
+            partial = self.user_balances.get(ctx.address, {})
+            partial.update(
+                {
+                    result[0]: partial.get(result[0], 0) + result[1],
+                }
+            )
+            self.user_balances[ctx.address] = partial
 
     @public
     def user_withdraw(self, ctx: Context) -> None:
@@ -156,9 +171,11 @@ class Oasis(Blueprint):
         htr_oasis_amount = oasis_quote["max_withdraw_a"]
         token_b_oasis_amount = oasis_quote["user_lp_b"]
         balance_b_oasis_amount = oasis_quote["balance_b"]
+        balance_a_oasis_amount = oasis_quote["balance_a"]
         self.log.info(f"htr_oasis_amount {htr_oasis_amount}")
         self.log.info(f"token_b_oasis_amount {token_b_oasis_amount}")
         self.log.info(f"balance_b_oasis_amount {balance_b_oasis_amount}")
+        self.log.info(f"balance_a_oasis_amount {balance_a_oasis_amount}")
         user_liquidity = self.user_liquidity.get(ctx.address, 0)
         user_lp_b = int(
             (user_liquidity / PRECISION)
@@ -178,8 +195,6 @@ class Oasis(Blueprint):
         max_withdraw_b = user_lp_b + self.user_balances[ctx.address].get(
             self.token_b, 0
         )
-        self.log.info(f"max_withdraw_b {max_withdraw_b}")
-        self.log.info(f"action_token_b {action_token_b.amount}")
 
         ## token_b handling
         if action_token_b.amount > max_withdraw_b:
