@@ -1,3 +1,4 @@
+import decimal
 from typing import Any, NamedTuple
 
 from hathor.nanocontracts.blueprint import Blueprint
@@ -523,6 +524,9 @@ class Dozer_Pool(Blueprint):
             raise NCFail("insufficient b amount")
         change = optimal_b - action_b.amount
         self._update_balance(ctx.address, change, self.token_b)
+        # liquidity_decrease = decimal.Decimal(
+        #     (self.total_liquidity / PRECISION) * action_a.amount / self.reserve_a
+        # ) # fix with decimal
         liquidity_decrease = (
             (self.total_liquidity / PRECISION) * action_a.amount / self.reserve_a
         )

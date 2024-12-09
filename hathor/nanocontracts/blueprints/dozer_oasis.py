@@ -1,4 +1,3 @@
-from functools import partial
 from hathor.conf.get_settings import HathorSettings
 from hathor.nanocontracts.context import Context
 from hathor.types import Address, Amount, Timestamp, TokenUid
@@ -38,7 +37,6 @@ class Oasis(Blueprint):
         self, ctx: Context, dozer_pool: ContractId, token_b: TokenUid
     ) -> None:
         """Initialize the contract with no dozer pool set."""
-
         pool_token_a, pool_token_b = ctx.call_view_method(dozer_pool, "get_uuids")
         if pool_token_a != HTR_UID or pool_token_b != token_b:
             raise (NCFail)
@@ -362,4 +360,34 @@ class Oasis(Blueprint):
             "user_balance_b": self.user_balances.get(address, {self.token_b: 0}).get(
                 self.token_b, 0
             ),
+        }
+
+    @view
+    def front_quote_add_liquidity_in(
+        self, amount: int, timelock: int, now: Timestamp, address: Address
+    ) -> dict[str, float]:
+        """Calculates the bonus for a user based on the timelock and amount, also returns the HTR matched
+        and the date of the withdrawal unlock, checking if the user already has a position
+        """
+        # htr_amount = self._quote_add_liquidity_in(amount) (waiting to call private_methods)
+        htr_amount = 100
+        bonus = self._get_user_bonus(timelock, htr_amount) * amount
+        if address in self.user_withdrawal_time:
+            delta = now / 1000 - self.user_withdrawal_time[address]
+            withdrawal_time = (
+                (
+                    (delta * self.user_deposit_b[address])
+                    + (amount * timelock * MONTHS_IN_SECONDS)
+                )
+                // (delta + timelock * MONTHS_IN_SECONDS)
+            ) + 1
+
+        else:
+            withdrawal_time = now + timelock * MONTHS_IN_SECONDS
+
+        return {
+            "bonus": bonus,
+            "htr_amount": htr_amount,
+            "withdrawal_time": withdrawal_time,
+            "has_position": address in self.user_withdrawal_time,
         }

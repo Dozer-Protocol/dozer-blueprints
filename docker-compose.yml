@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 services:
   node_test:
     build:
@@ -9,5 +9,11 @@ services:
       - ./hathor/conf/nano_testnet.yml:/app/hathor/conf/nano_testnet.yml
       - ./tests:/app/tests
 
-   # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_rewards.py"] # with stdout
-    command: ["poetry", "run", "pytest","-rP", "tests/nanocontracts/blueprints/test_dozer_oasis.py"] # without stdout
+    # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_rewards.py"] # with stdout
+    command: [
+        "poetry",
+        "run",
+        "pytest",
+        # "-rP",
+        "tests/nanocontracts/blueprints/test_dozer_pool.py",
+      ] # without stdout
