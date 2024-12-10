@@ -107,14 +107,18 @@ class Oasis(Blueprint):
             # self.log.info(
             #     f"inside user withdrawal time antes {self.user_withdrawal_time[ctx.address]}"
             # )
-            delta = now - self.user_withdrawal_time[ctx.address]
+            delta = self.user_withdrawal_time[ctx.address] - now
             self.user_withdrawal_time[ctx.address] = (
-                (
-                    (delta * self.user_deposit_b[ctx.address])
-                    + (amount * timelock * MONTHS_IN_SECONDS)
+                now
+                + (
+                    (
+                        (delta * self.user_deposit_b[ctx.address])
+                        + (amount * timelock * MONTHS_IN_SECONDS)
+                    )
+                    // (amount + self.user_deposit_b[ctx.address])
                 )
-                // (delta + timelock * MONTHS_IN_SECONDS)
-            ) + 1
+                + 1
+            )
 
         else:
             self.user_withdrawal_time[ctx.address] = now + timelock * MONTHS_IN_SECONDS
@@ -272,7 +276,7 @@ class Oasis(Blueprint):
             raise NCFail("Invalid timelock value")
         bonus_multiplier = {6: 0.1, 9: 0.15, 12: 0.2}
 
-        return int(bonus_multiplier[timelock] * amount)  # type: ignore
+        return int(bonus_multiplier[timelock] * amount)
 
     def _get_action(
         self, ctx: Context, action_type: NCActionType, auth: bool
@@ -370,17 +374,21 @@ class Oasis(Blueprint):
         and the date of the withdrawal unlock, checking if the user already has a position
         """
         # htr_amount = self._quote_add_liquidity_in(amount) (waiting to call private_methods)
-        htr_amount = 100
-        bonus = self._get_user_bonus(timelock, htr_amount) * amount
+        htr_amount = amount * 10
+        bonus = self._get_user_bonus(timelock, htr_amount)
         if address in self.user_withdrawal_time:
-            delta = now / 1000 - self.user_withdrawal_time[address]
+            delta = self.user_withdrawal_time[address] - now
             withdrawal_time = (
-                (
-                    (delta * self.user_deposit_b[address])
-                    + (amount * timelock * MONTHS_IN_SECONDS)
+                now
+                + (
+                    (
+                        (delta * self.user_deposit_b[address])
+                        + (amount * timelock * MONTHS_IN_SECONDS)
+                    )
+                    // (self.user_deposit_b[address] + amount)
                 )
-                // (delta + timelock * MONTHS_IN_SECONDS)
-            ) + 1
+                + 1
+            )
 
         else:
             withdrawal_time = now + timelock * MONTHS_IN_SECONDS

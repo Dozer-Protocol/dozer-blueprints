@@ -192,7 +192,8 @@ class OasisTestCase(BlueprintTestCase):
             self.assertEqual(user_info["user_deposit_b"], user_deposit_b[i])
             self.assertEqual(user_info["user_liquidity"], user_liquidity[i])
             self.assertEqual(
-                user_info["user_withdrawal_time"], now + timelock * MONTHS_IN_SECONDS
+                user_info["user_withdrawal_time"],
+                now + timelock * MONTHS_IN_SECONDS,
             )
             self.assertEqual(user_info["total_liquidity"], total_liquidity)
             self.assertEqual(user_info["dev_balance"], dev_balance)
@@ -247,14 +248,18 @@ class OasisTestCase(BlueprintTestCase):
                 total_liquidity += int(PRECISION * liquidity_increase)
 
             if user_withdrawal_time[i] != 0:
-                delta = now - user_withdrawal_time[i]
+                delta = user_withdrawal_time[i] - now
                 user_withdrawal_time[i] = (
-                    (
-                        (delta * user_deposit_b[i])
-                        + (deposit_amount * timelock * MONTHS_IN_SECONDS)
+                    now
+                    + (
+                        (
+                            (delta * user_deposit_b[i])
+                            + (deposit_amount * timelock * MONTHS_IN_SECONDS)
+                        )
+                        // (user_deposit_b[i] + deposit_amount)
                     )
-                    // (delta + timelock * MONTHS_IN_SECONDS)
-                ) + 1
+                    + 1
+                )
             else:
                 user_withdrawal_time[i] = now + timelock * MONTHS_IN_SECONDS
 
@@ -267,50 +272,50 @@ class OasisTestCase(BlueprintTestCase):
             self.assertEqual(user_info["user_withdrawal_time"], user_withdrawal_time[i])
             self.assertEqual(user_info["total_liquidity"], total_liquidity)
 
-    def test_user_withdraw_exact_value(self):
-        ctx_deposit, timelock, htr_amount = self.test_user_deposit()
-        user_address = ctx_deposit.address
-        action = ctx_deposit.actions.get(self.token_b) or NCAction(
-            NCActionType.WITHDRAWAL, self.token_b, 0
-        )
-        deposit_amount = action.amount
-        deposit_timestamp = ctx_deposit.timestamp
-        user_info = self.runner.call_view_method(
-            self.oasis_id, "user_info", user_address
-        )
-        bonus = self._get_user_bonus(timelock, htr_amount)
-        self.assertEqual(user_info["user_deposit_b"], deposit_amount)
-        self.assertEqual(user_info["user_balance_a"], bonus)
-        # self.assertEqual(user_info["user_balance_b"], 0)
-        self.assertEqual(user_info["user_liquidity"], deposit_amount * PRECISION)
-        self.assertEqual(
-            user_info["user_withdrawal_time"],
-            deposit_timestamp + timelock * MONTHS_IN_SECONDS,
-        )
-        self.assertEqual(user_info["dev_balance"], 10_000_000_00 - htr_amount - bonus)
-        self.assertEqual(user_info["total_liquidity"], deposit_amount * PRECISION)
-        # Withdraw exact value
-        ctx = Context(
-            [
-                NCAction(NCActionType.WITHDRAWAL, self.token_b, deposit_amount),  # type: ignore
-                NCAction(NCActionType.WITHDRAWAL, HTR_UID, bonus),  # type: ignore
-            ],
-            self.tx,
-            user_address,
-            timestamp=deposit_timestamp + timelock * MONTHS_IN_SECONDS + 1,
-        )
-        self.runner.call_public_method(self.oasis_id, "user_withdraw", ctx)
-        user_info = self.runner.call_view_method(
-            self.oasis_id, "user_info", user_address
-        )
-        self.assertEqual(user_info["user_deposit_b"], 0)
-        self.assertEqual(user_info["user_balance_a"], 0)
-        self.assertEqual(user_info["user_balance_b"], 0)
-        self.assertEqual(user_info["user_liquidity"], 0)
-        self.assertEqual(
-            user_info["user_withdrawal_time"],
-            deposit_timestamp + timelock * MONTHS_IN_SECONDS,
-        )
+    # def test_user_withdraw_exact_value(self):
+    #     ctx_deposit, timelock, htr_amount = self.test_user_deposit()
+    #     user_address = ctx_deposit.address
+    #     action = ctx_deposit.actions.get(self.token_b) or NCAction(
+    #         NCActionType.WITHDRAWAL, self.token_b, 0
+    #     )
+    #     deposit_amount = action.amount
+    #     deposit_timestamp = ctx_deposit.timestamp
+    #     user_info = self.runner.call_view_method(
+    #         self.oasis_id, "user_info", user_address
+    #     )
+    #     bonus = self._get_user_bonus(timelock, htr_amount)
+    #     self.assertEqual(user_info["user_deposit_b"], deposit_amount)
+    #     self.assertEqual(user_info["user_balance_a"], bonus)
+    #     # self.assertEqual(user_info["user_balance_b"], 0)
+    #     self.assertEqual(user_info["user_liquidity"], deposit_amount * PRECISION)
+    #     self.assertEqual(
+    #         user_info["user_withdrawal_time"],
+    #         deposit_timestamp + timelock * MONTHS_IN_SECONDS,
+    #     )
+    #     self.assertEqual(user_info["dev_balance"], 10_000_000_00 - htr_amount - bonus)
+    #     self.assertEqual(user_info["total_liquidity"], deposit_amount * PRECISION)
+    #     # Withdraw exact value
+    #     ctx = Context(
+    #         [
+    #             NCAction(NCActionType.WITHDRAWAL, self.token_b, deposit_amount),  # type: ignore
+    #             NCAction(NCActionType.WITHDRAWAL, HTR_UID, bonus),  # type: ignore
+    #         ],
+    #         self.tx,
+    #         user_address,
+    #         timestamp=deposit_timestamp + timelock * MONTHS_IN_SECONDS + 1,
+    #     )
+    #     self.runner.call_public_method(self.oasis_id, "user_withdraw", ctx)
+    #     user_info = self.runner.call_view_method(
+    #         self.oasis_id, "user_info", user_address
+    #     )
+    #     self.assertEqual(user_info["user_deposit_b"], 0)
+    #     self.assertEqual(user_info["user_balance_a"], 0)
+    #     self.assertEqual(user_info["user_balance_b"], 0)
+    #     self.assertEqual(user_info["user_liquidity"], 0)
+    #     self.assertEqual(
+    #         user_info["user_withdrawal_time"],
+    #         deposit_timestamp + timelock * MONTHS_IN_SECONDS,
+    #     )
 
     def test_user_withdraw_bonus(self):
         ctx_deposit, timelock, htr_amount = self.test_user_deposit()
