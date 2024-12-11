@@ -172,12 +172,6 @@ class Oasis(Blueprint):
         oasis_quote = self._quote_remove_liquidity_oasis(ctx)
         htr_oasis_amount = oasis_quote["max_withdraw_a"]
         token_b_oasis_amount = oasis_quote["user_lp_b"]
-        balance_b_oasis_amount = oasis_quote["balance_b"]
-        balance_a_oasis_amount = oasis_quote["balance_a"]
-        self.log.info(f"htr_oasis_amount {htr_oasis_amount}")
-        self.log.info(f"token_b_oasis_amount {token_b_oasis_amount}")
-        self.log.info(f"balance_b_oasis_amount {balance_b_oasis_amount}")
-        self.log.info(f"balance_a_oasis_amount {balance_a_oasis_amount}")
         user_liquidity = self.user_liquidity.get(ctx.address, 0)
         user_lp_b = int(
             (user_liquidity / PRECISION)
@@ -352,6 +346,7 @@ class Oasis(Blueprint):
         self,
         address: Address,
     ) -> dict[str, float]:
+        remove_liquidity_oasis_quote = self.get_remove_liquidity_oasis_quote(address)
         return {
             "user_deposit_b": self.user_deposit_b.get(address, 0),
             "user_liquidity": self.user_liquidity.get(address, 0),
@@ -364,6 +359,10 @@ class Oasis(Blueprint):
             "user_balance_b": self.user_balances.get(address, {self.token_b: 0}).get(
                 self.token_b, 0
             ),
+            "user_lp_b": remove_liquidity_oasis_quote.get("user_lp_b", 0),
+            "user_lp_htr": remove_liquidity_oasis_quote.get("user_lp_htr", 0),
+            "max_withdraw_b": remove_liquidity_oasis_quote.get("max_withdraw_b", 0),
+            "max_withdraw_htr": remove_liquidity_oasis_quote.get("max_withdraw_htr", 0),
         }
 
     @view
@@ -406,4 +405,52 @@ class Oasis(Blueprint):
             "htr_amount": htr_amount,
             "withdrawal_time": withdrawal_time,
             "has_position": address in self.user_withdrawal_time,
+        }
+
+    @view
+    def get_remove_liquidity_oasis_quote(self, address: Address) -> dict[str, float]:
+        # oasis_quote = self._quote_remove_liquidity_oasis(ctx) # waiting for view_view method
+        oasis_quote = {
+            "liquidity": 100000000000,
+            "max_withdraw_a": 10,
+            "user_lp_b": 10,
+            "balance_b": 100,
+            "balance_a": 200,
+        }
+        htr_oasis_amount = oasis_quote["max_withdraw_a"]
+        token_b_oasis_amount = oasis_quote["user_lp_b"]
+        user_liquidity = self.user_liquidity.get(address, 0)
+        user_lp_b = int(
+            (user_liquidity / PRECISION)
+            * token_b_oasis_amount
+            / (self.total_liquidity / PRECISION)
+        )
+        user_lp_htr = int(
+            (user_liquidity / PRECISION)
+            * htr_oasis_amount
+            / (self.total_liquidity / PRECISION)
+        )
+        max_withdraw_b = user_lp_b + self.user_balances[address].get(self.token_b, 0)
+
+        # impermanent loss
+        if self.user_deposit_b.get(address, 0) > user_lp_b:
+            loss = self.user_deposit_b.get(address, 0) - user_lp_b
+            # loss_htr = ctx.call_view_method(self.dozer_pool, "quote_token_b", loss) #waiting for view_view
+            loss_htr = 100
+            if loss_htr > user_lp_htr:
+                loss_htr = user_lp_htr
+            max_withdraw_htr = (
+                self.user_balances.get(address, {HTR_UID: 0}).get(HTR_UID, 0) + loss_htr
+            )
+        # without impermanent loss
+        else:
+            max_withdraw_htr = self.user_balances.get(address, {HTR_UID: 0}).get(
+                HTR_UID, 0
+            )
+
+        return {
+            "user_lp_b": user_lp_b,
+            "user_lp_htr": user_lp_htr,
+            "max_withdraw_b": max_withdraw_b,
+            "max_withdraw_htr": max_withdraw_htr,
         }
