@@ -367,6 +367,14 @@ class Oasis(Blueprint):
         }
 
     @view
+    def oasis_info(self) -> dict[str, float | TokenUid]:
+        return {
+            "total_liquidity": self.total_liquidity,
+            "dev_balance": self.dev_balance,
+            "token_b": self.token_b,
+        }
+
+    @view
     def front_quote_add_liquidity_in(
         self, amount: int, timelock: int, now: Timestamp, address: Address
     ) -> dict[str, float]:
