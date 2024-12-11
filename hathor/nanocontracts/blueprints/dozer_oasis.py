@@ -420,16 +420,20 @@ class Oasis(Blueprint):
         htr_oasis_amount = oasis_quote["max_withdraw_a"]
         token_b_oasis_amount = oasis_quote["user_lp_b"]
         user_liquidity = self.user_liquidity.get(address, 0)
-        user_lp_b = int(
-            (user_liquidity / PRECISION)
-            * token_b_oasis_amount
-            / (self.total_liquidity / PRECISION)
-        )
-        user_lp_htr = int(
-            (user_liquidity / PRECISION)
-            * htr_oasis_amount
-            / (self.total_liquidity / PRECISION)
-        )
+        if self.total_liquidity > 0:
+            user_lp_b = int(
+                (user_liquidity / PRECISION)
+                * token_b_oasis_amount
+                / (self.total_liquidity / PRECISION)
+            )
+            user_lp_htr = int(
+                (user_liquidity / PRECISION)
+                * htr_oasis_amount
+                / (self.total_liquidity / PRECISION)
+            )
+        else:
+            user_lp_b = 0
+            user_lp_htr = 0
         max_withdraw_b = user_lp_b + self.user_balances[address].get(self.token_b, 0)
 
         # impermanent loss
