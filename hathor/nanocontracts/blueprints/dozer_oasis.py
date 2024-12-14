@@ -366,11 +366,11 @@ class Oasis(Blueprint):
         }
 
     @view
-    def oasis_info(self) -> dict[str, float | TokenUid]:
+    def oasis_info(self) -> dict[str, float | str]:
         return {
             "total_liquidity": self.total_liquidity,
             "dev_balance": self.dev_balance,
-            "token_b": self.token_b,
+            "token_b": self.token_b.hex(),
         }
 
     @view
