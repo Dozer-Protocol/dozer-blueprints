@@ -342,8 +342,8 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
             reserve_after, self.runner.call_view_method(self.nc_id, "get_reserves")
         )
 
-        liquidity_increase = (total_liquidity / PRECISION) * amount_a / reserve_a
-        get_liquidity = int(PRECISION * liquidity_increase)
+        liquidity_increase = total_liquidity * amount_a // reserve_a
+        get_liquidity = liquidity_increase
 
         self.assertEqual(
             get_liquidity,
@@ -387,10 +387,9 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
         )
         self.assertBalanceReserve(storage)
 
-        liquidity_increase = (
-            (total_liquidity / PRECISION) * (amount_a - change) / reserve_a
-        )
-        get_liquidity = int(PRECISION * liquidity_increase)
+        liquidity_increase = total_liquidity * (amount_a - change) // reserve_a
+
+        get_liquidity = liquidity_increase
 
         self.assertEqual(
             get_liquidity,
@@ -433,8 +432,8 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
         )
         self.assertBalanceReserve(storage)
 
-        liquidity_increase = (total_liquidity / PRECISION) * amount_a / reserve_a
-        get_liquidity = int(PRECISION * liquidity_increase)
+        liquidity_increase = total_liquidity * amount_a // reserve_a
+        get_liquidity = liquidity_increase
 
         self.assertEqual(
             get_liquidity,
@@ -509,10 +508,9 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
         )
         self.assertBalanceReserve(storage)
 
-        liquidity_decrease = decimal.Decimal(
-            (total_liquidity / PRECISION) * amount_a / reserve_a
-        )
-        get_liquidity = int(PRECISION * liquidity_decrease)
+        liquidity_decrease = total_liquidity * amount_a // reserve_a
+
+        get_liquidity = liquidity_decrease
 
         user_liquidity_after = user_liquidity - get_liquidity
 
@@ -563,10 +561,9 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
         )
         self.assertBalanceReserve(storage)
 
-        liquidity_decrease = decimal.Decimal(
-            (total_liquidity / PRECISION) * amount_a / reserve_a
-        )
-        get_liquidity = int(PRECISION * liquidity_decrease)
+        liquidity_decrease = total_liquidity * amount_a // reserve_a
+
+        get_liquidity = liquidity_decrease
 
         user_liquidity_after = user_liquidity - get_liquidity
 
@@ -688,10 +685,9 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
         )
         self.assertBalanceReserve(storage)
 
-        liquidity_decrease = decimal.Decimal(
-            (total_liquidity / PRECISION) * amount_a_remove / reserve_a_after
-        )
-        get_liquidity = int(PRECISION * liquidity_decrease)
+        liquidity_decrease = total_liquidity * amount_a_remove // reserve_a_after
+
+        get_liquidity = liquidity_decrease
 
         user_liquidity_after = user_liquidity - get_liquidity
 
@@ -743,8 +739,8 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
             self.assertEqual(reserve_a + amount_a, storage.get("reserve_a"))
             self.assertEqual(reserve_b + amount_b, storage.get("reserve_b"))
 
-            liquidity_increase = (total_liquidity / PRECISION) * amount_a / reserve_a
-            user_liquidity = int(PRECISION * liquidity_increase)
+            liquidity_increase = total_liquidity * amount_a // reserve_a
+            user_liquidity = liquidity_increase
 
             self.assertEqual(
                 total_liquidity + user_liquidity, storage.get("total_liquidity")
@@ -780,10 +776,9 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
             self.assertEqual(reserve_a - amount_a, storage.get("reserve_a"))
             self.assertEqual(reserve_b - amount_b, storage.get("reserve_b"))
 
-            liquidity_decrease = decimal.Decimal(
-                (total_liquidity / PRECISION) * amount_a / reserve_a
-            )
-            user_liquidity = users_liquidity[i] - int(PRECISION * liquidity_decrease)
+            liquidity_decrease = total_liquidity * amount_a // reserve_a
+
+            user_liquidity = users_liquidity[i] - liquidity_decrease
             print(
                 f"user_liquidity_before:{users_liquidity[i]}\n user_liquidity_after: {user_liquidity} \n \
                       total_liquidity: {total_liquidity}, amounts_a[i]: {amounts_a[i]}"
@@ -795,13 +790,13 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
                 ),
             )
             self.assertEqual(
-                total_liquidity - int(PRECISION * liquidity_decrease),
+                total_liquidity - liquidity_decrease,
                 storage.get("total_liquidity"),
             )
 
             reserve_a -= amount_a
             reserve_b -= amount_b
-            total_liquidity -= int(PRECISION * liquidity_decrease)
+            total_liquidity -= liquidity_decrease
 
     def test_multiple_add_swap_and_remove_liquidity(self) -> None:
         storage = self.nc_storage
@@ -855,8 +850,8 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
             self.assertEqual(reserve_a + amount_a, storage.get("reserve_a"))
             self.assertEqual(reserve_b + amount_b, storage.get("reserve_b"))
 
-            liquidity_increase = (total_liquidity / PRECISION) * amount_a / reserve_a
-            user_liquidity = int(PRECISION * liquidity_increase)
+            liquidity_increase = total_liquidity * amount_a // reserve_a
+            user_liquidity = liquidity_increase
 
             self.assertEqual(
                 total_liquidity + user_liquidity, storage.get("total_liquidity")
@@ -890,13 +885,13 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
 
             self.assertEqual(amount_b, amount_out)
 
-            fee_amount = int(amount_a * fee_numerator / fee_denominator)
+            fee_amount = amount_a * fee_numerator // fee_denominator
             fee_accumulated += fee_amount
-            protocol_fee_amount = int(fee_amount * protocol_fee / 100)
-            liquidity_increase = int(
-                ((total_liquidity / PRECISION) * (protocol_fee_amount / 2) / reserve_a)
-                * PRECISION
+            protocol_fee_amount = fee_amount * protocol_fee // 100
+            liquidity_increase = (
+                total_liquidity * (protocol_fee_amount) // (reserve_a * 2)
             )
+
             self.assertEqual(
                 liquidity_increase,
                 self.runner.call_view_method(
@@ -952,9 +947,7 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
                 f"user_liquidity: {user_liquidity}, total_liquidity: {total_liquidity}, amounts_a[i]: {amounts_a[i]}"
             )
 
-            remove_amount_a = int(
-                (user_liquidity / PRECISION) * reserve_a / (total_liquidity / PRECISION)
-            )
+            remove_amount_a = user_liquidity * reserve_a / total_liquidity
             remove_amount_b = self.runner.call_view_method(
                 self.nc_id, "quote", remove_amount_a, reserve_a, reserve_b
             )
@@ -970,12 +963,7 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
             self.assertEqual(reserve_a - remove_amount_a, storage.get("reserve_a"))
             self.assertEqual(reserve_b - remove_amount_b, storage.get("reserve_b"))
 
-            liquidity_decrease = int(
-                PRECISION
-                * decimal.Decimal(
-                    (total_liquidity / PRECISION) * remove_amount_a / reserve_a
-                )
-            )
+            liquidity_decrease = total_liquidity * remove_amount_a // reserve_a
 
             total_liquidity -= liquidity_decrease
             reserve_a -= remove_amount_a
@@ -1108,9 +1096,7 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
         )
         total_liquidity = storage.get("total_liquidity")
 
-        remove_amount_a = int(
-            (user_liquidity / PRECISION) * reserve_a / (total_liquidity / PRECISION)
-        )
+        remove_amount_a = user_liquidity * reserve_a / total_liquidity
         remove_amount_b = self.runner.call_view_method(
             self.nc_id, "quote", remove_amount_a, reserve_a, reserve_b
         )
@@ -1146,7 +1132,7 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
         self._initialize_contract(1_000_00, 500_000, fee=5)
 
         # Helper functions
-        def get_reserves():
+        def get_reserves() -> tuple[int, int]:
             return self.runner.call_view_method(self.nc_id, "get_reserves")
 
         def get_amount_out(amount_in, reserve_in, reserve_out):
@@ -1208,12 +1194,12 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
                 percentage_to_remove = random.randint(1, 100) / 100
                 if user_liquidity > 0:
                     total_liquidity = storage.get("total_liquidity")
-
-                    remove_amount_a = int(
+                    new_reserve_a, new_reserve_b = get_reserves()
+                    remove_amount_a = (
                         percentage_to_remove
-                        * (user_liquidity / PRECISION)
+                        * (user_liquidity)
                         * new_reserve_a
-                        / (total_liquidity / PRECISION)
+                        / (total_liquidity)
                     )
                     remove_amount_b = self.runner.call_view_method(
                         self.nc_id, "quote", remove_amount_a, reserve_a, reserve_b
@@ -1324,10 +1310,13 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
         admin_liquidity = self.runner.call_view_method(
             self.nc_id, "liquidity_of", self.admin_address
         )
-        print("total_user_liquidity:", int(total_user_liquidity / PRECISION))
-        print("admin_liquidity:", int(admin_liquidity / PRECISION))
-        print("final_total_liquidity:", int(final_total_liquidity / PRECISION))
+        print(type(total_user_liquidity))
+        print(type(admin_liquidity))
+        print(type(final_total_liquidity))
+        print("total_user_liquidity:", total_user_liquidity)
+        print("admin_liquidity:", admin_liquidity)
+        print("final_total_liquidity:", final_total_liquidity)
         self.assertEqual(
-            (total_user_liquidity + admin_liquidity) / PRECISION,
-            final_total_liquidity / PRECISION,
+            (total_user_liquidity + admin_liquidity),
+            final_total_liquidity,
         )
