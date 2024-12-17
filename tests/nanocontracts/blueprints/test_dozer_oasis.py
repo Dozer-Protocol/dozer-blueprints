@@ -176,13 +176,9 @@ class OasisTestCase(BlueprintTestCase):
                 total_liquidity = deposit_amount * PRECISION
                 user_liquidity[i] = deposit_amount * PRECISION
             else:
-                liquidity_increase = (
-                    (total_liquidity / PRECISION) * deposit_amount / lp_amount_b
-                )
-                user_liquidity[i] = user_liquidity[i] + int(
-                    PRECISION * liquidity_increase
-                )
-                total_liquidity += int(PRECISION * liquidity_increase)
+                liquidity_increase = (total_liquidity) * deposit_amount // lp_amount_b
+                user_liquidity[i] = user_liquidity[i] + liquidity_increase
+                total_liquidity += liquidity_increase
 
             dev_balance -= bonus + htr_amount
             user_balances_a[i] = user_balances_a[i] + bonus
@@ -239,13 +235,9 @@ class OasisTestCase(BlueprintTestCase):
                 total_liquidity = deposit_amount * PRECISION
                 user_liquidity[i] = deposit_amount * PRECISION
             else:
-                liquidity_increase = (
-                    (total_liquidity / PRECISION) * deposit_amount / lp_amount_b
-                )
-                user_liquidity[i] = user_liquidity[i] + int(
-                    PRECISION * liquidity_increase
-                )
-                total_liquidity += int(PRECISION * liquidity_increase)
+                liquidity_increase = (total_liquidity) * deposit_amount // lp_amount_b
+                user_liquidity[i] = user_liquidity[i] + liquidity_increase
+                total_liquidity += liquidity_increase
 
             if user_withdrawal_time[i] != 0:
                 delta = user_withdrawal_time[i] - now

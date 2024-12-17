@@ -15,5 +15,5 @@ services:
         "run",
         "pytest",
         # "-rP",
-        "tests/nanocontracts/blueprints/test_dozer_pool.py",
+        "tests/nanocontracts/blueprints/test_dozer_oasis.py",
       ] # without stdout

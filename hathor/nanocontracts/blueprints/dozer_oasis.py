@@ -95,14 +95,12 @@ class Oasis(Blueprint):
             self.user_liquidity[ctx.address] = amount * PRECISION
         else:
             liquidity_increase = (
-                (self.total_liquidity / PRECISION)
-                * amount
-                / self._get_oasis_lp_amount_b(ctx)
+                self.total_liquidity * amount // self._get_oasis_lp_amount_b(ctx)
             )
-            self.user_liquidity[ctx.address] = self.user_liquidity.get(
-                ctx.address, 0
-            ) + int(PRECISION * liquidity_increase)
-            self.total_liquidity += int(PRECISION * liquidity_increase)
+            self.user_liquidity[ctx.address] = (
+                self.user_liquidity.get(ctx.address, 0) + liquidity_increase
+            )
+            self.total_liquidity += liquidity_increase
         if ctx.address in self.user_withdrawal_time:
             # self.log.info(
             #     f"inside user withdrawal time antes {self.user_withdrawal_time[ctx.address]}"
@@ -173,16 +171,8 @@ class Oasis(Blueprint):
         htr_oasis_amount = oasis_quote["max_withdraw_a"]
         token_b_oasis_amount = oasis_quote["user_lp_b"]
         user_liquidity = self.user_liquidity.get(ctx.address, 0)
-        user_lp_b = int(
-            (user_liquidity / PRECISION)
-            * token_b_oasis_amount
-            / (self.total_liquidity / PRECISION)
-        )
-        user_lp_htr = int(
-            (user_liquidity / PRECISION)
-            * htr_oasis_amount
-            / (self.total_liquidity / PRECISION)
-        )
+        user_lp_b = (user_liquidity) * token_b_oasis_amount // (self.total_liquidity)
+        user_lp_htr = (user_liquidity) * htr_oasis_amount // (self.total_liquidity)
         actions = [
             NCAction(NCActionType.WITHDRAWAL, HTR_UID, user_lp_htr),
             NCAction(NCActionType.WITHDRAWAL, self.token_b, user_lp_b),
@@ -421,16 +411,10 @@ class Oasis(Blueprint):
         token_b_oasis_amount = oasis_quote["user_lp_b"]
         user_liquidity = self.user_liquidity.get(address, 0)
         if self.total_liquidity > 0:
-            user_lp_b = int(
-                (user_liquidity / PRECISION)
-                * token_b_oasis_amount
-                / (self.total_liquidity / PRECISION)
+            user_lp_b = (
+                (user_liquidity) * token_b_oasis_amount // (self.total_liquidity)
             )
-            user_lp_htr = int(
-                (user_liquidity / PRECISION)
-                * htr_oasis_amount
-                / (self.total_liquidity / PRECISION)
-            )
+            user_lp_htr = (user_liquidity) * htr_oasis_amount // (self.total_liquidity)
         else:
             user_lp_b = 0
             user_lp_htr = 0
