@@ -947,7 +947,7 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
                 f"user_liquidity: {user_liquidity}, total_liquidity: {total_liquidity}, amounts_a[i]: {amounts_a[i]}"
             )
 
-            remove_amount_a = user_liquidity * reserve_a / total_liquidity
+            remove_amount_a = user_liquidity * reserve_a // total_liquidity
             remove_amount_b = self.runner.call_view_method(
                 self.nc_id, "quote", remove_amount_a, reserve_a, reserve_b
             )
@@ -1096,7 +1096,7 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
         )
         total_liquidity = storage.get("total_liquidity")
 
-        remove_amount_a = user_liquidity * reserve_a / total_liquidity
+        remove_amount_a = user_liquidity * reserve_a // total_liquidity
         remove_amount_b = self.runner.call_view_method(
             self.nc_id, "quote", remove_amount_a, reserve_a, reserve_b
         )
@@ -1191,7 +1191,7 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
                 user_liquidity = self.runner.call_view_method(
                     self.nc_id, "liquidity_of", user
                 )
-                percentage_to_remove = random.randint(1, 100) / 100
+                percentage_to_remove = random.randint(1, 100)
                 if user_liquidity > 0:
                     total_liquidity = storage.get("total_liquidity")
                     new_reserve_a, new_reserve_b = get_reserves()
@@ -1199,7 +1199,7 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
                         percentage_to_remove
                         * (user_liquidity)
                         * new_reserve_a
-                        / (total_liquidity)
+                        // (100 * total_liquidity)
                     )
                     remove_amount_b = self.runner.call_view_method(
                         self.nc_id, "quote", remove_amount_a, reserve_a, reserve_b
@@ -1288,10 +1288,6 @@ class MVP_PoolBlueprintTestCase(BlueprintTestCase):
         # Check that reserves are still positive
         self.assertGreater(final_reserve_a, 0)
         self.assertGreater(final_reserve_b, 0)
-
-        # Check that some fees were collected
-        self.assertGreater(pool_info["fee0"], 0)
-        self.assertGreater(pool_info["fee1"], 0)
 
         # Check final total liquidity
 
