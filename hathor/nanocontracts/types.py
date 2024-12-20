@@ -18,16 +18,16 @@ from enum import Enum
 from typing import Callable, Generic, NamedTuple, NewType, TypeVar
 
 # Types to be used by blueprints.
-VertexId = NewType('VertexId', bytes)
-Amount = NewType('Amount', int)
-Address = NewType('Address', bytes)
-TxOutputScript = NewType('TxOutputScript', bytes)
-TokenUid = NewType('TokenUid', bytes)
-Timestamp = NewType('Timestamp', int)
-ContractId = NewType('ContractId', VertexId)
-BlueprintId = NewType('BlueprintId', VertexId)
+VertexId = bytes
+Amount = int
+Address = bytes
+TxOutputScript = NewType("TxOutputScript", bytes)
+TokenUid = bytes
+Timestamp = int
+ContractId = bytes
+BlueprintId = NewType("BlueprintId", VertexId)
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class SignedData(Generic[T]):
@@ -35,6 +35,7 @@ class SignedData(Generic[T]):
 
     T must be serializable.
     """
+
     def __init__(self, data: T, script_input: bytes) -> None:
         self.data = data
         self.script_input = script_input
@@ -49,6 +50,7 @@ class SignedData(Generic[T]):
     def get_data_bytes(self) -> bytes:
         """Return the serialized data."""
         from hathor.nanocontracts.serializers import Serializer
+
         serializer = Serializer()
         return serializer.from_type(type(self.data), self.data)
 
@@ -61,6 +63,7 @@ class SignedData(Generic[T]):
         from hathor.transaction.exceptions import ScriptError
         from hathor.transaction.scripts import ScriptExtras
         from hathor.transaction.scripts.execute import execute_eval
+
         full_data = self.script_input + script
         log: list[str] = []
         extras = ScriptExtras(tx=self, txin=None, spent_tx=None)  # type: ignore
@@ -74,22 +77,23 @@ class SignedData(Generic[T]):
 
 def public(fn: Callable) -> Callable:
     """Decorator to mark a blueprint method as public."""
-    assert not hasattr(fn, '_nc_method_type')
-    setattr(fn, '_nc_method_type', 'public')
+    assert not hasattr(fn, "_nc_method_type")
+    setattr(fn, "_nc_method_type", "public")
     return fn
 
 
 def view(fn: Callable) -> Callable:
     """Decorator to mark a blueprint method as view (read-only)."""
-    assert not hasattr(fn, '_nc_method_type')
-    setattr(fn, '_nc_method_type', 'view')
+    assert not hasattr(fn, "_nc_method_type")
+    setattr(fn, "_nc_method_type", "view")
     return fn
 
 
 class NCActionType(Enum):
     """Types of interactions a transaction might have with a contract."""
-    DEPOSIT = 'deposit'
-    WITHDRAWAL = 'withdrawal'
+
+    DEPOSIT = "deposit"
+    WITHDRAWAL = "withdrawal"
 
 
 class NCAction(NamedTuple):
