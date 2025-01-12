@@ -415,6 +415,218 @@ class OasisTestCase(BlueprintTestCase):
             )
             self.assertEqual(user_info["user_balance_a"], expected_bonus)
 
+    def test_impermanent_loss_token_b_crashes(self):
+        """Test impermanent loss protection when token B crashes 99% in value"""
+        dev_initial_deposit = 100_000_000_00
+        pool_initial_htr = 10_000_000_00
+        pool_initial_token_b = 1_000_000_00
+
+        # Initialize contracts
+        self.initialize_pool(amount_htr=pool_initial_htr, amount_b=pool_initial_token_b)
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        # User deposits with 12-month lock
+        deposit_amount = 1_000_000_00
+        user_address = self._get_any_address()[0]
+        timelock = 12
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        initial_price = self.dozer_storage.get("reserve_a") / self.dozer_storage.get(
+            "reserve_b"
+        )
+        print(f"Initial token_b price in HTR: {initial_price=}")
+
+        # Add extra liquidity to support massive swaps
+        extra_liquidity_address = self._get_any_address()[0]
+        add_liquidity_ctx = Context(
+            [
+                NCAction(NCActionType.DEPOSIT, HTR_UID, pool_initial_htr * 10),
+                NCAction(NCActionType.DEPOSIT, self.token_b, pool_initial_token_b * 10),
+            ],
+            self.tx,
+            extra_liquidity_address,
+            timestamp=self.clock.seconds() + 100,
+        )
+        self.runner.call_public_method(
+            self.dozer_id, "add_liquidity", add_liquidity_ctx
+        )
+
+        # Execute swaps to crash token B price
+        # Repeatedly swap token B for HTR to drive down price
+        for _ in range(100):
+            reserve_a = self.dozer_storage.get("reserve_a")
+            reserve_b = self.dozer_storage.get("reserve_b")
+            swap_amount = reserve_b // 20  # Swap 5% each time
+            amount_out = self.runner.call_view_method(
+                self.dozer_id, "get_amount_out", swap_amount, reserve_b, reserve_a
+            )
+
+            swap_ctx = Context(
+                [
+                    NCAction(NCActionType.DEPOSIT, self.token_b, swap_amount),
+                    NCAction(NCActionType.WITHDRAWAL, HTR_UID, amount_out),
+                ],
+                self.tx,
+                extra_liquidity_address,
+                timestamp=self.clock.seconds() + 200,
+            )
+            self.runner.call_public_method(
+                self.dozer_id, "swap_exact_tokens_for_tokens", swap_ctx
+            )
+
+        final_price = self.dozer_storage.get("reserve_a") / self.dozer_storage.get(
+            "reserve_b"
+        )
+        print(f"Final token_b price in HTR: {final_price=}")
+
+        price_drop = (initial_price - final_price) / initial_price * 100
+        print(f"Token B price drop: {price_drop:.2f}%")
+
+        # Verify price impact greater than 95%
+        self.assertGreater(price_drop, 95)
+
+        # Try to withdraw after timelock with IL protection
+        withdraw_ctx = Context(
+            [
+                NCAction(NCActionType.WITHDRAWAL, self.token_b, deposit_amount),
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, 0),
+            ],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds() + (timelock * MONTHS_IN_SECONDS) + 1,
+        )
+
+        # Withdrawal should succeed
+        self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
+
+        # Verify complete withdrawal
+        user_info_after = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        self.assertEqual(user_info_after["user_deposit_b"], 0)
+
+        self.check_balances([user_address])
+
+    def test_impermanent_loss_token_b_skyrockets(self):
+        """Test impermanent loss protection when token B increases 100x in value"""
+        dev_initial_deposit = 100_000_000_00
+        pool_initial_htr = 10_000_000_00
+        pool_initial_token_b = 1_000_000_00
+
+        # Initialize contracts
+        self.initialize_pool(amount_htr=pool_initial_htr, amount_b=pool_initial_token_b)
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        # User deposits with 12-month lock
+        deposit_amount = 1_000_000_00
+        user_address = self._get_any_address()[0]
+        timelock = 12
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        initial_price = self.dozer_storage.get("reserve_a") / self.dozer_storage.get(
+            "reserve_b"
+        )
+        print(f"Initial token_b price in HTR: {initial_price=}")
+
+        # Add extra liquidity to support massive swaps
+        extra_liquidity_address = self._get_any_address()[0]
+        add_liquidity_ctx = Context(
+            [
+                NCAction(NCActionType.DEPOSIT, HTR_UID, pool_initial_htr * 100),
+                NCAction(
+                    NCActionType.DEPOSIT, self.token_b, pool_initial_token_b * 100
+                ),
+            ],
+            self.tx,
+            extra_liquidity_address,
+            timestamp=self.clock.seconds() + 100,
+        )
+        self.runner.call_public_method(
+            self.dozer_id, "add_liquidity", add_liquidity_ctx
+        )
+
+        # Execute swaps to drive up token B price
+        # Repeatedly swap HTR for token B
+        for _ in range(100):
+            reserve_a = self.dozer_storage.get("reserve_a")
+            reserve_b = self.dozer_storage.get("reserve_b")
+            swap_amount = reserve_a // 10  # Swap 10% each time
+            amount_out = self.runner.call_view_method(
+                self.dozer_id, "get_amount_out", swap_amount, reserve_a, reserve_b
+            )
+
+            swap_ctx = Context(
+                [
+                    NCAction(NCActionType.DEPOSIT, HTR_UID, swap_amount),
+                    NCAction(NCActionType.WITHDRAWAL, self.token_b, amount_out),
+                ],
+                self.tx,
+                extra_liquidity_address,
+                timestamp=self.clock.seconds() + 200,
+            )
+            self.runner.call_public_method(
+                self.dozer_id, "swap_exact_tokens_for_tokens", swap_ctx
+            )
+
+        final_price = self.dozer_storage.get("reserve_a") / self.dozer_storage.get(
+            "reserve_b"
+        )
+        print(f"Final token_b price in HTR: {final_price=}")
+
+        price_increase = (final_price - initial_price) / initial_price * 100
+        print(f"Token B price increase: {price_increase:.2f}%")
+
+        # Verify price increased at least 100x
+        self.assertGreater(price_increase, 10000)  # 100x = 10000%
+
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        max_withdraw_b = user_info["max_withdraw_b"]
+        max_withdraw_htr = user_info["max_withdraw_htr"]
+
+        # Try to withdraw after timelock with IL protection
+        withdraw_ctx = Context(
+            [
+                NCAction(NCActionType.WITHDRAWAL, self.token_b, max_withdraw_b),
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, max_withdraw_htr),
+            ],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds() + (timelock * MONTHS_IN_SECONDS) + 1,
+        )
+
+        print(
+            f"deposit_amount: {deposit_amount}, max_withdraw_b: {max_withdraw_b}, max_withdraw_htr: {max_withdraw_htr}"
+        )
+
+        # Withdrawal should succeed
+        self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
+
+        # Verify complete withdrawal
+        user_info_after = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        self.assertEqual(user_info_after["user_deposit_b"], 0)
+
+        self.check_balances([user_address])
+
     def test_impermanent_loss_protection(self):
         """Test impermanent loss protection when token B outperforms HTR"""
         dev_initial_deposit = 100_000_000_00
@@ -816,7 +1028,9 @@ class OasisTestCase(BlueprintTestCase):
         self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
 
         # Verify withdrawal succeeded
-        user_info = self.runner.call_view_method(self.oasis_id, "user_info", user_address)
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
         self.assertEqual(user_info["user_deposit_b"], 0)
 
     def test_overlapping_timelocks(self):
@@ -853,12 +1067,18 @@ class OasisTestCase(BlueprintTestCase):
         )
 
         # Calculate expected weighted timelock as per contract
-        first_timelock_remaining = initial_time + (12 * MONTHS_IN_SECONDS) - (initial_time + (3 * MONTHS_IN_SECONDS))
+        first_timelock_remaining = (
+            initial_time
+            + (12 * MONTHS_IN_SECONDS)
+            - (initial_time + (3 * MONTHS_IN_SECONDS))
+        )
         weighted_unlock = (
-            (first_timelock_remaining * deposit_1_amount) + 
-            (deposit_2_amount * 6 * MONTHS_IN_SECONDS)
+            (first_timelock_remaining * deposit_1_amount)
+            + (deposit_2_amount * 6 * MONTHS_IN_SECONDS)
         ) // (deposit_1_amount + deposit_2_amount)
-        expected_unlock_time = (initial_time + (3 * MONTHS_IN_SECONDS)) + weighted_unlock
+        expected_unlock_time = (
+            initial_time + (3 * MONTHS_IN_SECONDS)
+        ) + weighted_unlock
 
         # Verify weighted average timelock
         self.assertEqual(

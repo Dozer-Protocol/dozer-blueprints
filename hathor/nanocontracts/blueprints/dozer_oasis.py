@@ -185,7 +185,9 @@ class Oasis(Blueprint):
 
         ## token_b handling
         if action_token_b.amount > max_withdraw_b:
-            raise NCFail("Not enough balance")
+            raise NCFail(
+                f"Not enough balance. max_withdraw_b: {max_withdraw_b}, action_token_b.amount: {action_token_b.amount}"
+            )
         else:
             partial = self.user_balances.get(ctx.address, {})
             partial.update(
