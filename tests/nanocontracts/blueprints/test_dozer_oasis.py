@@ -753,3 +753,152 @@ class OasisTestCase(BlueprintTestCase):
         self.assertEqual(user_info["user_deposit_b"], deposit_amount)
         self.assertGreater(user_info["user_withdrawal_time"], deposit_time)
         self.check_balances([user_address])
+
+    def test_invalid_timelocks(self):
+        """Test that invalid timelock values are rejected"""
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        invalid_timelocks = [0, 3, 7, 8, 13, 24]  # Invalid timelock periods
+        deposit_amount = 1_000_00
+        user_address = self._get_any_address()[0]
+
+        for invalid_timelock in invalid_timelocks:
+            ctx = Context(
+                [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+                self.tx,
+                user_address,
+                timestamp=self.clock.seconds(),
+            )
+
+            with self.assertRaises(NCFail):
+                self.runner.call_public_method(
+                    self.oasis_id, "user_deposit", ctx, invalid_timelock
+                )
+
+    def test_exact_timelock_expiry(self):
+        """Test withdrawals exactly at timelock expiry"""
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        deposit_amount = 1_000_00
+        timelock = 6  # 6 months
+        user_address = self._get_any_address()[0]
+        deposit_time = self.clock.seconds()
+
+        # Make deposit
+        deposit_ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=deposit_time,
+        )
+
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", deposit_ctx, timelock
+        )
+
+        # Try withdrawal exactly at expiry
+        exact_expiry = deposit_time + (timelock * MONTHS_IN_SECONDS)
+        withdraw_ctx = Context(
+            [
+                NCAction(NCActionType.WITHDRAWAL, self.token_b, deposit_amount),
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, 0),
+            ],
+            self.tx,
+            user_address,
+            timestamp=exact_expiry,
+        )
+
+        # Should succeed at exact expiry
+        self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
+
+        # Verify withdrawal succeeded
+        user_info = self.runner.call_view_method(self.oasis_id, "user_info", user_address)
+        self.assertEqual(user_info["user_deposit_b"], 0)
+
+    def test_overlapping_timelocks(self):
+        """Test multiple deposits with overlapping timelock periods"""
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        user_address = self._get_any_address()[0]
+        initial_time = self.clock.seconds()
+
+        # Make first deposit with 12 month lock
+        deposit_1_amount = 1_000_00
+        deposit_1_ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_1_amount)],
+            self.tx,
+            user_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(self.oasis_id, "user_deposit", deposit_1_ctx, 12)
+
+        # Make second deposit with 6 month lock after 3 months
+        deposit_2_amount = 2_000_00
+        deposit_2_ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_2_amount)],
+            self.tx,
+            user_address,
+            timestamp=initial_time + (3 * MONTHS_IN_SECONDS),
+        )
+        self.runner.call_public_method(self.oasis_id, "user_deposit", deposit_2_ctx, 6)
+
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+
+        # Calculate expected weighted timelock as per contract
+        first_timelock_remaining = initial_time + (12 * MONTHS_IN_SECONDS) - (initial_time + (3 * MONTHS_IN_SECONDS))
+        weighted_unlock = (
+            (first_timelock_remaining * deposit_1_amount) + 
+            (deposit_2_amount * 6 * MONTHS_IN_SECONDS)
+        ) // (deposit_1_amount + deposit_2_amount)
+        expected_unlock_time = (initial_time + (3 * MONTHS_IN_SECONDS)) + weighted_unlock
+
+        # Verify weighted average timelock
+        self.assertEqual(
+            user_info["user_withdrawal_time"],
+            expected_unlock_time + 1,  # Account for the +1 in contract
+        )
+
+        # Try withdrawal before weighted timelock - should fail
+        early_withdraw_ctx = Context(
+            [
+                NCAction(
+                    NCActionType.WITHDRAWAL,
+                    self.token_b,
+                    deposit_1_amount + deposit_2_amount,
+                ),
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, 0),
+            ],
+            self.tx,
+            user_address,
+            timestamp=expected_unlock_time,
+        )
+
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.oasis_id, "user_withdraw", early_withdraw_ctx
+            )
+
+        # Withdrawal after weighted timelock should succeed
+        withdraw_ctx = Context(
+            [
+                NCAction(
+                    NCActionType.WITHDRAWAL,
+                    self.token_b,
+                    deposit_1_amount + deposit_2_amount,
+                ),
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, 0),
+            ],
+            self.tx,
+            user_address,
+            timestamp=expected_unlock_time + 1,
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
