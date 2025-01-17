@@ -195,134 +195,139 @@ class LaunchpadTestCase(BlueprintTestCase):
         self.assertEqual(self.storage.get("total_sold"), deposit_amount * self.rate)
         self.assertEqual(self.storage.get("participants_count"), 1)
 
-    # def test_participate_multiple_users(self):
-    #     """Test participation from multiple users."""
-    #     self._initialize_sale()
-    #     num_users = 5
-    #     deposit_amount = 100_00
+    def test_participate_multiple_users(self):
+        """Test participation from multiple users."""
+        self._initialize_sale()
+        num_users = 5
+        deposit_amount = 100_00
 
-    #     for _ in range(num_users):
-    #         ctx = self._create_deposit_context(deposit_amount)
-    #         self.runner.call_public_method(self.contract_id, "participate", ctx)
+        for _ in range(num_users):
+            ctx = self._create_deposit_context(deposit_amount)
+            self.runner.call_public_method(self.contract_id, "participate", ctx)
 
-    #     self.assertEqual(self.storage.get("total_raised"), deposit_amount * num_users)
-    #     self.assertEqual(self.storage.get("participants_count"), num_users)
+        self.assertEqual(self.storage.get("total_raised"), deposit_amount * num_users)
+        self.assertEqual(self.storage.get("participants_count"), num_users)
 
-    # def test_soft_cap_reached(self):
-    #     """Test sale state transition when soft cap is reached."""
-    #     self._initialize_sale()
+    def test_soft_cap_reached(self):
+        """Test sale state transition when soft cap is reached."""
+        self._initialize_sale()
 
-    #     # Deposit enough to reach soft cap
-    #     ctx = self._create_deposit_context(self.soft_cap)
-    #     self.runner.call_public_method(self.contract_id, "participate", ctx)
+        # Deposit enough to reach soft cap
+        ctx = self._create_deposit_context(self.soft_cap)
+        self.runner.call_public_method(self.contract_id, "participate", ctx)
 
-    #     self.assertEqual(self.storage.get("state"), SaleState.SUCCESS)
+        self.assertEqual(self.storage.get("state"), SaleState.SUCCESS)
 
-    # def test_claim_tokens(self):
-    #     """Test token claiming after successful sale."""
-    #     self._initialize_sale()
+    def test_claim_tokens(self):
+        """Test token claiming after successful sale."""
+        self._initialize_sale()
 
-    #     # Reach soft cap
-    #     ctx = self._create_deposit_context(self.soft_cap)
-    #     self.runner.call_public_method(self.contract_id, "participate", ctx)
+        # Reach soft cap
+        ctx = self._create_deposit_context(self.soft_cap)
+        self.runner.call_public_method(self.contract_id, "participate", ctx)
 
-    #     # Attempt to claim tokens
-    #     claim_ctx = Context([], self.tx, ctx.address, timestamp=self.end_time + 100)
-    #     self.runner.call_public_method(self.contract_id, "claim_tokens", claim_ctx)
+        # Attempt to claim tokens
+        claim_ctx = Context([], self.tx, ctx.address, timestamp=self.end_time + 100)
+        self.runner.call_public_method(self.contract_id, "claim_tokens", claim_ctx)
 
-    #     # Verify claim status
-    #     # self.assertTrue(self.storage.get_path(["claimed", ctx.address]))
+        # Verify claim status
+        # self.assertTrue(self.storage.get_path(["claimed", ctx.address]))
 
-    # def test_claim_refund(self):
-    #     """Test refund claiming after failed sale."""
-    #     self._initialize_sale()
-    #     deposit_amount = 100_00
+    def test_claim_refund(self):
+        """Test refund claiming after failed sale."""
+        self._initialize_sale()
+        deposit_amount = 100_00
 
-    #     # Make deposit below soft cap
-    #     ctx = self._create_deposit_context(deposit_amount)
-    #     self.runner.call_public_method(self.contract_id, "participate", ctx)
+        # Make deposit below soft cap
+        ctx = self._create_deposit_context(deposit_amount)
+        self.runner.call_public_method(self.contract_id, "participate", ctx)
 
-    #     # Force sale to failed state
-    #     finalize_ctx = Context(
-    #         [], self.tx, self.owner_address, timestamp=self.end_time + 100
-    #     )
-    #     self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
+        # Force sale to failed state
+        finalize_ctx = Context(
+            [], self.tx, self.owner_address, timestamp=self.end_time + 100
+        )
+        self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
 
-    #     # Claim refund
-    #     refund_ctx = Context([], self.tx, ctx.address, timestamp=self.end_time + 200)
-    #     self.runner.call_public_method(self.contract_id, "claim_refund", refund_ctx)
+        # Claim refund
+        refund_ctx = Context([], self.tx, ctx.address, timestamp=self.end_time + 200)
+        self.runner.call_public_method(self.contract_id, "claim_refund", refund_ctx)
 
-    #     # Verify refund status
-    #     # self.assertTrue(self.storage.get_path(["claimed", ctx.address]))
+        # Verify refund status
+        # self.assertTrue(self.storage.get_path(["claimed", ctx.address]))
 
-    # def test_owner_functions(self):
-    #     """Test owner-only functions."""
-    #     self._initialize_sale()
+    def test_owner_functions(self):
+        """Test owner-only functions."""
+        self._initialize_sale()
 
-    #     # Test pause/unpause
-    #     pause_ctx = Context(
-    #         [], self.tx, self.owner_address, timestamp=self.start_time + 100
-    #     )
-    #     self.runner.call_public_method(self.contract_id, "pause", pause_ctx)
-    #     self.assertEqual(self.storage.get("state"), SaleState.PAUSED)
+        # Test pause/unpause
+        pause_ctx = Context(
+            [], self.tx, self.owner_address, timestamp=self.start_time + 100
+        )
+        self.runner.call_public_method(self.contract_id, "pause", pause_ctx)
+        self.assertEqual(self.storage.get("state"), SaleState.PAUSED)
 
-    #     self.runner.call_public_method(self.contract_id, "unpause", pause_ctx)
-    #     self.assertEqual(self.storage.get("state"), SaleState.ACTIVE)
+        self.runner.call_public_method(self.contract_id, "unpause", pause_ctx)
+        self.assertEqual(self.storage.get("state"), SaleState.ACTIVE)
 
-    #     # Test unauthorized access
-    #     unauthorized_ctx = Context(
-    #         [], self.tx, self._get_any_address()[0], timestamp=self.start_time + 100
-    #     )
-    #     with self.assertRaises(NCFail):
-    #         self.runner.call_public_method(self.contract_id, "pause", unauthorized_ctx)
+        # Test unauthorized access
+        unauthorized_ctx = Context(
+            [], self.tx, self._get_any_address()[0], timestamp=self.start_time + 100
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.contract_id, "pause", unauthorized_ctx)
 
-    # def test_sale_state_transitions(self):
-    #     """Test sale state transitions and validations."""
-    #     # Initialize without activating
-    #     self._initialize_sale(activate=False)
+    def test_sale_state_transitions(self):
+        """Test sale state transitions and validations."""
+        # Initialize without activating
+        self._initialize_sale(activate=False)
 
-    #     # Verify initial pending state
-    #     self.assertEqual(self.storage.get("state"), SaleState.PENDING)
+        # Verify initial pending state
+        self.assertEqual(self.storage.get("state"), SaleState.PENDING)
 
-    #     # Try to participate while pending - should fail
-    #     deposit_amount = 100_00
-    #     ctx = self._create_deposit_context(deposit_amount)
-    #     with self.assertRaises(NCFail) as cm:
-    #         self.runner.call_public_method(self.contract_id, "participate", ctx)
-    #     self.assertEqual(str(cm.exception), LaunchpadErrors.INVALID_STATE)
+        # Try to participate while pending - should fail
+        deposit_amount = 100_00
+        ctx = self._create_deposit_context(deposit_amount)
+        with self.assertRaises(NCFail) as cm:
+            self.runner.call_public_method(self.contract_id, "participate", ctx)
+        self.assertEqual(str(cm.exception), LaunchpadErrors.INVALID_STATE)
 
-    #     # Activate sale
-    #     # self.storage.set("state", SaleState.ACTIVE)
+        # Activate sale
+        activate_ctx = Context(
+            [],
+            self.tx,
+            self.owner_address,
+            timestamp=self.start_time + 1,  # Just after start time
+        )
+        self.runner.call_public_method(self.contract_id, "activate", activate_ctx)
+        # Now participation should work
+        ctx = self._create_deposit_context(deposit_amount)
+        self.runner.call_public_method(self.contract_id, "participate", ctx)
 
-    #     # Now participation should work
-    #     ctx = self._create_deposit_context(deposit_amount)
-    #     self.runner.call_public_method(self.contract_id, "participate", ctx)
+        # Verify participation succeeded
+        self.assertEqual(self.storage.get("total_raised"), deposit_amount)
 
-    #     # Verify participation succeeded
-    #     self.assertEqual(self.storage.get("total_raised"), deposit_amount)
+    def test_view_functions(self):
+        """Test view functions return correct information."""
+        self._initialize_sale()
+        deposit_amount = 100_00
 
-    # def test_view_functions(self):
-    #     """Test view functions return correct information."""
-    #     self._initialize_sale()
-    #     deposit_amount = 100_00
+        # Make a deposit
+        ctx = self._create_deposit_context(deposit_amount)
+        self.runner.call_public_method(self.contract_id, "participate", ctx)
 
-    #     # Make a deposit
-    #     ctx = self._create_deposit_context(deposit_amount)
-    #     self.runner.call_public_method(self.contract_id, "participate", ctx)
+        # Test get_sale_info
+        sale_info = self.runner.call_view_method(self.contract_id, "get_sale_info")
+        self.assertEqual(sale_info["total_raised"], deposit_amount)
+        self.assertEqual(sale_info["participants"], 1)
 
-    #     # Test get_sale_info
-    #     sale_info = self.runner.call_view_method(self.contract_id, "get_sale_info")
-    #     self.assertEqual(sale_info["total_raised"], deposit_amount)
-    #     self.assertEqual(sale_info["participants"], 1)
+        # Test get_participant_info
+        participant_info = self.runner.call_view_method(
+            self.contract_id, "get_participant_info", ctx.address
+        )
+        self.assertEqual(participant_info["deposited"], deposit_amount)
+        self.assertEqual(participant_info["tokens_due"], deposit_amount * self.rate)
 
-    #     # Test get_participant_info
-    #     participant_info = self.runner.call_view_method(
-    #         self.contract_id, "get_participant_info", ctx.address
-    #     )
-    #     self.assertEqual(participant_info["deposited"], deposit_amount)
-    #     self.assertEqual(participant_info["tokens_due"], deposit_amount * self.rate)
-
-    #     # Test get_sale_progress
-    #     progress = self.runner.call_view_method(self.contract_id, "get_sale_progress")
-    #     expected_percent = (deposit_amount * 100) // self.hard_cap
-    #     self.assertEqual(progress["percent_filled"], expected_percent)
+        # Test get_sale_progress
+        progress = self.runner.call_view_method(self.contract_id, "get_sale_progress")
+        expected_percent = (deposit_amount * 100) // self.hard_cap
+        self.assertEqual(progress["percent_filled"], expected_percent)
