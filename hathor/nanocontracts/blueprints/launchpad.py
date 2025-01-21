@@ -78,18 +78,6 @@ class Launchpad(Blueprint):
     platform_fees_collected: Amount  # Total fees collected
 
     @public
-    def activate(self, ctx: Context) -> None:
-        """Activate the sale (owner only)."""
-        if ctx.address != self.owner:
-            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
-        if self.state != SaleState.PENDING:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
-        if ctx.timestamp < self.start_time:
-            raise NCFail(LaunchpadErrors.NOT_STARTED)
-
-        self.state = SaleState.ACTIVE
-
-    @public
     def initialize(
         self,
         ctx: Context,
@@ -137,8 +125,28 @@ class Launchpad(Blueprint):
         self.owner_withdrawn = False
         self.platform_fees_collected = Amount(0)
 
+    @public
+    def early_activate(self, ctx: Context) -> None:
+        """Activate the sale (owner only)."""
+        if ctx.address != self.owner:
+            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
+        if self.state != SaleState.PENDING:
+            raise NCFail(LaunchpadErrors.INVALID_STATE)
+        if ctx.timestamp < self.start_time:
+            self.start_time = ctx.timestamp
+
+        self.state = SaleState.ACTIVE
+
+    def _activate_if_started(self, ctx: Context) -> None:
+        """Activate the sale (anyone)"""
+        if self.state != SaleState.PENDING:
+            return
+        if ctx.timestamp >= self.start_time:
+            self.state = SaleState.ACTIVE
+
     def _validate_sale_active(self, ctx: Context) -> None:
         """Validate sale is in active state and within time bounds."""
+        self._activate_if_started(ctx)
         if self.state != SaleState.ACTIVE:
             raise NCFail(LaunchpadErrors.INVALID_STATE)
         if ctx.timestamp < self.start_time:

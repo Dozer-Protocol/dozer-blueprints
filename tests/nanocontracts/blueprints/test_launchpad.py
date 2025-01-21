@@ -81,9 +81,11 @@ class LaunchpadTestCase(BlueprintTestCase):
                 [],
                 self.tx,
                 self.owner_address,
-                timestamp=self.start_time + 1,  # Just after start time
+                timestamp=self.start_time - 1,  # Just after start time
             )
-            self.runner.call_public_method(self.contract_id, "activate", activate_ctx)
+            self.runner.call_public_method(
+                self.contract_id, "early_activate", activate_ctx
+            )
 
     def _create_deposit_context(
         self, amount: int, address: bytes = None, timestamp: int = None
@@ -141,15 +143,17 @@ class LaunchpadTestCase(BlueprintTestCase):
         # Try participation during PENDING state - should fail
         with self.assertRaises(NCFail) as cm:
             deposit_amount = 100_00
-            ctx = self._create_deposit_context(deposit_amount)
+            ctx = self._create_deposit_context(
+                deposit_amount, timestamp=self.start_time - 1
+            )
             self.runner.call_public_method(self.contract_id, "participate", ctx)
         self.assertEqual(str(cm.exception), LaunchpadErrors.INVALID_STATE)
 
         # Activate the sale
         activate_ctx = Context(
-            [], self.tx, self.owner_address, timestamp=self.start_time + 1
+            [], self.tx, self.owner_address, timestamp=self.start_time - 1
         )
-        self.runner.call_public_method(self.contract_id, "activate", activate_ctx)
+        self.runner.call_public_method(self.contract_id, "early_activate", activate_ctx)
         self.assertEqual(self.storage.get("state"), SaleState.ACTIVE)
 
         # Test participation works in ACTIVE state
@@ -286,7 +290,9 @@ class LaunchpadTestCase(BlueprintTestCase):
 
         # Try to participate while pending - should fail
         deposit_amount = 100_00
-        ctx = self._create_deposit_context(deposit_amount)
+        ctx = self._create_deposit_context(
+            deposit_amount, timestamp=self.start_time - 1
+        )
         with self.assertRaises(NCFail) as cm:
             self.runner.call_public_method(self.contract_id, "participate", ctx)
         self.assertEqual(str(cm.exception), LaunchpadErrors.INVALID_STATE)
@@ -296,9 +302,9 @@ class LaunchpadTestCase(BlueprintTestCase):
             [],
             self.tx,
             self.owner_address,
-            timestamp=self.start_time + 1,  # Just after start time
+            timestamp=self.start_time - 1,  # Just after start time
         )
-        self.runner.call_public_method(self.contract_id, "activate", activate_ctx)
+        self.runner.call_public_method(self.contract_id, "early_activate", activate_ctx)
         # Now participation should work
         ctx = self._create_deposit_context(deposit_amount)
         self.runner.call_public_method(self.contract_id, "participate", ctx)
