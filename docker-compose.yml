@@ -15,5 +15,5 @@ services:
         "run",
         "pytest",
         # "-rP",
-        "tests/nanocontracts/blueprints/test_launchpad.py",
+        "tests/nanocontracts/blueprints/test_vesting.py",
       ] # without stdout

@@ -57,7 +57,9 @@ class LaunchpadTestCase(BlueprintTestCase):
         address_bytes = decode_address(not_none(address_b58))
         return address_bytes, key
 
-    def _initialize_sale(self, params: dict = None, activate: bool = True) -> None:
+    def _initialize_sale(
+        self, params: dict | None = None, activate: bool = True
+    ) -> None:
         """Initialize sale with default or custom parameters."""
         if params is None:
             params = {}
@@ -103,7 +105,7 @@ class LaunchpadTestCase(BlueprintTestCase):
             )
 
     def _create_deposit_context(
-        self, amount: int, address: bytes = None, timestamp: int = None
+        self, amount: int, address: bytes | None = None, timestamp: int | None = None
     ) -> Context:
         """Create a context for HTR deposits."""
         if address is None:
