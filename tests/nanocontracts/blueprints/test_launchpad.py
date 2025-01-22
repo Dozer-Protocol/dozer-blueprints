@@ -35,7 +35,7 @@ class LaunchpadTestCase(BlueprintTestCase):
         self.owner_address, self.owner_key = self._get_any_address()
         self.platform_address = (
             self.owner_address
-        )  # TODO: Think hwo to define platform address
+        )  # TODO: Think how to define platform address
 
         # Set up base transaction for contexts
         self.tx = self.get_genesis_tx()
@@ -122,6 +122,30 @@ class LaunchpadTestCase(BlueprintTestCase):
         """Helper to calculate platform fee."""
         return amount * self.platform_fee // 10000
 
+    def _check_contract_balances(self) -> None:
+        """Verify contract balances match registered token states."""
+        # Get actual contract balances
+        actual_htr_balance = self.storage.get_balance(HTR_UID)
+        actual_token_balance = self.storage.get_balance(self.token_uid)
+
+        # Get registered balances from contract state
+        expected_htr_balance = self.storage.get("htr_balance")
+        expected_token_balance = self.storage.get("sale_token_balance")
+
+        # Verify HTR balance
+        self.assertEqual(
+            actual_htr_balance,
+            expected_htr_balance,
+            f"HTR balance mismatch. Expected: {expected_htr_balance}, Got: {actual_htr_balance}",
+        )
+
+        # Verify token balance
+        self.assertEqual(
+            actual_token_balance,
+            expected_token_balance,
+            f"Token balance mismatch. Expected: {expected_token_balance}, Got: {actual_token_balance}",
+        )
+
     def test_initialize(self):
         """Test contract initialization with valid parameters."""
         self._initialize_sale(activate=False)  # Don't activate for initialization test
@@ -134,6 +158,9 @@ class LaunchpadTestCase(BlueprintTestCase):
         self.assertEqual(self.storage.get("state"), SaleState.PENDING)
         self.assertEqual(self.storage.get("total_raised"), 0)
         self.assertEqual(self.storage.get("owner"), self.owner_address)
+
+        # Verify contract balances
+        self._check_contract_balances()
 
     def test_initialize_invalid_params(self):
         """Test initialization with invalid parameters."""
@@ -248,6 +275,9 @@ class LaunchpadTestCase(BlueprintTestCase):
             self.runner.call_public_method(self.contract_id, "participate", ctx)
             self.assertEqual(self.storage.get("state"), SaleState.SUCCESS)
 
+        # Verify contract balances
+        self._check_contract_balances()
+
     def test_participate(self):
         """Test basic participation functionality."""
         # Initialize and activate sale
@@ -268,6 +298,9 @@ class LaunchpadTestCase(BlueprintTestCase):
         self.assertEqual(self.storage.get("total_sold"), deposit_amount * self.rate)
         self.assertEqual(self.storage.get("participants_count"), 1)
 
+        # Verify contract balances
+        self._check_contract_balances()
+
     def test_participate_multiple_users(self):
         """Test participation from multiple users."""
         self._initialize_sale()
@@ -281,6 +314,9 @@ class LaunchpadTestCase(BlueprintTestCase):
         self.assertEqual(self.storage.get("total_raised"), deposit_amount * num_users)
         self.assertEqual(self.storage.get("participants_count"), num_users)
 
+        # Verify contract balances
+        self._check_contract_balances()
+
     def test_soft_cap_reached(self):
         """Test sale state transition when soft cap is reached."""
         self._initialize_sale()
@@ -290,6 +326,8 @@ class LaunchpadTestCase(BlueprintTestCase):
         self.runner.call_public_method(self.contract_id, "participate", ctx)
 
         self.assertEqual(self.storage.get("state"), SaleState.SUCCESS)
+        # Verify contract balances
+        self._check_contract_balances()
 
     def test_claim_tokens(self):
         """Test token claiming after successful sale."""
@@ -317,6 +355,8 @@ class LaunchpadTestCase(BlueprintTestCase):
         )
         self.assertTrue(participant_info["has_claimed"])
         self.assertEqual(participant_info["tokens_due"], 0)
+        # Verify contract balances
+        self._check_contract_balances()
 
     def test_claim_refund(self):
         """Test refund claiming after failed sale."""
@@ -348,6 +388,8 @@ class LaunchpadTestCase(BlueprintTestCase):
         )
         self.assertTrue(participant_info["has_claimed"])
         self.assertEqual(participant_info["deposited"], 0)
+        # Verify contract balances
+        self._check_contract_balances()
 
     def test_owner_functions(self):
         """Test owner-only functions."""
@@ -401,6 +443,9 @@ class LaunchpadTestCase(BlueprintTestCase):
 
         # Verify participation succeeded
         self.assertEqual(self.storage.get("total_raised"), deposit_amount)
+
+        # Verify contract balances
+        self._check_contract_balances()
 
     def test_view_functions(self):
         """Test view functions return correct information."""
@@ -489,6 +534,9 @@ class LaunchpadTestCase(BlueprintTestCase):
         # Verify balance is zero
         self.assertEqual(self.storage.get("sale_token_balance"), 0)
 
+        # Verify contract balances
+        self._check_contract_balances()
+
     def test_comprehensive_sale_lifecycle(self):
         """Test complete sale lifecycle with all new validations."""
         self._initialize_sale()
@@ -569,3 +617,6 @@ class LaunchpadTestCase(BlueprintTestCase):
         self.assertEqual(self.storage.get("sale_token_balance"), 0)
         self.assertTrue(self.storage.get("owner_withdrawn"))
         self.assertTrue(self.storage.get("platform_fees_withdrawn"))
+
+        # Verify contract balances
+        self._check_contract_balances()
