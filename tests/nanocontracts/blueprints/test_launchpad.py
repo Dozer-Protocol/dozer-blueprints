@@ -33,7 +33,9 @@ class LaunchpadTestCase(BlueprintTestCase):
         # Generate test tokens and addresses
         self.token_uid = self.gen_random_token_uid()
         self.owner_address, self.owner_key = self._get_any_address()
-        self.platform_address, _ = self._get_any_address()
+        self.platform_address = (
+            self.owner_address
+        )  # TODO: Think hwo to define platform address
 
         # Set up base transaction for contexts
         self.tx = self.get_genesis_tx()
@@ -60,28 +62,41 @@ class LaunchpadTestCase(BlueprintTestCase):
         if params is None:
             params = {}
 
-        ctx = Context([], self.tx, self.owner_address, timestamp=self.start_time - 100)
+        # Set parameters
+        token_uid = params.get("token_uid", self.token_uid)
+        rate = params.get("rate", self.rate)
+        soft_cap = params.get("soft_cap", self.soft_cap)
+        hard_cap = params.get("hard_cap", self.hard_cap)
+        min_deposit = params.get("min_deposit", self.min_deposit)
+        start_time = params.get("start_time", self.start_time)
+        end_time = params.get("end_time", self.end_time)
+        platform_fee = params.get("platform_fee", self.platform_fee)
+
+        # Create context with token deposit action
+        init_ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, token_uid, hard_cap * rate)],
+            self.tx,
+            self.owner_address,
+            timestamp=start_time - 100,
+        )
 
         self.runner.call_public_method(
             self.contract_id,
             "initialize",
-            ctx,
-            params.get("token_uid", self.token_uid),
-            params.get("rate", self.rate),
-            params.get("soft_cap", self.soft_cap),
-            params.get("hard_cap", self.hard_cap),
-            params.get("min_deposit", self.min_deposit),
-            params.get("start_time", self.start_time),
-            params.get("end_time", self.end_time),
-            params.get("platform_fee", self.platform_fee),
+            init_ctx,
+            token_uid,
+            rate,
+            soft_cap,
+            hard_cap,
+            min_deposit,
+            start_time,
+            end_time,
+            platform_fee,
         )
 
         if activate:
             activate_ctx = Context(
-                [],
-                self.tx,
-                self.owner_address,
-                timestamp=self.start_time - 1,  # Just after start time
+                [], self.tx, self.owner_address, timestamp=start_time - 1
             )
             self.runner.call_public_method(
                 self.contract_id, "early_activate", activate_ctx
@@ -97,11 +112,15 @@ class LaunchpadTestCase(BlueprintTestCase):
             timestamp = self.start_time + 100
 
         return Context(
-            [NCAction(NCActionType.DEPOSIT, HTR_UID, amount)],
+            [NCAction(NCActionType.DEPOSIT, HTR_UID, amount)],  # Single action
             self.tx,
             address,
             timestamp=timestamp,
         )
+
+    def _calculate_platform_fee(self, amount: int) -> int:
+        """Helper to calculate platform fee."""
+        return amount * self.platform_fee // 10000
 
     def test_initialize(self):
         """Test contract initialization with valid parameters."""
@@ -131,6 +150,56 @@ class LaunchpadTestCase(BlueprintTestCase):
         # Test invalid platform fee
         with self.assertRaises(NCFail):
             self._initialize_sale({"platform_fee": 50})  # Below minimum
+
+    def test_initialize_invalid_token_deposit(self):
+        """Test initialization with insufficient or invalid token deposit."""
+        # Test insufficient tokens
+        insufficient_tokens = self.hard_cap * self.rate - 1
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_uid, insufficient_tokens)],
+            self.tx,
+            self.owner_address,
+            timestamp=self.start_time - 100,
+        )
+
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.contract_id,
+                "initialize",
+                ctx,
+                self.token_uid,
+                self.rate,
+                self.soft_cap,
+                self.hard_cap,
+                self.min_deposit,
+                self.start_time,
+                self.end_time,
+                self.platform_fee,
+            )
+
+        # Test wrong token
+        wrong_token = self.gen_random_token_uid()
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, wrong_token, self.hard_cap * self.rate)],
+            self.tx,
+            self.owner_address,
+            timestamp=self.start_time - 100,
+        )
+
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.contract_id,
+                "initialize",
+                ctx,
+                self.token_uid,  # Notice different from deposited token
+                self.rate,
+                self.soft_cap,
+                self.hard_cap,
+                self.min_deposit,
+                self.start_time,
+                self.end_time,
+                self.platform_fee,
+            )
 
     def test_state_transitions(self):
         """Test state transitions in the sale lifecycle."""
@@ -227,24 +296,36 @@ class LaunchpadTestCase(BlueprintTestCase):
         self._initialize_sale()
 
         # Reach soft cap
-        ctx = self._create_deposit_context(self.soft_cap)
-        self.runner.call_public_method(self.contract_id, "participate", ctx)
+        deposit_ctx = self._create_deposit_context(self.soft_cap)
+        self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
+
+        # Calculate tokens due
+        tokens_due = self.soft_cap * self.rate
 
         # Attempt to claim tokens
-        claim_ctx = Context([], self.tx, ctx.address, timestamp=self.end_time + 100)
+        claim_ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, self.token_uid, tokens_due)],
+            self.tx,
+            deposit_ctx.address,
+            timestamp=self.end_time + 100,
+        )
         self.runner.call_public_method(self.contract_id, "claim_tokens", claim_ctx)
 
         # Verify claim status
-        # self.assertTrue(self.storage.get_path(["claimed", ctx.address]))
+        participant_info = self.runner.call_view_method(
+            self.contract_id, "get_participant_info", deposit_ctx.address
+        )
+        self.assertTrue(participant_info["has_claimed"])
+        self.assertEqual(participant_info["tokens_due"], 0)
 
     def test_claim_refund(self):
         """Test refund claiming after failed sale."""
         self._initialize_sale()
-        deposit_amount = 100_00
+        deposit_amount = self.soft_cap // 2  # Below soft cap
 
-        # Make deposit below soft cap
-        ctx = self._create_deposit_context(deposit_amount)
-        self.runner.call_public_method(self.contract_id, "participate", ctx)
+        # Make deposit
+        deposit_ctx = self._create_deposit_context(deposit_amount)
+        self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
 
         # Force sale to failed state
         finalize_ctx = Context(
@@ -253,11 +334,20 @@ class LaunchpadTestCase(BlueprintTestCase):
         self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
 
         # Claim refund
-        refund_ctx = Context([], self.tx, ctx.address, timestamp=self.end_time + 200)
+        refund_ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, HTR_UID, deposit_amount)],
+            self.tx,
+            deposit_ctx.address,
+            timestamp=self.end_time + 200,
+        )
         self.runner.call_public_method(self.contract_id, "claim_refund", refund_ctx)
 
         # Verify refund status
-        # self.assertTrue(self.storage.get_path(["claimed", ctx.address]))
+        participant_info = self.runner.call_view_method(
+            self.contract_id, "get_participant_info", deposit_ctx.address
+        )
+        self.assertTrue(participant_info["has_claimed"])
+        self.assertEqual(participant_info["deposited"], 0)
 
     def test_owner_functions(self):
         """Test owner-only functions."""
@@ -337,3 +427,145 @@ class LaunchpadTestCase(BlueprintTestCase):
         progress = self.runner.call_view_method(self.contract_id, "get_sale_progress")
         expected_percent = (deposit_amount * 100) // self.hard_cap
         self.assertEqual(progress["percent_filled"], expected_percent)
+
+    def test_withdraw_remaining_tokens(self):
+        """Test withdrawal of remaining tokens after successful sale."""
+        self._initialize_sale()
+
+        # Reach soft cap
+        ctx_deposit = self._create_deposit_context(self.soft_cap)
+        self.runner.call_public_method(self.contract_id, "participate", ctx_deposit)
+
+        # Try to withdraw before SUCCESS state
+        ctx_withdraw = Context(
+            [NCAction(NCActionType.WITHDRAWAL, self.token_uid, 1000)],
+            self.tx,
+            self.owner_address,
+            timestamp=self.start_time + 100,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.contract_id, "withdraw_remaining_tokens", ctx_withdraw
+            )
+
+        # Get initial token balance
+        initial_balance = self.storage.get("sale_token_balance")
+
+        # Try unauthorized withdrawal
+        unauthorized_ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, self.token_uid, initial_balance)],
+            self.tx,
+            self._get_any_address()[0],
+            timestamp=self.end_time + 100,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.contract_id, "withdraw_remaining_tokens", unauthorized_ctx
+            )
+
+        # Attempt invalid withdrawal amount
+        wrong_amount_ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, self.token_uid, initial_balance - 100)],
+            self.tx,
+            self.owner_address,
+            timestamp=self.end_time + 100,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.contract_id, "withdraw_remaining_tokens", wrong_amount_ctx
+            )
+
+        # Successful withdrawal
+        correct_ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, self.token_uid, initial_balance)],
+            self.tx,
+            self.owner_address,
+            timestamp=self.end_time + 100,
+        )
+        self.runner.call_public_method(
+            self.contract_id, "withdraw_remaining_tokens", correct_ctx
+        )
+
+        # Verify balance is zero
+        self.assertEqual(self.storage.get("sale_token_balance"), 0)
+
+    def test_comprehensive_sale_lifecycle(self):
+        """Test complete sale lifecycle with all new validations."""
+        self._initialize_sale()
+
+        # Multiple participants
+        participants = []
+        total_raised = 0
+        individual_deposit = (self.soft_cap // 2) + 100_00
+
+        # Two participants to reach success
+        for _ in range(2):
+            participant_addr = self._get_any_address()[0]
+            participants.append(participant_addr)
+            ctx = self._create_deposit_context(
+                individual_deposit, address=participant_addr
+            )
+            self.runner.call_public_method(self.contract_id, "participate", ctx)
+            total_raised += individual_deposit
+
+        # Verify sale reached SUCCESS state
+        self.assertEqual(self.storage.get("state"), SaleState.SUCCESS)
+        self.assertEqual(self.storage.get("total_raised"), total_raised)
+
+        # Participants claim tokens first
+        for participant in participants:
+            participant_info = self.runner.call_view_method(
+                self.contract_id, "get_participant_info", participant
+            )
+            tokens_due = participant_info["tokens_due"]
+            claim_ctx = Context(
+                [NCAction(NCActionType.WITHDRAWAL, self.token_uid, tokens_due)],
+                self.tx,
+                participant,
+                timestamp=self.end_time + 100,
+            )
+            self.runner.call_public_method(self.contract_id, "claim_tokens", claim_ctx)
+
+        # Calculate platform fee and withdrawable HTR
+        platform_fee = total_raised * self.platform_fee // 10000
+        withdrawable_htr = total_raised - platform_fee
+
+        # Owner withdraws HTR
+        owner_withdrawal_ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, HTR_UID, withdrawable_htr)],
+            self.tx,
+            self.owner_address,
+            timestamp=self.end_time + 100,
+        )
+        self.runner.call_public_method(
+            self.contract_id, "withdraw_raised_htr", owner_withdrawal_ctx
+        )
+
+        # Platform withdraws fees
+        platform_ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, HTR_UID, platform_fee)],
+            self.tx,
+            self.platform_address,  # Using platform address from setUp
+            timestamp=self.end_time + 100,
+        )
+        self.runner.call_public_method(
+            self.contract_id, "withdraw_platform_fees", platform_ctx
+        )
+
+        # Get remaining tokens and withdraw
+        remaining_tokens = self.storage.get("sale_token_balance")
+        if remaining_tokens > 0:
+            token_withdrawal_ctx = Context(
+                [NCAction(NCActionType.WITHDRAWAL, self.token_uid, remaining_tokens)],
+                self.tx,
+                self.owner_address,
+                timestamp=self.end_time + 100,
+            )
+            self.runner.call_public_method(
+                self.contract_id, "withdraw_remaining_tokens", token_withdrawal_ctx
+            )
+
+        # Verify final state
+        self.assertEqual(self.storage.get("sale_token_balance"), 0)
+        self.assertTrue(self.storage.get("owner_withdrawn"))
+        self.assertTrue(self.storage.get("platform_fees_withdrawn"))

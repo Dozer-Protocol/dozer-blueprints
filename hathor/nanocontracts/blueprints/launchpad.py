@@ -65,6 +65,10 @@ class Launchpad(Blueprint):
     total_sold: Amount  # Total tokens sold
     participants_count: int  # Number of unique participants
 
+    # Token balances
+    sale_token_balance: Amount  # Balance of tokens being sold
+    htr_balance: Amount  # Balance of HTR
+
     # Access control
     owner: Address  # Project owner
     platform: Address  # Platform fee recipient
@@ -75,6 +79,7 @@ class Launchpad(Blueprint):
 
     # Withdrawal tracking
     owner_withdrawn: bool  # Whether owner has withdrawn
+    platform_fees_withdrawn: bool  # Whether platform fees have been withdrawn
     platform_fees_collected: Amount  # Total fees collected
 
     @public
@@ -101,6 +106,14 @@ class Launchpad(Blueprint):
         if rate <= 0 or min_deposit <= 0:
             raise NCFail("Invalid rate or minimum deposit")
 
+        # Validate token deposit
+        action = self._get_token_action(ctx, token_uid, NCActionType.DEPOSIT)
+
+        # Validate sufficient tokens for hard cap
+        tokens_needed = hard_cap * rate
+        if action.amount < tokens_needed:
+            raise NCFail(f"Insufficient tokens deposited. Need {tokens_needed}")
+
         # Initialize configuration
         self.token_uid = token_uid
         self.rate = rate
@@ -116,6 +129,8 @@ class Launchpad(Blueprint):
         self.total_raised = Amount(0)
         self.total_sold = Amount(0)
         self.participants_count = 0
+        self.sale_token_balance = action.amount
+        self.htr_balance = Amount(0)
 
         # Set control addresses
         self.owner = ctx.address
@@ -123,56 +138,18 @@ class Launchpad(Blueprint):
 
         # Initialize tracking
         self.owner_withdrawn = False
+        self.platform_fees_withdrawn = False
         self.platform_fees_collected = Amount(0)
-
-    @public
-    def early_activate(self, ctx: Context) -> None:
-        """Activate the sale (owner only)."""
-        if ctx.address != self.owner:
-            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
-        if self.state != SaleState.PENDING:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
-        if ctx.timestamp < self.start_time:
-            self.start_time = ctx.timestamp
-
-        self.state = SaleState.ACTIVE
-
-    def _activate_if_started(self, ctx: Context) -> None:
-        """Activate the sale (anyone)"""
-        if self.state != SaleState.PENDING:
-            return
-        if ctx.timestamp >= self.start_time:
-            self.state = SaleState.ACTIVE
-
-    def _validate_sale_active(self, ctx: Context) -> None:
-        """Validate sale is in active state and within time bounds."""
-        self._activate_if_started(ctx)
-        if self.state != SaleState.ACTIVE:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
-        if ctx.timestamp < self.start_time:
-            raise NCFail(LaunchpadErrors.NOT_STARTED)
-        if ctx.timestamp > self.end_time:
-            raise NCFail(LaunchpadErrors.SALE_ACTIVE)
-
-    def _calculate_tokens(self, htr_amount: Amount) -> Amount:
-        """Calculate tokens to be received for HTR amount."""
-        return htr_amount * self.rate
-
-    def _calculate_platform_fee(self, amount: Amount) -> Amount:
-        """Calculate platform fee for given amount."""
-        return amount * self.platform_fee // BASIS_POINTS
 
     @public
     def participate(self, ctx: Context) -> None:
         """Participate in the sale by depositing HTR."""
         self._validate_sale_active(ctx)
 
-        # Validate and get HTR deposit
-        action = self._get_action(ctx)
-        if action.token_uid != HTR_UID:
-            raise NCFail(LaunchpadErrors.INVALID_TOKEN)
-
+        # Validate HTR deposit
+        action = self._get_token_action(ctx, HTR_UID, NCActionType.DEPOSIT)
         amount = action.amount
+
         if amount < self.min_deposit:
             raise NCFail(LaunchpadErrors.BELOW_MIN)
 
@@ -188,6 +165,7 @@ class Launchpad(Blueprint):
         self.deposits[ctx.address] = self.deposits.get(ctx.address, 0) + amount
         self.total_raised += amount
         self.total_sold += self._calculate_tokens(amount)
+        self.htr_balance += amount
 
         # Check if soft cap reached
         if self.total_raised >= self.soft_cap:
@@ -205,11 +183,18 @@ class Launchpad(Blueprint):
         if deposit == 0:
             raise NCFail("No tokens to claim")
 
-        # Mark as claimed and process token transfer
-        self.claimed[ctx.address] = True
         tokens_due = self._calculate_tokens(deposit)
 
-        # Token transfer handled by transaction
+        # Validate token withdrawal
+        action = self._get_token_action(ctx, self.token_uid, NCActionType.WITHDRAWAL)
+        if action.amount != tokens_due:
+            raise NCFail("Invalid withdrawal amount")
+
+        self.deposits[ctx.address] -= deposit
+
+        # Mark as claimed and update balance
+        self.claimed[ctx.address] = True
+        self.sale_token_balance -= tokens_due
 
     @public
     def claim_refund(self, ctx: Context) -> None:
@@ -223,10 +208,16 @@ class Launchpad(Blueprint):
         if deposit == 0:
             raise NCFail("No refund available")
 
-        # Mark as claimed and process refund
-        self.claimed[ctx.address] = True
+        # Validate HTR withdrawal
+        action = self._get_token_action(ctx, HTR_UID, NCActionType.WITHDRAWAL)
+        if action.amount != deposit:
+            raise NCFail("Invalid withdrawal amount")
 
-        # HTR refund handled by transaction
+        self.deposits[ctx.address] -= deposit
+
+        # Mark as claimed and update balance
+        self.claimed[ctx.address] = True
+        self.htr_balance -= deposit
 
     @public
     def withdraw_raised_htr(self, ctx: Context) -> None:
@@ -242,10 +233,97 @@ class Launchpad(Blueprint):
         platform_fee = self._calculate_platform_fee(self.total_raised)
         withdrawable = self.total_raised - platform_fee
 
+        # Validate owner HTR withdrawal
+        action = self._get_token_action(ctx, HTR_UID, NCActionType.WITHDRAWAL)
+        if action.amount != withdrawable:
+            raise NCFail("Invalid withdrawal amount")
+
+        # Mark as withdrawn and update balance
         self.owner_withdrawn = True
         self.platform_fees_collected = platform_fee
+        self.htr_balance -= withdrawable
 
-        # HTR transfers handled by transaction
+    @public
+    def withdraw_remaining_tokens(self, ctx: Context) -> None:
+        """Withdraw remaining tokens after successful sale (owner only)."""
+        if ctx.address != self.owner:
+            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
+        if self.state != SaleState.SUCCESS:
+            raise NCFail(LaunchpadErrors.INVALID_STATE)
+
+        # Validate token withdrawal action
+        action = self._get_token_action(ctx, self.token_uid, NCActionType.WITHDRAWAL)
+        if action.amount != self.sale_token_balance:
+            raise NCFail("Invalid withdrawal amount")
+
+        # Update balance
+        self.sale_token_balance = Amount(0)
+
+    @public
+    def withdraw_platform_fees(self, ctx: Context) -> None:
+        """Withdraw platform fees after successful sale."""
+        if ctx.address != self.platform:
+            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
+        if self.state != SaleState.SUCCESS:
+            raise NCFail(LaunchpadErrors.INVALID_STATE)
+        if self.platform_fees_withdrawn:
+            raise NCFail("Platform fees already withdrawn")
+
+        platform_fee = self._calculate_platform_fee(self.total_raised)
+
+        # Validate platform fee withdrawal
+        action = self._get_token_action(ctx, HTR_UID, NCActionType.WITHDRAWAL)
+        if action.amount != platform_fee:
+            raise NCFail("Invalid withdrawal amount")
+
+        # Mark as withdrawn and update balance
+        self.platform_fees_withdrawn = True
+        self.htr_balance -= platform_fee
+
+    @public
+    def early_activate(self, ctx: Context) -> None:
+        """Activate the sale (owner only)."""
+        if ctx.address != self.owner:
+            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
+        if self.state != SaleState.PENDING:
+            raise NCFail(LaunchpadErrors.INVALID_STATE)
+        if ctx.timestamp < self.start_time:
+            self.start_time = ctx.timestamp
+
+        self.state = SaleState.ACTIVE
+
+    def _get_token_action(
+        self, ctx: Context, token_uid: TokenUid, expected_type: NCActionType
+    ) -> NCAction:
+        """Get and validate token action for specific token and type."""
+        if len(ctx.actions) != 1:
+            raise NCFail("Expected single action")
+
+        action = next(iter(ctx.actions.values()))
+        if action.token_uid != token_uid:
+            raise NCFail(f"Expected token {token_uid.hex()}")
+
+        if action.type != expected_type:
+            raise NCFail(f"Expected {expected_type.name} action")
+
+        return action
+
+    def _activate_if_started(self, ctx: Context) -> None:
+        """Activate the sale (anyone)"""
+        if self.state != SaleState.PENDING:
+            return
+        if ctx.timestamp >= self.start_time:
+            self.state = SaleState.ACTIVE
+
+    def _validate_sale_active(self, ctx: Context) -> None:
+        """Validate sale is in active state and within time bounds."""
+        self._activate_if_started(ctx)
+        if self.state != SaleState.ACTIVE:
+            raise NCFail(LaunchpadErrors.INVALID_STATE)
+        if ctx.timestamp < self.start_time:
+            raise NCFail(LaunchpadErrors.NOT_STARTED)
+        if ctx.timestamp > self.end_time:
+            raise NCFail(LaunchpadErrors.SALE_ACTIVE)
 
     @public
     def pause(self, ctx: Context) -> None:
@@ -278,14 +356,13 @@ class Launchpad(Blueprint):
         else:
             self.state = SaleState.FAILED
 
-    def _get_action(self, ctx: Context) -> NCAction:
-        """Get and validate single token action."""
-        if len(ctx.actions) != 1:
-            raise NCFail("Expected single action")
-        action = next(iter(ctx.actions.values()))
-        if action.type != NCActionType.DEPOSIT:
-            raise NCFail("Expected deposit")
-        return action
+    def _calculate_tokens(self, htr_amount: Amount) -> Amount:
+        """Calculate tokens to be received for HTR amount."""
+        return htr_amount * self.rate
+
+    def _calculate_platform_fee(self, amount: Amount) -> Amount:
+        """Calculate platform fee for given amount."""
+        return amount * self.platform_fee // BASIS_POINTS
 
     @view
     def get_sale_info(self) -> dict:
@@ -297,7 +374,7 @@ class Launchpad(Blueprint):
             "hard_cap": self.hard_cap,
             "total_raised": self.total_raised,
             "total_sold": self.total_sold,
-            "state": int(self.state),
+            "state": self.state,
             "start_time": self.start_time,
             "end_time": self.end_time,
             "participants": self.participants_count,
