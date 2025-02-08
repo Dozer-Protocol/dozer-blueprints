@@ -15,19 +15,27 @@
 from hathor.conf.settings import HathorSettings
 
 SETTINGS = HathorSettings(
-    P2PKH_VERSION_BYTE=b'\x49',
-    MULTISIG_VERSION_BYTE=b'\x87',
-    NETWORK_NAME='nano-testnet-alpha',
-    BOOTSTRAP_DNS=['alpha.nano-testnet.hathor.network'],
+    P2PKH_VERSION_BYTE=b"\x49",
+    MULTISIG_VERSION_BYTE=b"\x87",
+    NETWORK_NAME="nano-testnet-alpha",
+    BOOTSTRAP_DNS=["alpha.nano-testnet.hathor.network"],
     # Genesis stuff
-    GENESIS_OUTPUT_SCRIPT=bytes.fromhex('76a91478e804bf8aa68332c6c1ada274ac598178b972bf88ac'),
+    GENESIS_OUTPUT_SCRIPT=bytes.fromhex(
+        "76a91478e804bf8aa68332c6c1ada274ac598178b972bf88ac"
+    ),
     GENESIS_BLOCK_TIMESTAMP=1677601898,
     GENESIS_BLOCK_NONCE=7881594,
-    GENESIS_BLOCK_HASH=bytes.fromhex('000003472f6a17c2199e24c481a4326c217d07376acd9598651f8413c008554d'),
+    GENESIS_BLOCK_HASH=bytes.fromhex(
+        "000003472f6a17c2199e24c481a4326c217d07376acd9598651f8413c008554d"
+    ),
     GENESIS_TX1_NONCE=110,
-    GENESIS_TX1_HASH=bytes.fromhex('0008f0e9dbe6e4bbc3a85fce7494fee70011b9c7e72f5276daa2a235355ac013'),
+    GENESIS_TX1_HASH=bytes.fromhex(
+        "0008f0e9dbe6e4bbc3a85fce7494fee70011b9c7e72f5276daa2a235355ac013"
+    ),
     GENESIS_TX2_NONCE=180,
-    GENESIS_TX2_HASH=bytes.fromhex('008d81d9d58a43fd9649f33483d804a4417247b4d4e4e01d64406c4177fee0c2'),
+    GENESIS_TX2_HASH=bytes.fromhex(
+        "008d81d9d58a43fd9649f33483d804a4417247b4d4e4e01d64406c4177fee0c2"
+    ),
     # tx weight parameters. With these settings, tx weight is always 8
     MIN_TX_WEIGHT_K=0,
     MIN_TX_WEIGHT_COEFFICIENT=0,
@@ -36,13 +44,25 @@ SETTINGS = HathorSettings(
     ENABLE_NANO_CONTRACTS=True,
     ENABLE_ON_CHAIN_BLUEPRINTS=True,
     NC_ON_CHAIN_BLUEPRINT_ALLOWED_ADDRESSES=[
-        'WWFiNeWAFSmgtjm4ht2MydwS5GY3kMJsEK',
+        "WWFiNeWAFSmgtjm4ht2MydwS5GY3kMJsEK",
     ],
     BLUEPRINTS={
-        bytes.fromhex('3cb032600bdf7db784800e4ea911b10676fa2f67591f82bb62628c234e771595'): 'Bet',
-        bytes.fromhex('27db2b0b1a943c2714fb19d190ce87dc0094bba463b26452dd98de21a42e96a0'): 'Dozer_Pool_v1',
+        bytes.fromhex(
+            "3cb032600bdf7db784800e4ea911b10676fa2f67591f82bb62628c234e771595"
+        ): "Bet",
+        bytes.fromhex(
+            "27db2b0b1a943c2714fb19d190ce87dc0094bba463b26452dd98de21a42e96a0"
+        ): "Dozer_Pool_v1_1",
+        bytes.fromhex(
+            "27db2b0b1a943c2714fb19d190ce87dc0094bba463b26452dd98de21a42e96a1"
+        ): "Oasis",
     },
-    SOFT_VOIDED_TX_IDS=list(map(bytes.fromhex, [
-        '0000003dd5802b05f430a1f54304879173550c0944b49d74321bb9125ee727cb',
-    ])),
+    SOFT_VOIDED_TX_IDS=list(
+        map(
+            bytes.fromhex,
+            [
+                "0000003dd5802b05f430a1f54304879173550c0944b49d74321bb9125ee727cb",
+            ],
+        )
+    ),
 )

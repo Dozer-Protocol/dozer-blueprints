@@ -15,18 +15,17 @@
 from typing import TYPE_CHECKING, Type
 
 from hathor.nanocontracts.blueprints.bet import Bet
-from hathor.nanocontracts.blueprints.dozer_pool_v1 import Dozer_Pool_v1
+from hathor.nanocontracts.blueprints.dozer_pool_v1_1 import Dozer_Pool_v1_1
+from hathor.nanocontracts.blueprints.oasis import Oasis
 
 if TYPE_CHECKING:
     from hathor.nanocontracts.blueprint import Blueprint
 
 
-_blueprints_mapper: dict[str, Type['Blueprint']] = {
-    'Bet': Bet,
-    'Dozer_Pool_v1': Dozer_Pool_v1,
+_blueprints_mapper: dict[str, Type["Blueprint"]] = {
+    "Bet": Bet,
+    "Dozer_Pool_v1_1": Dozer_Pool_v1_1,
+    "Oasis": Oasis,
 }
 
-__all__ = [
-    'Bet',
-    'Dozer_Pool_v1',
-]
+__all__ = ["Bet", "Dozer_Pool_v1_1", "Oasis"]
