@@ -374,8 +374,8 @@ class Oasis(Blueprint):
 
     @view
     def front_quote_add_liquidity_in(
-        self, amount: int, timelock: int, now: Timestamp, address: Address
-    ) -> dict[str, float]:
+        self, amount: int, timelock: int, now: Timestamp, address: Address | None = None
+    ) -> dict[str, float | bool]:
         """Calculates the bonus for a user based on the timelock and amount, also returns the HTR matched
         and the date of the withdrawal unlock, checking if the user already has a position
         """
@@ -383,7 +383,7 @@ class Oasis(Blueprint):
         print(f"htr_amount: {htr_amount}")
         # htr_amount = amount * 10
         bonus = self._get_user_bonus(timelock, htr_amount)
-        if address in self.user_withdrawal_time:
+        if address and address in self.user_withdrawal_time:
             delta = self.user_withdrawal_time[address] - now
             withdrawal_time = (
                 now
@@ -404,7 +404,7 @@ class Oasis(Blueprint):
             "bonus": bonus,
             "htr_amount": htr_amount,
             "withdrawal_time": withdrawal_time,
-            "has_position": address in self.user_withdrawal_time,
+            "has_position": address != None and address in self.user_withdrawal_time,
         }
 
     @view
