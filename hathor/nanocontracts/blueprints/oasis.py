@@ -202,8 +202,8 @@ class Oasis(Blueprint):
         ## htr handling
         loss_htr = 0
         # impermanent loss
-        if self.user_deposit_b[ctx.address] > user_lp_b:
-            loss = self.user_deposit_b[ctx.address] - user_lp_b
+        if self.user_deposit_b[ctx.address] > max_withdraw_b:
+            loss = self.user_deposit_b[ctx.address] - max_withdraw_b
             loss_htr = self.call_view_method(self.dozer_pool, "quote_token_b", loss)
             if loss_htr > user_lp_htr:
                 loss_htr = user_lp_htr
@@ -424,8 +424,8 @@ class Oasis(Blueprint):
         max_withdraw_b = user_lp_b + self.user_balances[address].get(self.token_b, 0)
 
         # impermanent loss
-        if self.user_deposit_b.get(address, 0) > user_lp_b:
-            loss = self.user_deposit_b.get(address, 0) - user_lp_b
+        if self.user_deposit_b.get(address, 0) > max_withdraw_b:
+            loss = self.user_deposit_b.get(address, 0) - max_withdraw_b
             loss_htr = self.call_view_method(self.dozer_pool, "quote_token_b", loss)
             if loss_htr > user_lp_htr:
                 loss_htr = user_lp_htr
