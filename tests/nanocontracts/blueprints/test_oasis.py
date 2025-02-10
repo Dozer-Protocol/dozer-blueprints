@@ -87,7 +87,9 @@ class OasisTestCase(BlueprintTestCase):
         self.assertEqual(oasis_balance_htr, dev_balance + users_balances_a)
         self.assertEqual(oasis_balance_b, users_balances_b)
 
-    def initialize_oasis(self, amount: int = 10_000_000_00) -> None:
+    def initialize_oasis(
+        self, amount: int = 10_000_000_00, protocol_fee: int = 0
+    ) -> None:
         """Test basic initialization"""
         ctx = Context(
             [
@@ -98,7 +100,7 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=0,
         )
         self.runner.call_public_method(
-            self.oasis_id, "initialize", ctx, self.dozer_id, self.token_b
+            self.oasis_id, "initialize", ctx, self.dozer_id, self.token_b, protocol_fee
         )
         # self.assertIsNone(self.oasis_storage.get("dozer_pool"))
 
@@ -1122,3 +1124,66 @@ class OasisTestCase(BlueprintTestCase):
         )
 
         self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
+
+    def test_protocol_fee(self) -> None:
+        """Test protocol fee collection and management"""
+        initial_fee = 500  # 0.5%
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit, protocol_fee=initial_fee)
+
+        # Verify initial fee
+        oasis_info = self.runner.call_view_method(self.oasis_id, "oasis_info")
+        self.assertEqual(oasis_info["protocol_fee"], initial_fee)
+
+        # Test fee update
+        new_fee = 750  # 0.75%
+        ctx = Context([], self.tx, self.dev_address, timestamp=0)
+        self.runner.call_public_method(
+            self.oasis_id, "update_protocol_fee", ctx, new_fee
+        )
+
+        oasis_info = self.runner.call_view_method(self.oasis_id, "oasis_info")
+        self.assertEqual(oasis_info["protocol_fee"], new_fee)
+
+        # Test invalid fee update
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.oasis_id, "update_protocol_fee", ctx, 1001
+            )
+
+        # Test fee collection
+        user_address = self._get_any_address()[0]
+        deposit_amount = 1_000_00
+        timelock = 6
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        # Calculate expected fee
+        expected_fee = (deposit_amount * new_fee) // 1000
+        expected_deposit = deposit_amount - expected_fee
+
+        # Verify user deposit and fee collection
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        dev_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", self.dev_address
+        )
+
+        self.assertEqual(user_info["user_deposit_b"], expected_deposit)
+        self.assertEqual(dev_info["user_balance_b"], expected_fee)
+
+        # Test unauthorized fee update
+        non_admin_ctx = Context([], self.tx, user_address, timestamp=0)
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.oasis_id, "update_protocol_fee", non_admin_ctx, 500
+            )

@@ -22,6 +22,7 @@ class Oasis(Blueprint):
     """Oasis contract that interacts with Dozer Pool contract."""
 
     dozer_pool: ContractId
+    protocol_fee: Amount
 
     dev_address: Address
     dev_balance: Amount
@@ -34,7 +35,11 @@ class Oasis(Blueprint):
 
     @public
     def initialize(
-        self, ctx: Context, dozer_pool: ContractId, token_b: TokenUid
+        self,
+        ctx: Context,
+        dozer_pool: ContractId,
+        token_b: TokenUid,
+        protocol_fee: Amount,
     ) -> None:
         """Initialize the contract with no dozer pool set."""
         pool_token_a, pool_token_b = self.call_view_method(dozer_pool, "get_uuids")
@@ -48,6 +53,7 @@ class Oasis(Blueprint):
         self.dozer_pool = dozer_pool
         self.dev_balance = action.amount
         self.total_liquidity = 0
+        self.protocol_fee = protocol_fee
 
     @public
     def dev_deposit(self, ctx: Context) -> None:
@@ -66,63 +72,65 @@ class Oasis(Blueprint):
         self.dev_balance += action.amount
 
     @public
-    def dev_withdraw(self, ctx: Context) -> None:
-        action = self._get_action(ctx, NCActionType.WITHDRAWAL, auth=True)
-        if action.token_uid != HTR_UID:
-            raise NCFail("Withdrawal token not HATHOR")
-        if action.amount > self.dev_balance:
-            raise NCFail("Withdrawal amount too high")
-        self.dev_balance -= action.amount
-
-    @public
-    def user_deposit(
-        self, ctx: Context, timelock: int  # 0 6 months, 1 9 months, 2 1 year
-    ) -> None:
+    def user_deposit(self, ctx: Context, timelock: int) -> None:
         action = self._get_token_action(
             ctx, NCActionType.DEPOSIT, self.token_b, auth=False
         )
         if action.token_uid != self.token_b:
             raise NCFail("Deposit token not B")
+
+        # Calculate and deduct protocol fee
         amount = action.amount
-        htr_amount = self._quote_add_liquidity_in(amount)
+        fee_amount = (amount * self.protocol_fee) // 1000
+        deposit_amount = amount - fee_amount
+
+        # Add fee to dev balances
+        partial = self.user_balances.get(self.dev_address, {})
+        partial.update(
+            {
+                self.token_b: partial.get(self.token_b, 0) + fee_amount,
+            }
+        )
+        self.user_balances[self.dev_address] = partial
+
+        # Continue with deposit using reduced amount
+        htr_amount = self._quote_add_liquidity_in(deposit_amount)
         bonus = self._get_user_bonus(timelock, htr_amount)
         now = ctx.timestamp
         if htr_amount + bonus > self.dev_balance:
             raise NCFail("Not enough balance")
 
         if self.total_liquidity == 0:
-            self.total_liquidity = amount * PRECISION
-            self.user_liquidity[ctx.address] = amount * PRECISION
+            self.total_liquidity = deposit_amount * PRECISION
+            self.user_liquidity[ctx.address] = deposit_amount * PRECISION
         else:
             liquidity_increase = (
-                self.total_liquidity * amount // self._get_oasis_lp_amount_b(ctx)
+                self.total_liquidity
+                * deposit_amount
+                // self._get_oasis_lp_amount_b(ctx)
             )
             self.user_liquidity[ctx.address] = (
                 self.user_liquidity.get(ctx.address, 0) + liquidity_increase
             )
             self.total_liquidity += liquidity_increase
+
         if ctx.address in self.user_withdrawal_time:
-            # self.log.info(
-            #     f"inside user withdrawal time antes {self.user_withdrawal_time[ctx.address]}"
-            # )
             delta = self.user_withdrawal_time[ctx.address] - now
             self.user_withdrawal_time[ctx.address] = (
                 now
                 + (
                     (
                         (delta * self.user_deposit_b[ctx.address])
-                        + (amount * timelock * MONTHS_IN_SECONDS)
+                        + (deposit_amount * timelock * MONTHS_IN_SECONDS)
                     )
-                    // (amount + self.user_deposit_b[ctx.address])
+                    // (deposit_amount + self.user_deposit_b[ctx.address])
                 )
                 + 1
             )
-
         else:
             self.user_withdrawal_time[ctx.address] = now + timelock * MONTHS_IN_SECONDS
 
         self.dev_balance -= bonus + htr_amount
-        # Update dict indexed by address
         partial = self.user_balances.get(ctx.address, {})
         partial.update(
             {
@@ -131,12 +139,12 @@ class Oasis(Blueprint):
         )
         self.user_balances[ctx.address] = partial
         self.user_deposit_b[ctx.address] = (
-            self.user_deposit_b.get(ctx.address, 0) + amount
+            self.user_deposit_b.get(ctx.address, 0) + deposit_amount
         )
 
         actions = [
-            action,
-            NCAction(NCActionType.DEPOSIT, HTR_UID, htr_amount),  # type: ignore
+            NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount),
+            NCAction(NCActionType.DEPOSIT, HTR_UID, htr_amount),
         ]
         result = self.call_public_method(self.dozer_pool, "add_liquidity", actions)
         if result[1] > 0:
@@ -145,7 +153,6 @@ class Oasis(Blueprint):
                     NCAction(NCActionType.WITHDRAWAL, HTR_UID, 0),
                     NCAction(NCActionType.WITHDRAWAL, self.token_b, result[1]),
                 ]
-
             else:
                 adjust_actions = [
                     NCAction(NCActionType.WITHDRAWAL, HTR_UID, result[1]),
@@ -245,6 +252,24 @@ class Oasis(Blueprint):
             }
         )
         self.user_balances[ctx.address] = partial
+
+    @public
+    def update_protocol_fee(self, ctx: Context, new_fee: Amount) -> None:
+        """Update the protocol fee percentage (in thousandths).
+
+        Args:
+            ctx: Execution context
+            new_fee: New fee value in thousandths (e.g. 500 = 0.5%)
+
+        Raises:
+            NCFail: If caller is not admin or fee exceeds maximum
+        """
+        if ctx.address != self.dev_address:
+            raise NCFail("Only admin can update protocol fee")
+        if new_fee > 1000:
+            raise NCFail("Protocol fee cannot exceed 100%")
+
+        self.protocol_fee = new_fee
 
     def _get_oasis_lp_amount_b(self, ctx: Context) -> Amount:
         return self.call_view_method(
@@ -370,19 +395,20 @@ class Oasis(Blueprint):
             "total_liquidity": self.total_liquidity,
             "dev_balance": self.dev_balance,
             "token_b": self.token_b.hex(),
+            "protocol_fee": self.protocol_fee,  # Added protocol fee to info
         }
 
     @view
     def front_quote_add_liquidity_in(
         self, amount: int, timelock: int, now: Timestamp, address: Address | None = None
     ) -> dict[str, float | bool]:
-        """Calculates the bonus for a user based on the timelock and amount, also returns the HTR matched
-        and the date of the withdrawal unlock, checking if the user already has a position
-        """
-        htr_amount = self._quote_add_liquidity_in(amount)
-        print(f"htr_amount: {htr_amount}")
-        # htr_amount = amount * 10
+        """Calculates the bonus for a user based on the timelock and amount"""
+        fee_amount = (amount * self.protocol_fee) // 1000
+        deposit_amount = amount - fee_amount
+
+        htr_amount = self._quote_add_liquidity_in(deposit_amount)
         bonus = self._get_user_bonus(timelock, htr_amount)
+
         if address and address in self.user_withdrawal_time:
             delta = self.user_withdrawal_time[address] - now
             withdrawal_time = (
@@ -390,13 +416,12 @@ class Oasis(Blueprint):
                 + (
                     (
                         (delta * self.user_deposit_b[address])
-                        + (amount * timelock * MONTHS_IN_SECONDS)
+                        + (deposit_amount * timelock * MONTHS_IN_SECONDS)
                     )
-                    // (self.user_deposit_b[address] + amount)
+                    // (self.user_deposit_b[address] + deposit_amount)
                 )
                 + 1
             )
-
         else:
             withdrawal_time = now + timelock * MONTHS_IN_SECONDS
 
@@ -405,6 +430,9 @@ class Oasis(Blueprint):
             "htr_amount": htr_amount,
             "withdrawal_time": withdrawal_time,
             "has_position": address != None and address in self.user_withdrawal_time,
+            "fee_amount": fee_amount,
+            "deposit_amount": deposit_amount,
+            "protocol_fee": self.protocol_fee,
         }
 
     @view
