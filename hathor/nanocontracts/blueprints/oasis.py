@@ -14,7 +14,7 @@ from hathor.wallet.resources import balance
 
 MIN_DEPOSIT = 10000_00
 PRECISION = 10**20
-MONTHS_IN_SECONDS = 30 * 24 * 3600
+MONTHS_IN_SECONDS = 60
 HTR_UID = HathorSettings().HATHOR_TOKEN_UID  # type: ignore
 
 
@@ -174,7 +174,9 @@ class Oasis(Blueprint):
         action_token_b = self._get_token_action(
             ctx, NCActionType.WITHDRAWAL, self.token_b
         )
-        action_htr = self._get_token_action(ctx, NCActionType.WITHDRAWAL, HTR_UID)
+        action_htr = None
+        if len(ctx.actions) > 1:
+            action_htr = self._get_token_action(ctx, NCActionType.WITHDRAWAL, HTR_UID)
         if ctx.timestamp < self.user_withdrawal_time[ctx.address]:
             raise NCFail("Withdrawal locked")
         oasis_quote = self._quote_remove_liquidity_oasis()
@@ -221,14 +223,15 @@ class Oasis(Blueprint):
         else:
             max_withdraw_htr = self.user_balances[ctx.address].get(HTR_UID, 0)
 
-        if action_htr.amount > max_withdraw_htr:
+        if action_htr and action_htr.amount > max_withdraw_htr:
             raise NCFail(f"Not enough balance {max_withdraw_htr=} {action_htr.amount=}")
         partial = self.user_balances.get(ctx.address, {})
-        partial.update(
-            {
-                HTR_UID: max_withdraw_htr - action_htr.amount,
-            }
-        )
+        if action_htr:
+            partial.update(
+                {
+                    HTR_UID: max_withdraw_htr - action_htr.amount,
+                }
+            )
         self.call_public_method(self.dozer_pool, "remove_liquidity", actions)
         self.dev_balance = self.dev_balance + user_lp_htr - loss_htr
         self.user_balances[ctx.address] = partial

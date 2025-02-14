@@ -15,7 +15,7 @@ from hathor.nanocontracts import Context, NCFail
 settings = HathorSettings()
 HTR_UID = settings.HATHOR_TOKEN_UID
 PRECISION = 10**20
-MONTHS_IN_SECONDS = 30 * 24 * 3600
+MONTHS_IN_SECONDS = 60
 
 
 class OasisTestCase(BlueprintTestCase):
