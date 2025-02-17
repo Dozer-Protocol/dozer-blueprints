@@ -1,4 +1,5 @@
 from typing import Optional
+from hathor.conf.get_settings import HathorSettings
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.types import (
     Address,
@@ -13,6 +14,8 @@ from hathor.nanocontracts.types import (
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.exception import NCFail
 from hathor.types import Timestamp
+
+settings = HathorSettings()
 
 
 # Custom exceptions
@@ -38,10 +41,10 @@ MAX_PURCHASE = Amount(50000_00)  # 50,000 HTR
 INITIAL_VIRTUAL_POOL = Amount(15000_00)  # 15,000 HTR
 INITIAL_TOKEN_RESERVE = Amount(1073000191)
 BASIS_POINTS = 10000
-HTR_UID = HathorSettings().HATHOR_TOKEN_UID  # type: ignore
+HTR_UID = settings.HATHOR_TOKEN_UID  # type: ignore
 
 
-class KhensuCurve(Blueprint):
+class Khensu(Blueprint):
     # Administrative state
     admin_address: Address
     is_paused: bool
@@ -94,6 +97,14 @@ class KhensuCurve(Blueprint):
 
         if buy_fee_rate > 1000 or sell_fee_rate > 1000:
             raise NCFail("Fee rates cannot exceed 1000 basis points")
+        self.admin_address = admin_address
+        self.token_uid = token_uid
+        self.lp_contract = lp_contract
+        self.buy_fee_rate = buy_fee_rate
+        self.sell_fee_rate = sell_fee_rate
+        self.target_market_cap = target_market_cap
+        self.liquidity_amount = liquidity_amount
+        self.graduation_fee = graduation_fee
 
         # Validate token deposit
         action_htr, action_token = self._get_actions_in_in(ctx)
@@ -104,15 +115,6 @@ class KhensuCurve(Blueprint):
         if action_token.amount != INITIAL_TOKEN_RESERVE:
             raise NCFail("Invalid initial token supply")
 
-        self.admin_address = admin_address
-        self.token_uid = token_uid
-        self.lp_contract = lp_contract
-        self.buy_fee_rate = buy_fee_rate
-        self.sell_fee_rate = sell_fee_rate
-        self.target_market_cap = target_market_cap
-        self.liquidity_amount = liquidity_amount
-        self.graduation_fee = graduation_fee
-
         # Initialize state variables
         self.is_paused = False
         self.is_migrated = False
@@ -122,7 +124,6 @@ class KhensuCurve(Blueprint):
         self.collected_sell_fees = Amount(0)
         self.minted_supply = Amount(0)
         self.total_supply = INITIAL_TOKEN_RESERVE
-        self.user_balances = {}
         self.total_volume = Amount(0)
         self.transaction_count = 0
         self.last_activity_timestamp = ctx.timestamp
@@ -141,25 +142,25 @@ class KhensuCurve(Blueprint):
 
     def _calculate_tokens_out(self, htr_amount: Amount) -> Amount:
         """Calculate tokens to return for a given HTR input using bonding curve"""
-        tokens_before = self.token_reserve
-        virtual_pool_after = self.virtual_pool + htr_amount
-
-        # Using bonding curve formula: y = 1073000191 - (32190005730 / (15000 + x))
-        constant = Amount(32190005730)
-        tokens_after = INITIAL_TOKEN_RESERVE - (constant // virtual_pool_after)
-
-        return tokens_before - tokens_after
+        # Using bonding curve formula: T = TR * (1 - VP/(VP + H))
+        # where T = tokens out, TR = total reserve, VP = virtual pool, H = HTR in
+        numerator = htr_amount * self.token_reserve
+        denominator = self.virtual_pool + htr_amount
+        if denominator == 0:
+            return Amount(0)
+        return numerator // denominator
 
     def _calculate_htr_out(self, token_amount: Amount) -> Amount:
         """Calculate HTR to return for a given token input using bonding curve"""
-        tokens_after = self.token_reserve + token_amount
-        virtual_pool_before = self.virtual_pool
-
-        # Using inverse bonding curve to find required virtual pool
-        constant = Amount(32190005730)
-        virtual_pool_after = constant // (INITIAL_TOKEN_RESERVE - tokens_after)
-
-        return virtual_pool_before - virtual_pool_after
+        # Using inverse bonding curve: H = (TR * VP) / (TR - T) - VP
+        # where H = HTR out, TR = total reserve, VP = virtual pool, T = tokens in
+        if token_amount >= self.token_reserve:
+            return Amount(0)
+        numerator = token_amount * self.virtual_pool
+        denominator = self.token_reserve - token_amount
+        if denominator == 0:
+            return Amount(0)
+        return numerator // denominator
 
     def _get_actions_in_in(self, ctx: Context) -> tuple[NCAction, NCAction]:
         """Return token_a and token_b actions. It also validates that both are deposits."""
@@ -266,8 +267,13 @@ class KhensuCurve(Blueprint):
         self.last_activity_timestamp = ctx.timestamp
 
         # Check migration threshold
-        if self.virtual_pool >= self.target_market_cap:
-            self.migrate_liquidity(ctx)
+        # Only attempt migration if we've reached the target market cap
+        if self.virtual_pool >= self.target_market_cap and not self.is_migrated:
+            try:
+                self.migrate_liquidity(ctx)
+            except NCFail:
+                # If migration fails, continue with the buy operation
+                pass
 
     @public
     def sell_tokens(self, ctx: Context) -> None:
@@ -400,24 +406,9 @@ class KhensuCurve(Blueprint):
             NCAction(NCActionType.WITHDRAWAL, self.token_uid, action_out.amount),
         ]
 
-        result = self.call_public_method(
+        self.call_public_method(
             self.lp_contract, "swap_exact_tokens_for_tokens", actions
         )
-
-        # Handle slippage from Dozer pool
-        adjust_actions = [
-            NCAction(NCActionType.WITHDRAWAL, HTR_UID, 0),
-            NCAction(NCActionType.WITHDRAWAL, self.token_uid, 0),
-        ]
-        cashback = self.call_public_method(
-            self.lp_contract, "withdraw_cashback", adjust_actions
-        )
-
-        if cashback:
-            user_balance = self.user_balances.get(ctx.address, {})
-            for token, amount in cashback.items():
-                user_balance[token] = user_balance.get(token, 0) + amount
-            self.user_balances[ctx.address] = user_balance
 
         self.collected_buy_fees += fee_amount
         self.total_volume += action_in.amount
@@ -451,47 +442,14 @@ class KhensuCurve(Blueprint):
             NCAction(NCActionType.WITHDRAWAL, HTR_UID, net_amount),
         ]
 
-        result = self.call_public_method(
+        self.call_public_method(
             self.lp_contract, "swap_exact_tokens_for_tokens", actions
         )
-
-        # Handle slippage from Dozer pool
-        adjust_actions = [
-            NCAction(NCActionType.WITHDRAWAL, HTR_UID, 0),
-            NCAction(NCActionType.WITHDRAWAL, self.token_uid, 0),
-        ]
-        cashback = self.call_public_method(
-            self.lp_contract, "withdraw_cashback", adjust_actions
-        )
-
-        if cashback:
-            user_balance = self.user_balances.get(ctx.address, {})
-            for token, amount in cashback.items():
-                user_balance[token] = user_balance.get(token, 0) + amount
-            self.user_balances[ctx.address] = user_balance
 
         self.collected_sell_fees += fee_amount
         self.total_volume += action_in.amount
         self.transaction_count += 1
         self.last_activity_timestamp = ctx.timestamp
-
-    @public
-    def withdraw_cashback(self, ctx: Context) -> None:
-        """Allow users to withdraw slippage returns"""
-        action_htr, action_token = self._get_actions_in_in(ctx)
-
-        user_balance = self.user_balances.get(ctx.address, {})
-        if action_htr.amount > user_balance.get(HTR_UID, 0):
-            raise NCFail("Insufficient HTR balance")
-        if action_token.amount > user_balance.get(self.token_uid, 0):
-            raise NCFail("Insufficient token balance")
-
-        # Update balances
-        user_balance[HTR_UID] = user_balance.get(HTR_UID, 0) - action_htr.amount
-        user_balance[self.token_uid] = (
-            user_balance.get(self.token_uid, 0) - action_token.amount
-        )
-        self.user_balances[ctx.address] = user_balance
 
     @view
     def quote_buy(self, htr_amount: Amount) -> dict[str, float]:

@@ -14,6 +14,9 @@ services:
         "poetry",
         "run",
         "pytest",
-        # "-rP",
-        "tests/nanocontracts/blueprints/test_oasis.py",
-      ] # without stdout
+        "--capture=no",
+        "--disable-warnings",
+        "-qq", # quiet mode
+        "--tb=short", # shorter traceback
+        "tests/nanocontracts/blueprints/test_khensu.py",
+      ]
