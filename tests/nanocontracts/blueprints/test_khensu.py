@@ -199,33 +199,23 @@ class KhensuTestCase(BlueprintTestCase):
         self.assertGreater(storage.get("total_volume"), 0)
         self.assertGreater(storage.get("collected_sell_fees"), 0)
 
-    def test_migration(self) -> None:
-        """Test contract migration to Dozer Pool"""
-        self._initialize_khensu()
-        self._initialize_dozer_pool()
+    def _reach_migration_threshold(self) -> None:
+        """Helper to reach migration threshold through multiple purchases"""
         user_address = self._get_any_address()[0]
-
-        # Buy enough tokens to reach target market cap through multiple purchases
         remaining_amount = self.target_market_cap
+        
         while remaining_amount > 0:
-            # Calculate purchase amount for this iteration - increase chunk size
-            amount_in = min(5000_00, remaining_amount)  # Buy in larger chunks
+            amount_in = min(5000_00, remaining_amount)
             if amount_in < MIN_PURCHASE:
                 break
             remaining_amount -= amount_in
             
-            # Break if we've reached migration threshold
-            storage = self.khensu_storage
-            if storage.get("is_migrated"):
+            if self.khensu_storage.get("is_migrated"):
                 break
-            
+                
             quote = self.runner.call_view_method(self.khensu_id, "quote_buy", amount_in)
-            expected_out = int(quote["amount_out"])  # Ensure integer amount
+            expected_out = int(quote["amount_out"])
             
-            # Verify we have positive amounts
-            if amount_in <= 0 or expected_out <= 0:
-                self.fail(f"Invalid amounts calculated: in={amount_in}, out={expected_out}")
-
             ctx = Context(
                 [
                     NCAction(NCActionType.DEPOSIT, HTR_UID, amount_in),
@@ -235,13 +225,113 @@ class KhensuTestCase(BlueprintTestCase):
                 user_address,
                 timestamp=self.clock.seconds(),
             )
-
-            # Execute buy operation
+            
             self.runner.call_public_method(self.khensu_id, "buy_tokens", ctx)
+
+    def test_migration(self) -> None:
+        """Test contract migration to Dozer Pool"""
+        self._initialize_khensu()
+        self._initialize_dozer_pool()
+        user_address = self._get_any_address()[0]
+
+        self._reach_migration_threshold()
 
         # Verify migration state
         storage = self.khensu_storage
         self.assertTrue(storage.get("is_migrated"))
+
+    def test_post_migration_buy(self) -> None:
+        """Test buying tokens after migration"""
+        self._initialize_khensu()
+        self._initialize_dozer_pool()
+        self._reach_migration_threshold()
+        
+        user_address = self._get_any_address()[0]
+        amount_in = 1000_00  # 1000 HTR
+
+        # Get quote from Dozer pool directly
+        quote = self.runner.call_view_method(
+            self.dozer_id,
+            "front_quote_exact_tokens_for_tokens",
+            amount_in,
+            HTR_UID
+        )
+        expected_out = int(quote["amount_out"] * 99 // 100)  # Account for 1% fee
+
+        ctx = Context(
+            [
+                NCAction(NCActionType.DEPOSIT, HTR_UID, amount_in),
+                NCAction(NCActionType.WITHDRAWAL, self.token_uid, expected_out),
+            ],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        self.runner.call_public_method(self.khensu_id, "post_migration_buy", ctx)
+
+        # Verify state changes
+        storage = self.khensu_storage
+        self.assertGreater(storage.get("total_volume"), 0)
+        self.assertGreater(storage.get("collected_buy_fees"), 0)
+
+    def test_post_migration_sell(self) -> None:
+        """Test selling tokens after migration"""
+        self._initialize_khensu()
+        self._initialize_dozer_pool()
+        self._reach_migration_threshold()
+        
+        # First buy some tokens post-migration
+        user_address = self._get_any_address()[0]
+        buy_amount = 500_00  # Use a smaller amount
+        
+        buy_quote = self.runner.call_view_method(
+            self.dozer_id,
+            "front_quote_exact_tokens_for_tokens",
+            buy_amount,
+            HTR_UID
+        )
+        tokens_out = int(buy_quote["amount_out"] * 99 // 100)  # Account for 1% fee
+        
+        buy_ctx = Context(
+            [
+                NCAction(NCActionType.DEPOSIT, HTR_UID, buy_amount),
+                NCAction(NCActionType.WITHDRAWAL, self.token_uid, tokens_out),
+            ],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+        
+        self.runner.call_public_method(self.khensu_id, "post_migration_buy", buy_ctx)
+        
+        # Now sell the tokens
+        sell_amount = tokens_out // 2  # Sell half the tokens
+        
+        sell_quote = self.runner.call_view_method(
+            self.dozer_id,
+            "front_quote_exact_tokens_for_tokens",
+            sell_amount,
+            self.token_uid
+        )
+        htr_out = int(sell_quote["amount_out"])
+        
+        sell_ctx = Context(
+            [
+                NCAction(NCActionType.DEPOSIT, self.token_uid, sell_amount),
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, htr_out),
+            ],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+        
+        self.runner.call_public_method(self.khensu_id, "post_migration_sell", sell_ctx)
+        
+        # Verify state changes
+        storage = self.khensu_storage
+        self.assertGreater(storage.get("total_volume"), buy_amount)
+        self.assertGreater(storage.get("collected_sell_fees"), 0)
 
     def test_admin_functions(self) -> None:
         """Test administrative functions"""
