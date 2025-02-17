@@ -66,6 +66,7 @@ class Khensu(Blueprint):
     target_market_cap: Amount
     liquidity_amount: Amount
     graduation_fee: Amount
+    graduation_fee_withdrawn: bool
 
     # Token minting simulation
     minted_supply: Amount
@@ -105,6 +106,7 @@ class Khensu(Blueprint):
         self.target_market_cap = target_market_cap
         self.liquidity_amount = liquidity_amount
         self.graduation_fee = graduation_fee
+        self.graduation_fee_withdrawn = False
 
         # Validate token deposit
         action_htr, action_token = self._get_actions_in_in(ctx)
@@ -325,11 +327,16 @@ class Khensu(Blueprint):
         if not self.is_migrated:
             raise InvalidState("Contract not yet migrated")
 
+        if self.graduation_fee_withdrawn:
+            raise InvalidState("Graduation fee already withdrawn")
+
         action = self._get_action(ctx, NCActionType.WITHDRAWAL)
         if action.token_uid != HTR_UID:
             raise NCFail("Can only withdraw HTR")
         if action.amount != self.graduation_fee:
             raise NCFail("Invalid withdrawal amount")
+
+        self.graduation_fee_withdrawn = True
 
     @public
     def transfer_admin(self, ctx: Context, new_admin: Address) -> None:
@@ -366,6 +373,9 @@ class Khensu(Blueprint):
             if self.virtual_pool < self.liquidity_amount + self.graduation_fee:
                 raise NCFail("Insufficient HTR for migration")
 
+            # Set migration state before calling external contract
+            self.is_migrated = True
+
             # Add liquidity to Dozer pool
             actions = [
                 NCAction(NCActionType.DEPOSIT, HTR_UID, self.liquidity_amount),
@@ -373,8 +383,6 @@ class Khensu(Blueprint):
             ]
 
             self.call_public_method(self.lp_contract, "add_liquidity", actions)
-
-            self.is_migrated = True
 
         except Exception as e:
             raise MigrationFailed(f"Migration failed: {str(e)}")

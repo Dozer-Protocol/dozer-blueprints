@@ -333,6 +333,92 @@ class KhensuTestCase(BlueprintTestCase):
         self.assertGreater(storage.get("total_volume"), buy_amount)
         self.assertGreater(storage.get("collected_sell_fees"), 0)
 
+    def test_withdraw_fees(self) -> None:
+        """Test fee withdrawal functionality"""
+        self._initialize_khensu()
+        user_address = self._get_any_address()[0]
+        
+        # First make some trades to generate fees
+        amount_in = 1000_00
+        quote = self.runner.call_view_method(self.khensu_id, "quote_buy", amount_in)
+        expected_out = quote["amount_out"]
+        
+        ctx = Context(
+            [
+                NCAction(NCActionType.DEPOSIT, HTR_UID, amount_in),
+                NCAction(NCActionType.WITHDRAWAL, self.token_uid, expected_out),
+            ],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+        
+        self.runner.call_public_method(self.khensu_id, "buy_tokens", ctx)
+        
+        # Verify fees were collected
+        storage = self.khensu_storage
+        initial_fees = storage.get("collected_buy_fees")
+        self.assertGreater(initial_fees, 0)
+        
+        # Non-admin should not be able to withdraw fees
+        withdraw_ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, HTR_UID, initial_fees)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+        
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.khensu_id, "withdraw_fees", withdraw_ctx)
+            
+        # Admin should be able to withdraw fees
+        admin_ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, HTR_UID, initial_fees)],
+            self.tx,
+            self.admin_address,
+            timestamp=self.clock.seconds(),
+        )
+        
+        self.runner.call_public_method(self.khensu_id, "withdraw_fees", admin_ctx)
+        
+        # Verify fees were reset
+        self.assertEqual(storage.get("collected_buy_fees"), 0)
+        self.assertEqual(storage.get("collected_sell_fees"), 0)
+
+    def test_withdraw_graduation_fee(self) -> None:
+        """Test graduation fee withdrawal functionality"""
+        self._initialize_khensu()
+        self._initialize_dozer_pool()
+        user_address = self._get_any_address()[0]
+        
+        # Reach migration threshold
+        self._reach_migration_threshold()
+        
+        # Non-admin should not be able to withdraw graduation fee
+        withdraw_ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, HTR_UID, self.graduation_fee)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+        
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.khensu_id, "withdraw_graduation_fee", withdraw_ctx)
+            
+        # Admin should be able to withdraw graduation fee
+        admin_ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, HTR_UID, self.graduation_fee)],
+            self.tx,
+            self.admin_address,
+            timestamp=self.clock.seconds(),
+        )
+        
+        self.runner.call_public_method(self.khensu_id, "withdraw_graduation_fee", admin_ctx)
+        
+        # Should not be able to withdraw again
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.khensu_id, "withdraw_graduation_fee", admin_ctx)
+
     def test_admin_functions(self) -> None:
         """Test administrative functions"""
         self._initialize_khensu()
