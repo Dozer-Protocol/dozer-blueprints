@@ -1,3 +1,4 @@
+from typing import Optional
 from hathor.conf.get_settings import HathorSettings
 from hathor.nanocontracts.context import Context
 from hathor.types import Address, Amount, Timestamp, TokenUid
@@ -116,17 +117,22 @@ class Oasis(Blueprint):
 
         if ctx.address in self.user_withdrawal_time:
             delta = self.user_withdrawal_time[ctx.address] - now
-            self.user_withdrawal_time[ctx.address] = (
-                now
-                + (
-                    (
-                        (delta * self.user_deposit_b[ctx.address])
-                        + (deposit_amount * timelock * MONTHS_IN_SECONDS)
+            if delta > 0:
+                self.user_withdrawal_time[ctx.address] = (
+                    now
+                    + (
+                        (
+                            (delta * self.user_deposit_b[ctx.address])
+                            + (deposit_amount * timelock * MONTHS_IN_SECONDS)
+                        )
+                        // (deposit_amount + self.user_deposit_b[ctx.address])
                     )
-                    // (deposit_amount + self.user_deposit_b[ctx.address])
+                    + 1
                 )
-                + 1
-            )
+            else:
+                self.user_withdrawal_time[ctx.address] = (
+                    now + timelock * MONTHS_IN_SECONDS
+                )
         else:
             self.user_withdrawal_time[ctx.address] = now + timelock * MONTHS_IN_SECONDS
 
@@ -403,7 +409,7 @@ class Oasis(Blueprint):
 
     @view
     def front_quote_add_liquidity_in(
-        self, amount: int, timelock: int, now: Timestamp, address: Address | None = None
+        self, amount: int, timelock: int, now: Timestamp, address: Address
     ) -> dict[str, float | bool]:
         """Calculates the bonus for a user based on the timelock and amount"""
         fee_amount = (amount * self.protocol_fee) // 1000
@@ -412,19 +418,22 @@ class Oasis(Blueprint):
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
         bonus = self._get_user_bonus(timelock, htr_amount)
 
-        if address and address in self.user_withdrawal_time:
+        if address in self.user_withdrawal_time:
             delta = self.user_withdrawal_time[address] - now
-            withdrawal_time = (
-                now
-                + (
-                    (
-                        (delta * self.user_deposit_b[address])
-                        + (deposit_amount * timelock * MONTHS_IN_SECONDS)
+            if delta > 0:
+                withdrawal_time = (
+                    now
+                    + (
+                        (
+                            (delta * self.user_deposit_b[address])
+                            + (deposit_amount * timelock * MONTHS_IN_SECONDS)
+                        )
+                        // (self.user_deposit_b[address] + deposit_amount)
                     )
-                    // (self.user_deposit_b[address] + deposit_amount)
+                    + 1
                 )
-                + 1
-            )
+            else:
+                withdrawal_time = now + timelock * MONTHS_IN_SECONDS
         else:
             withdrawal_time = now + timelock * MONTHS_IN_SECONDS
 
@@ -432,7 +441,7 @@ class Oasis(Blueprint):
             "bonus": bonus,
             "htr_amount": htr_amount,
             "withdrawal_time": withdrawal_time,
-            "has_position": address != None and address in self.user_withdrawal_time,
+            "has_position": address in self.user_withdrawal_time,
             "fee_amount": fee_amount,
             "deposit_amount": deposit_amount,
             "protocol_fee": self.protocol_fee,
