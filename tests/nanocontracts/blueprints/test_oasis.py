@@ -266,17 +266,20 @@ class OasisTestCase(BlueprintTestCase):
 
             if user_withdrawal_time[i] != 0:
                 delta = user_withdrawal_time[i] - now
-                user_withdrawal_time[i] = (
-                    now
-                    + (
-                        (
-                            (delta * user_deposit_b[i])
-                            + (deposit_amount * timelock * MONTHS_IN_SECONDS)
+                if delta > 0:
+                    user_withdrawal_time[i] = (
+                        now
+                        + (
+                            (
+                                (delta * user_deposit_b[i])
+                                + (deposit_amount * timelock * MONTHS_IN_SECONDS)
+                            )
+                            // (user_deposit_b[i] + deposit_amount)
                         )
-                        // (user_deposit_b[i] + deposit_amount)
+                        + 1
                     )
-                    + 1
-                )
+                else:
+                    user_withdrawal_time[i] = now + timelock * MONTHS_IN_SECONDS
             else:
                 user_withdrawal_time[i] = now + timelock * MONTHS_IN_SECONDS
 
@@ -1124,6 +1127,163 @@ class OasisTestCase(BlueprintTestCase):
         )
 
         self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
+
+    def test_protocol_fee_zero(self) -> None:
+        """Test deposits and withdrawals with zero protocol fee"""
+        self.initialize_pool()
+        self.initialize_oasis(amount=10_000_000_00, protocol_fee=0)
+
+        user_address = self._get_any_address()[0]
+        deposit_amount = 1_000_00
+        timelock = 6
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        dev_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", self.dev_address
+        )
+
+        # With zero fee, full amount should go to user deposit
+        self.assertEqual(user_info["user_deposit_b"], deposit_amount)
+        self.assertEqual(dev_info["user_balance_b"], 0)
+
+    def test_protocol_fee_max(self) -> None:
+        """Test deposits and withdrawals with maximum protocol fee (1000 = 100%)"""
+        self.initialize_pool()
+        self.initialize_oasis(amount=10_000_000_00, protocol_fee=1000)
+
+        user_address = self._get_any_address()[0]
+        deposit_amount = 1_000_00
+        timelock = 6
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        dev_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", self.dev_address
+        )
+
+        # With max fee, all tokens should go to dev
+        self.assertEqual(user_info["user_deposit_b"], 0)
+        self.assertEqual(dev_info["user_balance_b"], deposit_amount)
+
+    def test_protocol_fee_rounding(self) -> None:
+        """Test protocol fee rounding with various deposit amounts"""
+        test_fee = 10  # 1%
+        self.initialize_pool()
+        self.initialize_oasis(amount=10_000_000_00, protocol_fee=test_fee)
+
+        user_address = self._get_any_address()[0]
+        deposit_amount = 995  # Will result in fee < 1
+        timelock = 6
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        dev_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", self.dev_address
+        )
+
+        expected_fee = (deposit_amount * test_fee) // 1000
+        expected_deposit = deposit_amount - expected_fee
+
+        self.assertEqual(user_info["user_deposit_b"], expected_deposit)
+        self.assertEqual(dev_info["user_balance_b"], expected_fee)
+
+    def test_protocol_fee_updates(self) -> None:
+        """Test protocol fee updates and validation"""
+        test_cases = [
+            (500, True),  # 0.5% - valid
+            (1000, True),  # 1% - valid (max)
+            (0, True),  # 0% - valid
+            (1001, False),  # Over max - invalid
+            (-1, False),  # Negative - invalid
+        ]
+        # Initialize pool and contract
+        self.initialize_pool()
+
+        for fee, should_succeed in test_cases:
+            # Create new contract for each test
+            oasis_id = self.gen_random_nanocontract_id()
+            self.runner.register_contract(Oasis, oasis_id)
+            oasis_storage = self.runner.get_storage(oasis_id)
+
+            ctx = Context(
+                [NCAction(NCActionType.DEPOSIT, HTR_UID, 10_000_000_00)],
+                self.tx,
+                self.dev_address,
+                timestamp=0,
+            )
+
+            if should_succeed:
+                self.runner.call_public_method(
+                    oasis_id, "initialize", ctx, self.dozer_id, self.token_b, fee
+                )
+                # Test deposit with fee
+                user_address = self._get_any_address()[0]
+                deposit_amount = 1_000_00
+
+                deposit_ctx = Context(
+                    [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+                    self.tx,
+                    user_address,
+                    timestamp=self.clock.seconds(),
+                )
+
+                self.runner.call_public_method(oasis_id, "user_deposit", deposit_ctx, 6)
+
+                expected_fee = (deposit_amount * fee) // 1000
+                expected_deposit = deposit_amount - expected_fee
+
+                user_info = self.runner.call_view_method(
+                    oasis_id, "user_info", user_address
+                )
+                dev_info = self.runner.call_view_method(
+                    oasis_id, "user_info", self.dev_address
+                )
+
+                self.assertEqual(user_info["user_deposit_b"], expected_deposit)
+                self.assertEqual(dev_info["user_balance_b"], expected_fee)
+
+                oasis_info = self.runner.call_view_method(oasis_id, "oasis_info")
+                self.assertEqual(oasis_info["protocol_fee"], fee)
+            else:
+                with self.assertRaises(NCFail):
+                    self.runner.call_public_method(
+                        oasis_id, "initialize", ctx, self.dozer_id, self.token_b, fee
+                    )
+                with self.assertRaises(NCFail):
+                    self.runner.call_public_method(
+                        oasis_id, "update_protocol_fee", ctx, fee
+                    )
 
     def test_protocol_fee(self) -> None:
         """Test protocol fee collection and management"""

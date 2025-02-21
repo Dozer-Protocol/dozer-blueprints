@@ -49,6 +49,8 @@ class Oasis(Blueprint):
         action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
         if action.amount < MIN_DEPOSIT or action.token_uid != HTR_UID:
             raise NCFail("Deposit amount too low or token not HATHOR")
+        if protocol_fee < 0 or protocol_fee > 1000:
+            raise NCFail("Protocol fee must be between 0 and 1000")
         self.token_b = token_b
         self.dev_address = ctx.address
         self.dozer_pool = dozer_pool
@@ -275,7 +277,7 @@ class Oasis(Blueprint):
         """
         if ctx.address != self.dev_address:
             raise NCFail("Only admin can update protocol fee")
-        if new_fee > 1000:
+        if new_fee > 1000 or new_fee < 0:
             raise NCFail("Protocol fee cannot exceed 100%")
 
         self.protocol_fee = new_fee
