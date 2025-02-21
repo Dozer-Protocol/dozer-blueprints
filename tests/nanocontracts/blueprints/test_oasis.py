@@ -1347,3 +1347,147 @@ class OasisTestCase(BlueprintTestCase):
             self.runner.call_public_method(
                 self.oasis_id, "update_protocol_fee", non_admin_ctx, 500
             )
+
+    def test_deposit_empty_pool(self):
+        """Test depositing into a completely empty pool"""
+        self.initialize_pool(amount_htr=0, amount_b=0)
+        self.initialize_oasis(amount=10_000_000_00)
+
+        user_address = self._get_any_address()[0]
+        deposit_amount = 1_000_00
+        timelock = 6
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+    def test_deposit_extreme_ratio(self):
+        """Test deposits when pool has extreme token ratios"""
+        # Initialize with smaller ratio to avoid overflow
+        self.initialize_pool(amount_htr=1_000_00, amount_b=100_00)
+        self.initialize_oasis(amount=100_000_000_00)  # Increased dev deposit
+
+        user_address = self._get_any_address()[0]
+        deposit_amount = 10_00  # Smaller deposit
+        timelock = 6
+
+        initial_price = self.dozer_storage.get("reserve_a") / self.dozer_storage.get(
+            "reserve_b"
+        )
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        self.assertEqual(user_info["user_deposit_b"], deposit_amount)
+        self.check_balances([user_address])
+
+    def test_deposit_maximum_amounts(self):
+        """Test deposits with maximum possible amounts"""
+        max_amount = 2**63 - 1  # Max safe integer
+        self.initialize_pool(amount_htr=max_amount // 2, amount_b=max_amount // 2)
+        self.initialize_oasis(amount=max_amount)
+
+        user_address = self._get_any_address()[0]
+        deposit_amount = max_amount // 4  # Large but within bounds
+        timelock = 6
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        self.assertEqual(user_info["user_deposit_b"], deposit_amount)
+        self.check_balances([user_address])
+
+    def test_pool_drain_scenario(self):
+        """Test behavior when pool is nearly drained of liquidity"""
+        self.initialize_pool(amount_htr=1_000_000_00, amount_b=1_000_000_00)
+        self.initialize_oasis(amount=10_000_000_00)
+
+        # First user deposits
+        user1_address = self._get_any_address()[0]
+        deposit_amount = 50_000_00  # Smaller deposit
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user1_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, 6)
+
+        # Drain pool through repeated small swaps
+        trading_address = self._get_any_address()[0]
+        for _ in range(50):
+            reserve_b = self.dozer_storage.get("reserve_b")
+            if reserve_b <= 100:  # Leave some minimal liquidity
+                break
+
+            swap_amount = min(10_000_00, reserve_b // 4)  # Limited swap size
+            amount_out = self.runner.call_view_method(
+                self.dozer_id,
+                "get_amount_out",
+                swap_amount,
+                self.dozer_storage.get("reserve_b"),
+                self.dozer_storage.get("reserve_a"),
+            )
+
+            ctx = Context(
+                [
+                    NCAction(NCActionType.DEPOSIT, self.token_b, swap_amount),
+                    NCAction(NCActionType.WITHDRAWAL, HTR_UID, amount_out),
+                ],
+                self.tx,
+                trading_address,
+                timestamp=self.clock.seconds(),
+            )
+            self.runner.call_public_method(
+                self.dozer_id, "swap_exact_tokens_for_tokens", ctx
+            )
+
+        # Try withdrawal after timelock
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user1_address
+        )
+        max_withdraw_b = user_info["max_withdraw_b"]
+        max_withdraw_htr = user_info["max_withdraw_htr"]
+
+        ctx = Context(
+            [
+                NCAction(NCActionType.WITHDRAWAL, self.token_b, max_withdraw_b),
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, max_withdraw_htr),
+            ],
+            self.tx,
+            user1_address,
+            timestamp=self.clock.seconds() + (6 * MONTHS_IN_SECONDS) + 1,
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_withdraw", ctx)
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user1_address
+        )
+        self.assertEqual(user_info["user_deposit_b"], 0)
+        self.check_balances([user1_address])
