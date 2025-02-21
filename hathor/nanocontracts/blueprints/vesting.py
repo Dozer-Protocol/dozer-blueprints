@@ -32,10 +32,6 @@ class InvalidIndex(NCFail):
     pass
 
 
-class CustomNameRequired(NCFail):
-    pass
-
-
 class InvalidTokenDeposit(NCFail):
     pass
 
@@ -97,19 +93,6 @@ class Vesting(Blueprint):
     allocation_durations: dict[int, int]
     allocation_withdrawn: dict[int, Amount]
 
-    PREDEFINED_NAMES = [
-        "Team",
-        "Treasury",
-        "Advisors",
-        "Community",
-        "Marketing",
-        "Development",
-        "Custom_1",
-        "Custom_2",
-        "Custom_3",
-        "Custom_4",
-    ]
-
     def _validate_index(self, index: int) -> None:
         if not 0 <= index < MAX_ALLOCATIONS:
             raise InvalidIndex("Index out of range")
@@ -167,7 +150,7 @@ class Vesting(Blueprint):
         beneficiary: Address,
         cliff_months: int,
         vesting_months: int,
-        custom_name: str | None,
+        name: str,
     ) -> None:
         """Configure vesting allocation slot."""
         self._only_admin(ctx)
@@ -181,11 +164,6 @@ class Vesting(Blueprint):
 
         if amount <= 0 or cliff_months < 0 or vesting_months <= 0:
             raise InvalidTimelock("Invalid parameters")
-
-        # Custom name required for indices 7-9
-        name = custom_name if custom_name else self.PREDEFINED_NAMES[index]
-        if index >= 7 and not custom_name:
-            raise CustomNameRequired
 
         self.allocation_names[index] = name
         self.allocation_amounts[index] = amount

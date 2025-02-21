@@ -14,7 +14,6 @@ from hathor.nanocontracts.blueprints.vesting import (
     AllocationNotConfigured,
     InsufficientAvailableBalance,
     InvalidIndex,
-    CustomNameRequired,
     InvalidTokenDeposit,
     NoAllocation,
     InvalidTimelock,
@@ -82,13 +81,16 @@ class VestingTestCase(BlueprintTestCase):
         cliff_months: int = 6,
         vesting_months: int = 24,
         beneficiary: bytes | None = None,
-        custom_name: str | None = None,
+        name: str | None = None,
     ) -> bytes:
         """Configure a vesting allocation."""
         if beneficiary is None:
             beneficiary = self._get_any_address()[0]
 
         ctx = Context([], self.tx, self.admin_address, timestamp=self.clock.seconds())
+
+        if not name:
+            name = "Team"
 
         self.runner.call_public_method(
             self.contract_id,
@@ -99,7 +101,7 @@ class VestingTestCase(BlueprintTestCase):
             beneficiary,
             cliff_months,
             vesting_months,
-            custom_name,
+            name,
         )
 
         return beneficiary
@@ -147,10 +149,6 @@ class VestingTestCase(BlueprintTestCase):
         self.assertEqual(info["amount"], amount)
         self.assertEqual(info["withdrawn"], 0)
         self.assertEqual(info["vested"], 0)
-
-        # Test custom name requirement
-        with self.assertRaises(CustomNameRequired):
-            self._configure_vesting(7, amount)  # Index 7+ requires custom name
 
         # Test insufficient balance
         with self.assertRaises(InsufficientAvailableBalance):
