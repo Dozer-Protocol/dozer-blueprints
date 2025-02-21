@@ -18,5 +18,5 @@ services:
         "--disable-warnings",
         "-qq", # quiet mode
         "--tb=short", # shorter traceback
-        "tests/nanocontracts/blueprints/test_vesting.py",
+        "tests/nanocontracts/blueprints/test_crowdsale.py",
       ]

@@ -9,25 +9,25 @@ from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 import os
 import time
 
-from hathor.nanocontracts.blueprints.launchpad import (
-    Launchpad,
+from hathor.nanocontracts.blueprints.crowdsale import (
+    Crowdsale,
     SaleState,
-    LaunchpadErrors,
+    CrowdsaleErrors,
 )
 
 settings = HathorSettings()
 HTR_UID = settings.HATHOR_TOKEN_UID
 
 
-class LaunchpadTestCase(BlueprintTestCase):
-    """Test suite for the Launchpad blueprint contract."""
+class CrowdsaleTestCase(BlueprintTestCase):
+    """Test suite for the Crowdsale blueprint contract."""
 
     def setUp(self):
         super().setUp()
 
         # Set up contract
         self.contract_id = self.gen_random_nanocontract_id()
-        self.runner.register_contract(Launchpad, self.contract_id)
+        self.runner.register_contract(Crowdsale, self.contract_id)
         self.storage = self.runner.get_storage(self.contract_id)
 
         # Generate test tokens and addresses
@@ -245,7 +245,7 @@ class LaunchpadTestCase(BlueprintTestCase):
                 deposit_amount, timestamp=self.start_time - 1
             )
             self.runner.call_public_method(self.contract_id, "participate", ctx)
-        self.assertEqual(str(cm.exception), LaunchpadErrors.INVALID_STATE)
+        self.assertEqual(str(cm.exception), CrowdsaleErrors.INVALID_STATE)
 
         # Activate the sale
         activate_ctx = Context(
@@ -429,7 +429,7 @@ class LaunchpadTestCase(BlueprintTestCase):
         )
         with self.assertRaises(NCFail) as cm:
             self.runner.call_public_method(self.contract_id, "participate", ctx)
-        self.assertEqual(str(cm.exception), LaunchpadErrors.INVALID_STATE)
+        self.assertEqual(str(cm.exception), CrowdsaleErrors.INVALID_STATE)
 
         # Activate sale
         activate_ctx = Context(

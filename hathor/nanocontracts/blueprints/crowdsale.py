@@ -23,7 +23,7 @@ BASIS_POINTS = 10000  # For fee calculations
 
 
 class SaleState:
-    """Sale states for the launchpad"""
+    """Sale states for the Crowdsale"""
 
     PENDING = 0  # Configured but not started
     ACTIVE = 1  # Accepting deposits
@@ -32,7 +32,7 @@ class SaleState:
     FAILED = 4  # Ended below soft cap
 
 
-class LaunchpadErrors:
+class CrowdsaleErrors:
     """Common error messages"""
 
     INVALID_STATE = "Invalid sale state"
@@ -46,7 +46,7 @@ class LaunchpadErrors:
     INVALID_TOKEN = "Invalid token"
 
 
-class Launchpad(Blueprint):
+class Crowdsale(Blueprint):
     """Blueprint for token sales with platform fees and protection mechanisms."""
 
     # Sale configuration
@@ -151,11 +151,11 @@ class Launchpad(Blueprint):
         amount = action.amount
 
         if amount < self.min_deposit:
-            raise NCFail(LaunchpadErrors.BELOW_MIN)
+            raise NCFail(CrowdsaleErrors.BELOW_MIN)
 
         # Check hard cap
         if self.total_raised + amount > self.hard_cap:
-            raise NCFail(LaunchpadErrors.ABOVE_MAX)
+            raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
         # Update participant tracking
         if ctx.address not in self.deposits:
@@ -175,9 +175,9 @@ class Launchpad(Blueprint):
     def claim_tokens(self, ctx: Context) -> None:
         """Claim tokens after successful sale."""
         if self.state != SaleState.SUCCESS:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.claimed.get(ctx.address, False):
-            raise NCFail(LaunchpadErrors.ALREADY_CLAIMED)
+            raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
 
         deposit = self.deposits.get(ctx.address, 0)
         if deposit == 0:
@@ -200,9 +200,9 @@ class Launchpad(Blueprint):
     def claim_refund(self, ctx: Context) -> None:
         """Claim refund if sale failed."""
         if self.state != SaleState.FAILED:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.claimed.get(ctx.address, False):
-            raise NCFail(LaunchpadErrors.ALREADY_CLAIMED)
+            raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
 
         deposit = self.deposits.get(ctx.address, 0)
         if deposit == 0:
@@ -223,9 +223,9 @@ class Launchpad(Blueprint):
     def withdraw_raised_htr(self, ctx: Context) -> None:
         """Withdraw raised HTR after successful sale."""
         if ctx.address != self.owner:
-            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.owner_withdrawn:
             raise NCFail("Already withdrawn")
 
@@ -247,9 +247,9 @@ class Launchpad(Blueprint):
     def withdraw_remaining_tokens(self, ctx: Context) -> None:
         """Withdraw remaining tokens after successful sale (owner only)."""
         if ctx.address != self.owner:
-            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
         # Validate token withdrawal action
         action = self._get_token_action(ctx, self.token_uid, NCActionType.WITHDRAWAL)
@@ -263,9 +263,9 @@ class Launchpad(Blueprint):
     def withdraw_platform_fees(self, ctx: Context) -> None:
         """Withdraw platform fees after successful sale."""
         if ctx.address != self.platform:
-            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.platform_fees_withdrawn:
             raise NCFail("Platform fees already withdrawn")
 
@@ -284,9 +284,9 @@ class Launchpad(Blueprint):
     def early_activate(self, ctx: Context) -> None:
         """Activate the sale (owner only)."""
         if ctx.address != self.owner:
-            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.PENDING:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if ctx.timestamp < self.start_time:
             self.start_time = ctx.timestamp
 
@@ -319,37 +319,37 @@ class Launchpad(Blueprint):
         """Validate sale is in active state and within time bounds."""
         self._activate_if_started(ctx)
         if self.state != SaleState.ACTIVE:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if ctx.timestamp < self.start_time:
-            raise NCFail(LaunchpadErrors.NOT_STARTED)
+            raise NCFail(CrowdsaleErrors.NOT_STARTED)
         if ctx.timestamp > self.end_time:
-            raise NCFail(LaunchpadErrors.SALE_ACTIVE)
+            raise NCFail(CrowdsaleErrors.SALE_ACTIVE)
 
     @public
     def pause(self, ctx: Context) -> None:
         """Pause the sale (only owner)."""
         if ctx.address != self.owner:
-            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.ACTIVE:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
         self.state = SaleState.PAUSED
 
     @public
     def unpause(self, ctx: Context) -> None:
         """Unpause the sale (only owner)."""
         if ctx.address != self.owner:
-            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.PAUSED:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
         self.state = SaleState.ACTIVE
 
     @public
     def finalize(self, ctx: Context) -> None:
         """Force end sale early (only owner)."""
         if ctx.address != self.owner:
-            raise NCFail(LaunchpadErrors.UNAUTHORIZED)
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state not in {SaleState.ACTIVE, SaleState.PAUSED}:
-            raise NCFail(LaunchpadErrors.INVALID_STATE)
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
         if self.total_raised >= self.soft_cap:
             self.state = SaleState.SUCCESS
