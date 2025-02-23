@@ -84,8 +84,8 @@ class OasisTestCase(BlueprintTestCase):
         users_balances_b = sum(
             [self._user_info(address)["user_balance_b"] for address in users_addresses]
         )
-        dev_balance = self.oasis_storage.get("dev_balance")
-        self.assertEqual(oasis_balance_htr, dev_balance + users_balances_a)
+        oasis_htr_balance = self.oasis_storage.get("oasis_htr_balance")
+        self.assertEqual(oasis_balance_htr, oasis_htr_balance + users_balances_a)
         self.assertEqual(oasis_balance_b, users_balances_b)
 
     def initialize_oasis(
@@ -101,7 +101,13 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=0,
         )
         self.runner.call_public_method(
-            self.oasis_id, "initialize", ctx, self.dozer_id, self.token_b, protocol_fee, self.owner_address
+            self.oasis_id,
+            "initialize",
+            ctx,
+            self.dozer_id,
+            self.token_b,
+            protocol_fee,
+            self.owner_address,
         )
         # self.assertIsNone(self.oasis_storage.get("dozer_pool"))
 
@@ -142,8 +148,8 @@ class OasisTestCase(BlueprintTestCase):
 
         # Verify total balance
         self.assertEqual(
-            self.oasis_storage.get("dev_balance"),
-            dev_initial_deposit + owner_initial_deposit
+            self.oasis_storage.get("oasis_htr_balance"),
+            dev_initial_deposit + owner_initial_deposit,
         )
 
         # Test dev deposit
@@ -158,8 +164,8 @@ class OasisTestCase(BlueprintTestCase):
 
         # Verify updated total balance
         self.assertEqual(
-            self.oasis_storage.get("dev_balance"),
-            dev_initial_deposit + owner_initial_deposit + dev_second_deposit
+            self.oasis_storage.get("oasis_htr_balance"),
+            dev_initial_deposit + owner_initial_deposit + dev_second_deposit,
         )
 
         # Test unauthorized deposit
@@ -190,8 +196,8 @@ class OasisTestCase(BlueprintTestCase):
 
         # Verify balance after withdrawal
         self.assertEqual(
-            self.oasis_storage.get("dev_balance"),
-            dev_initial_deposit - withdraw_amount
+            self.oasis_storage.get("oasis_htr_balance"),
+            dev_initial_deposit - withdraw_amount,
         )
 
         # Test unauthorized withdrawal
@@ -234,7 +240,9 @@ class OasisTestCase(BlueprintTestCase):
         self.runner.call_public_method(self.oasis_id, "dev_withdraw_fee", ctx)
 
         # Verify dev balance after withdrawal
-        dev_info = self.runner.call_view_method(self.oasis_id, "user_info", self.dev_address)
+        dev_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", self.dev_address
+        )
         self.assertEqual(dev_info["user_balance_b"], 0)
 
         # Test unauthorized withdrawal
@@ -255,7 +263,9 @@ class OasisTestCase(BlueprintTestCase):
         # Test owner update by dev
         new_owner = self._get_any_address()[0]
         ctx = Context([], self.tx, self.dev_address, timestamp=0)
-        self.runner.call_public_method(self.oasis_id, "update_owner_address", ctx, new_owner)
+        self.runner.call_public_method(
+            self.oasis_id, "update_owner_address", ctx, new_owner
+        )
 
         # Verify owner update
         self.assertEqual(self.oasis_storage.get("owner_address"), new_owner)
@@ -263,7 +273,9 @@ class OasisTestCase(BlueprintTestCase):
         # Test owner update by current owner
         newer_owner = self._get_any_address()[0]
         ctx = Context([], self.tx, new_owner, timestamp=0)
-        self.runner.call_public_method(self.oasis_id, "update_owner_address", ctx, newer_owner)
+        self.runner.call_public_method(
+            self.oasis_id, "update_owner_address", ctx, newer_owner
+        )
 
         # Verify owner update
         self.assertEqual(self.oasis_storage.get("owner_address"), newer_owner)
@@ -280,7 +292,9 @@ class OasisTestCase(BlueprintTestCase):
         dev_initial_deposit = 10_000_000_00
         self.initialize_pool()
         self.initialize_oasis()
-        self.assertEqual(self.oasis_storage.get("dev_balance"), dev_initial_deposit)
+        self.assertEqual(
+            self.oasis_storage.get("oasis_htr_balance"), dev_initial_deposit
+        )
 
     def test_user_deposit(self, timelock=6) -> tuple[Context, int, int]:
         dev_initial_deposit = 10_000_000_00
@@ -311,7 +325,8 @@ class OasisTestCase(BlueprintTestCase):
             user_info["user_withdrawal_time"], now + timelock * MONTHS_IN_SECONDS
         )
         self.assertEqual(
-            user_info["dev_balance"], dev_initial_deposit - htr_amount - user_bonus
+            user_info["oasis_htr_balance"],
+            dev_initial_deposit - htr_amount - user_bonus,
         )
         self.assertEqual(user_info["total_liquidity"], deposit_amount * PRECISION)
         self.check_balances([user_address])
@@ -327,7 +342,7 @@ class OasisTestCase(BlueprintTestCase):
         user_balances_a = [0] * n_users
         user_deposit_b = [0] * n_users
         total_liquidity = 0
-        dev_balance = dev_initial_deposit
+        oasis_htr_balance = dev_initial_deposit
         for i, user_address in enumerate(user_addresses):
             now = self.clock.seconds()
             deposit_amount = 1_000_00
@@ -356,10 +371,10 @@ class OasisTestCase(BlueprintTestCase):
                 user_liquidity[i] = user_liquidity[i] + liquidity_increase
                 total_liquidity += liquidity_increase
 
-            dev_balance -= bonus + htr_amount
+            oasis_htr_balance -= bonus + htr_amount
             user_balances_a[i] = user_balances_a[i] + bonus
             user_deposit_b[i] = deposit_amount
-            self.assertEqual(user_info["dev_balance"], dev_balance)
+            self.assertEqual(user_info["oasis_htr_balance"], oasis_htr_balance)
             self.assertEqual(user_info["user_balance_a"], user_balances_a[i])
             self.assertEqual(user_info["user_deposit_b"], user_deposit_b[i])
             self.assertEqual(user_info["user_liquidity"], user_liquidity[i])
@@ -368,7 +383,7 @@ class OasisTestCase(BlueprintTestCase):
                 now + timelock * MONTHS_IN_SECONDS,
             )
             self.assertEqual(user_info["total_liquidity"], total_liquidity)
-            self.assertEqual(user_info["dev_balance"], dev_balance)
+            self.assertEqual(user_info["oasis_htr_balance"], oasis_htr_balance)
         self.check_balances(user_addresses)
 
     def test_multiple_user_deposit_with_repeat(self) -> None:
@@ -383,7 +398,7 @@ class OasisTestCase(BlueprintTestCase):
         user_deposit_b = [0] * n_users
         user_withdrawal_time = [0] * n_users
         total_liquidity = 0
-        dev_balance = dev_initial_deposit
+        oasis_htr_balance = dev_initial_deposit
         initial_time = self.clock.seconds()
         for transaction in range(n_transactions):
             i = random.randint(0, n_users - 1)
@@ -435,9 +450,9 @@ class OasisTestCase(BlueprintTestCase):
             else:
                 user_withdrawal_time[i] = now + timelock * MONTHS_IN_SECONDS
 
-            dev_balance -= bonus + htr_amount
+            oasis_htr_balance -= bonus + htr_amount
             user_deposit_b[i] += deposit_amount
-            self.assertEqual(user_info["dev_balance"], dev_balance)
+            self.assertEqual(user_info["oasis_htr_balance"], oasis_htr_balance)
             self.assertEqual(user_info["user_balance_a"], user_balances_a[i])
             self.assertEqual(user_info["user_deposit_b"], user_deposit_b[i])
             self.assertEqual(user_info["user_liquidity"], user_liquidity[i])
@@ -465,7 +480,9 @@ class OasisTestCase(BlueprintTestCase):
             user_info["user_withdrawal_time"],
             deposit_timestamp + timelock * MONTHS_IN_SECONDS,
         )
-        self.assertEqual(user_info["dev_balance"], 10_000_000_00 - htr_amount - bonus)
+        self.assertEqual(
+            user_info["oasis_htr_balance"], 10_000_000_00 - htr_amount - bonus
+        )
         self.assertEqual(user_info["total_liquidity"], deposit_amount * PRECISION)
         # Withdraw exact value
         ctx = Context(
@@ -1397,7 +1414,13 @@ class OasisTestCase(BlueprintTestCase):
 
             if should_succeed:
                 self.runner.call_public_method(
-                    oasis_id, "initialize", ctx, self.dozer_id, self.token_b, fee, self.owner_address
+                    oasis_id,
+                    "initialize",
+                    ctx,
+                    self.dozer_id,
+                    self.token_b,
+                    fee,
+                    self.owner_address,
                 )
                 # Test deposit with fee
                 user_address = self._get_any_address()[0]
