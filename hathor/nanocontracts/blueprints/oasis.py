@@ -25,6 +25,7 @@ class Oasis(Blueprint):
     dozer_pool: ContractId
     protocol_fee: Amount
 
+    owner_address: Address
     dev_address: Address
     dev_balance: Amount
     dev_deposit_amount: Amount
@@ -42,6 +43,7 @@ class Oasis(Blueprint):
         dozer_pool: ContractId,
         token_b: TokenUid,
         protocol_fee: Amount,
+        owner_address: Address,
     ) -> None:
         """Initialize the contract with no dozer pool set."""
         pool_token_a, pool_token_b = self.call_view_method(dozer_pool, "get_uuids")
@@ -59,9 +61,10 @@ class Oasis(Blueprint):
         self.dev_deposit_amount = action.amount
         self.total_liquidity = 0
         self.protocol_fee = protocol_fee
+        self.owner_address = owner_address
 
     @public
-    def dev_deposit(self, ctx: Context) -> None:
+    def owner_deposit(self, ctx: Context) -> None:
         """Deposits token B with a timelock period for bonus rewards.
 
         Args:
@@ -72,6 +75,8 @@ class Oasis(Blueprint):
             NCFail: If deposit requirements not met or invalid timelock
         """
         action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
+        if ctx.address not in [self.dev_address, self.owner_address]:
+            raise NCFail("Only dev or owner can deposit")
         if action.token_uid != HTR_UID:
             raise NCFail("Deposit token not HATHOR")
         self.dev_balance += action.amount
@@ -355,6 +360,61 @@ class Oasis(Blueprint):
                 raise NCFail
 
         return output
+
+    @public
+    def owner_withdraw(self, ctx: Context) -> None:
+        """Allows owner to withdraw HTR from their balance.
+
+        Args:
+            ctx: Execution context
+
+        Raises:
+            NCFail: If caller is not owner or withdraw amount exceeds available balance
+        """
+        if ctx.address != self.owner_address:
+            raise NCFail("Only owner can withdraw")
+        action = self._get_action(ctx, NCActionType.WITHDRAWAL, auth=False)
+        if action.token_uid != HTR_UID:
+            raise NCFail("Withdrawal token not HATHOR")
+        if action.amount > self.dev_balance:
+            raise NCFail("Withdrawal amount too high")
+        self.dev_balance -= action.amount
+
+    @public
+    def dev_withdraw_fee(self, ctx: Context) -> None:
+        """Allows dev to withdraw collected protocol fees.
+
+        Args:
+            ctx: Execution context
+
+        Raises:
+            NCFail: If caller is not dev or withdraw amount exceeds available balance
+        """
+        if ctx.address != self.dev_address:
+            raise NCFail("Only dev can withdraw fees")
+        
+        token_b_action = self._get_token_action(ctx, NCActionType.WITHDRAWAL, self.token_b)
+        if token_b_action.amount > self.user_balances.get(self.dev_address, {}).get(self.token_b, 0):
+            raise NCFail("Withdrawal amount too high")
+            
+        partial = self.user_balances.get(self.dev_address, {})
+        partial.update({self.token_b: partial.get(self.token_b, 0) - token_b_action.amount})
+        self.user_balances[self.dev_address] = partial
+
+    @public
+    def update_owner_address(self, ctx: Context, new_owner: Address) -> None:
+        """Updates the owner address. Can be called by dev or current owner.
+
+        Args:
+            ctx: Execution context
+            new_owner: New owner address
+
+        Raises:
+            NCFail: If caller is not dev or current owner
+        """
+        if ctx.address not in [self.dev_address, self.owner_address]:
+            raise NCFail("Only dev or owner can update owner address")
+        self.owner_address = new_owner
 
     @public
     def check_pool_liquidity(self, ctx: Context, token_uid: bytes, amount: int) -> dict:

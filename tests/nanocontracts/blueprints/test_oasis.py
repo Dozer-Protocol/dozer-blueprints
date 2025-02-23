@@ -35,6 +35,7 @@ class OasisTestCase(BlueprintTestCase):
         self.runner.register_contract(Dozer_Pool_v1_1, self.dozer_id)
         self.dozer_storage = self.runner.get_storage(self.dozer_id)
         self.dev_address = self._get_any_address()[0]
+        self.owner_address = self._get_any_address()[0]
         self.token_b = self.gen_random_token_uid()
         # Initialize base tx for contexts
         self.tx = self.get_genesis_tx()
@@ -100,7 +101,7 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=0,
         )
         self.runner.call_public_method(
-            self.oasis_id, "initialize", ctx, self.dozer_id, self.token_b, protocol_fee
+            self.oasis_id, "initialize", ctx, self.dozer_id, self.token_b, protocol_fee, self.owner_address
         )
         # self.assertIsNone(self.oasis_storage.get("dozer_pool"))
 
@@ -123,6 +124,157 @@ class OasisTestCase(BlueprintTestCase):
             0,  # fee
             50,  # protocol fee
         )
+
+    def test_owner_and_dev_deposit(self) -> None:
+        dev_initial_deposit = 1_000_000_00
+        owner_initial_deposit = 2_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        # Test owner deposit
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, HTR_UID, owner_initial_deposit)],
+            self.tx,
+            self.owner_address,
+            timestamp=0,
+        )
+        self.runner.call_public_method(self.oasis_id, "owner_deposit", ctx)
+
+        # Verify total balance
+        self.assertEqual(
+            self.oasis_storage.get("dev_balance"),
+            dev_initial_deposit + owner_initial_deposit
+        )
+
+        # Test dev deposit
+        dev_second_deposit = 500_000_00
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, HTR_UID, dev_second_deposit)],
+            self.tx,
+            self.dev_address,
+            timestamp=0,
+        )
+        self.runner.call_public_method(self.oasis_id, "owner_deposit", ctx)
+
+        # Verify updated total balance
+        self.assertEqual(
+            self.oasis_storage.get("dev_balance"),
+            dev_initial_deposit + owner_initial_deposit + dev_second_deposit
+        )
+
+        # Test unauthorized deposit
+        random_address = self._get_any_address()[0]
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, HTR_UID, 1_000_00)],
+            self.tx,
+            random_address,
+            timestamp=0,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.oasis_id, "owner_deposit", ctx)
+
+    def test_owner_withdraw(self) -> None:
+        dev_initial_deposit = 1_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        # Test owner withdrawal
+        withdraw_amount = 500_000_00
+        ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, HTR_UID, withdraw_amount)],
+            self.tx,
+            self.owner_address,
+            timestamp=0,
+        )
+        self.runner.call_public_method(self.oasis_id, "owner_withdraw", ctx)
+
+        # Verify balance after withdrawal
+        self.assertEqual(
+            self.oasis_storage.get("dev_balance"),
+            dev_initial_deposit - withdraw_amount
+        )
+
+        # Test unauthorized withdrawal
+        ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, HTR_UID, 100_00)],
+            self.tx,
+            self.dev_address,
+            timestamp=0,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.oasis_id, "owner_withdraw", ctx)
+
+    def test_dev_withdraw_fee(self) -> None:
+        dev_initial_deposit = 1_000_000_00
+        protocol_fee = 50  # 5%
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit, protocol_fee=protocol_fee)
+
+        # Make user deposit to generate fees
+        user_address = self._get_any_address()[0]
+        deposit_amount = 1_000_00
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, 6)
+
+        # Calculate expected fee
+        expected_fee = (deposit_amount * protocol_fee) // 1000
+
+        # Test dev fee withdrawal
+        ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, self.token_b, expected_fee)],
+            self.tx,
+            self.dev_address,
+            timestamp=0,
+        )
+        self.runner.call_public_method(self.oasis_id, "dev_withdraw_fee", ctx)
+
+        # Verify dev balance after withdrawal
+        dev_info = self.runner.call_view_method(self.oasis_id, "user_info", self.dev_address)
+        self.assertEqual(dev_info["user_balance_b"], 0)
+
+        # Test unauthorized withdrawal
+        ctx = Context(
+            [NCAction(NCActionType.WITHDRAWAL, self.token_b, 100)],
+            self.tx,
+            self.owner_address,
+            timestamp=0,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.oasis_id, "dev_withdraw_fee", ctx)
+
+    def test_update_owner_address(self) -> None:
+        dev_initial_deposit = 1_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        # Test owner update by dev
+        new_owner = self._get_any_address()[0]
+        ctx = Context([], self.tx, self.dev_address, timestamp=0)
+        self.runner.call_public_method(self.oasis_id, "update_owner_address", ctx, new_owner)
+
+        # Verify owner update
+        self.assertEqual(self.oasis_storage.get("owner_address"), new_owner)
+
+        # Test owner update by current owner
+        newer_owner = self._get_any_address()[0]
+        ctx = Context([], self.tx, new_owner, timestamp=0)
+        self.runner.call_public_method(self.oasis_id, "update_owner_address", ctx, newer_owner)
+
+        # Verify owner update
+        self.assertEqual(self.oasis_storage.get("owner_address"), newer_owner)
+
+        # Test unauthorized update
+        random_address = self._get_any_address()[0]
+        ctx = Context([], self.tx, random_address, timestamp=0)
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.oasis_id, "update_owner_address", ctx, random_address
+            )
 
     def test_initialize(self) -> None:
         dev_initial_deposit = 10_000_000_00
@@ -1245,7 +1397,7 @@ class OasisTestCase(BlueprintTestCase):
 
             if should_succeed:
                 self.runner.call_public_method(
-                    oasis_id, "initialize", ctx, self.dozer_id, self.token_b, fee
+                    oasis_id, "initialize", ctx, self.dozer_id, self.token_b, fee, self.owner_address
                 )
                 # Test deposit with fee
                 user_address = self._get_any_address()[0]
