@@ -8,6 +8,7 @@ services:
       - ./hathor/nanocontracts/blueprints:/app/hathor/nanocontracts/blueprints
       - ./hathor/conf/nano_testnet.yml:/app/hathor/conf/nano_testnet.yml
       - ./tests:/app/tests
+      - ./.git:/app/.git
 
     # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_rewards.py"] # with stdout
     command: [

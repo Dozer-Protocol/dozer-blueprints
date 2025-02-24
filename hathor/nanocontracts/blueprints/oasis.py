@@ -45,7 +45,7 @@ class Oasis(Blueprint):
         protocol_fee: Amount,
         owner_address: Address,
     ) -> None:
-        """Initialize the contract with no dozer pool set."""
+        """Initialize the contract with dozer pool set."""
         pool_token_a, pool_token_b = self.call_view_method(dozer_pool, "get_uuids")
         if pool_token_a != HTR_UID or pool_token_b != token_b:
             raise (NCFail)
@@ -65,16 +65,8 @@ class Oasis(Blueprint):
 
     @public
     def owner_deposit(self, ctx: Context) -> None:
-        """Deposits token B with a timelock period for bonus rewards.
 
-        Args:
-            ctx: Execution context
-            timelock: Lock period in months (6, 9, or 12)
-
-        Raises:
-            NCFail: If deposit requirements not met or invalid timelock
-        """
-        action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
+        action = self._get_token_action(ctx, NCActionType.DEPOSIT, HTR_UID, auth=False)
         if ctx.address not in [self.dev_address, self.owner_address]:
             raise NCFail("Only dev or owner can deposit")
         if action.token_uid != HTR_UID:
@@ -84,6 +76,15 @@ class Oasis(Blueprint):
 
     @public
     def user_deposit(self, ctx: Context, timelock: int) -> None:
+        """Deposits token B with a timelock period for bonus rewards.
+
+        Args:
+            ctx: Execution context
+            timelock: Lock period in months (6, 9, or 12)
+
+        Raises:
+            NCFail: If deposit requirements not met or invalid timelock
+        """
         action = self._get_token_action(
             ctx, NCActionType.DEPOSIT, self.token_b, auth=False
         )
@@ -281,10 +282,10 @@ class Oasis(Blueprint):
             new_fee: New fee value in thousandths (e.g. 500 = 0.5%)
 
         Raises:
-            NCFail: If caller is not admin or fee exceeds maximum
+            NCFail: If caller is not dev or fee exceeds maximum
         """
         if ctx.address != self.dev_address:
-            raise NCFail("Only admin can update protocol fee")
+            raise NCFail("Only dev can update protocol fee")
         if new_fee > 1000 or new_fee < 0:
             raise NCFail("Protocol fee cannot exceed 100%")
 
@@ -315,52 +316,6 @@ class Oasis(Blueprint):
 
         return int(bonus_multiplier[timelock] * amount)
 
-    def _get_action(
-        self, ctx: Context, action_type: NCActionType, auth: bool
-    ) -> NCAction:
-        """Returns one action tested by type and index"""
-        if len(ctx.actions) != 1:
-            raise NCFail
-        # if ctx.actions.keys not in rewardable_indexs:
-        #     raise InvalidTokens()
-        keys = ctx.actions.keys()
-        output = ctx.actions.get(HTR_UID)
-        if not output:
-            raise NCFail
-        if output.type != action_type:
-            raise NCFail
-        if auth:
-            if ctx.address != self.dev_address:
-                raise NCFail
-
-        return output
-
-    def _get_token_action(
-        self,
-        ctx: Context,
-        action_type: NCActionType,
-        token: TokenUid,
-        auth: bool = False,
-    ) -> NCAction:
-        """Returns one action tested by type and index"""
-        if len(ctx.actions) > 2:
-            raise NCFail
-        try:
-            output = ctx.actions.get(token)
-        except:
-            raise NCFail
-
-        if not output:
-            raise NCFail
-
-        if output.type != action_type:
-            raise NCFail
-        if auth:
-            if ctx.address != self.dev_address:
-                raise NCFail
-
-        return output
-
     @public
     def owner_withdraw(self, ctx: Context) -> None:
         """Allows owner to withdraw HTR from their balance.
@@ -373,9 +328,9 @@ class Oasis(Blueprint):
         """
         if ctx.address != self.owner_address:
             raise NCFail("Only owner can withdraw")
-        action = self._get_action(ctx, NCActionType.WITHDRAWAL, auth=False)
-        if action.token_uid != HTR_UID:
-            raise NCFail("Withdrawal token not HATHOR")
+        action = self._get_token_action(
+            ctx, NCActionType.WITHDRAWAL, HTR_UID, auth=False
+        )
         if action.amount > self.oasis_htr_balance:
             raise NCFail("Withdrawal amount too high")
         self.oasis_htr_balance -= action.amount
@@ -422,28 +377,51 @@ class Oasis(Blueprint):
             raise NCFail("Only dev or owner can update owner address")
         self.owner_address = new_owner
 
-    @public
-    def check_pool_liquidity(self, ctx: Context, token_uid: bytes, amount: int) -> dict:
-        """Check liquidity for adding tokens to the pool.
+    def _get_action(
+        self, ctx: Context, action_type: NCActionType, auth: bool
+    ) -> NCAction:
+        """Returns one action tested by type and index"""
+        if len(ctx.actions) != 1:
+            raise NCFail
+        # if ctx.actions.keys not in rewardable_indexs:
+        #     raise InvalidTokens()
+        keys = ctx.actions.keys()
+        output = ctx.actions.get(HTR_UID)
+        if not output:
+            raise NCFail
+        if output.type != action_type:
+            raise NCFail
+        if auth:
+            if ctx.address != self.dev_address:
+                raise NCFail
 
-        Args:
-            ctx: The execution context
-            token_uid: The token to check liquidity for
-            amount: The amount to check
+        return output
 
-        Returns:
-            The liquidity quote from the pool
+    def _get_token_action(
+        self,
+        ctx: Context,
+        action_type: NCActionType,
+        token: TokenUid,
+        auth: bool = False,
+    ) -> NCAction:
+        """Returns one action tested by type and index"""
+        if len(ctx.actions) > 2:
+            raise NCFail
+        try:
+            output = ctx.actions.get(token)
+        except:
+            raise NCFail
 
-        Raises:
-            NCFail: If dozer pool is not set
-        """
-        if self.dozer_pool is None:
-            raise NCFail("Dozer pool contract not set")
+        if not output:
+            raise NCFail
 
-        # Call the private method on the dozer pool contract
-        return self.call_view_method(
-            self.dozer_pool, "front_quote_add_liquidity_in", amount, token_uid
-        )
+        if output.type != action_type:
+            raise NCFail
+        if auth:
+            if ctx.address != self.dev_address:
+                raise NCFail
+
+        return output
 
     @view
     def user_info(
