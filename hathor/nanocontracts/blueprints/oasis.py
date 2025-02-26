@@ -43,7 +43,6 @@ class Oasis(Blueprint):
         dozer_pool: ContractId,
         token_b: TokenUid,
         protocol_fee: Amount,
-        owner_address: Address,
     ) -> None:
         """Initialize the contract with dozer pool set."""
         pool_token_a, pool_token_b = self.call_view_method(dozer_pool, "get_uuids")
@@ -61,7 +60,7 @@ class Oasis(Blueprint):
         self.dev_deposit_amount = action.amount
         self.total_liquidity = 0
         self.protocol_fee = protocol_fee
-        self.owner_address = owner_address
+        self.owner_address = ctx.address
 
     @public
     def owner_deposit(self, ctx: Context) -> None:
