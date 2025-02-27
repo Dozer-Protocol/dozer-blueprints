@@ -1752,6 +1752,99 @@ class OasisTestCase(BlueprintTestCase):
         )
         self.assertEqual(user_info["htr_price_in_deposit"], 0)
 
+    def test_token_price_in_htr_in_deposit(self):
+        """Test that token_price_in_htr_in_deposit is calculated and stored correctly"""
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        # First deposit
+        user_address = self._get_any_address()[0]
+        deposit_amount = 1_000_00
+        timelock = 6
+        htr_price = 0.03
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        # Calculate expected token price in HTR
+        htr_amount = self._quote_add_liquidity_in(deposit_amount)
+        expected_token_price_in_htr = deposit_amount / htr_amount
+
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, htr_price
+        )
+
+        # Verify token price in HTR is calculated correctly
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        self.assertAlmostEqual(
+            user_info["token_price_in_htr_in_deposit"],
+            expected_token_price_in_htr,
+            places=6,
+        )
+
+        # Second deposit with different ratio
+        second_deposit_amount = 2_000_00
+        deposit_2_ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, second_deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds() + 100,
+        )
+
+        # Calculate expected token price for second deposit
+        second_htr_amount = self._quote_add_liquidity_in(second_deposit_amount)
+        second_token_price_in_htr = second_deposit_amount / second_htr_amount
+
+        # Calculate expected weighted average
+        expected_weighted_price = (
+            expected_token_price_in_htr * deposit_amount
+            + second_token_price_in_htr * second_deposit_amount
+        ) / (deposit_amount + second_deposit_amount)
+
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", deposit_2_ctx, timelock, htr_price
+        )
+
+        # Verify weighted average price calculation
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        self.assertAlmostEqual(
+            user_info["token_price_in_htr_in_deposit"],
+            expected_weighted_price,
+            places=6,
+        )
+
+        # Verify price is reset to 0 after withdrawal
+        withdraw_ctx = Context(
+            [
+                NCAction(
+                    NCActionType.WITHDRAWAL,
+                    self.token_b,
+                    deposit_amount + second_deposit_amount,
+                ),
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, 0),
+            ],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds() + (timelock * MONTHS_IN_SECONDS) + 1000,
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
+
+        # Verify price is reset
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        self.assertEqual(user_info["token_price_in_htr_in_deposit"], 0)
+
     def test_pool_drain_scenario(self):
         """Test behavior when pool is nearly drained of liquidity"""
         self.initialize_pool(amount_htr=1_000_000_00, amount_b=1_000_000_00)

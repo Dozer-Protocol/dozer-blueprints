@@ -31,6 +31,7 @@ class Oasis(Blueprint):
     dev_deposit_amount: Amount
     user_deposit_b: dict[Address, Amount]
     htr_price_in_deposit: dict[Address, float]
+    token_price_in_htr_in_deposit: dict[Address, float]
     user_liquidity: dict[Address, Amount]
     total_liquidity: Amount
     user_withdrawal_time: dict[Address, Timestamp]
@@ -107,6 +108,7 @@ class Oasis(Blueprint):
 
         # Continue with deposit using reduced amount
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
+        token_price_in_htr = deposit_amount / htr_amount if htr_amount > 0 else 0
         bonus = self._get_user_bonus(timelock, htr_amount)
         now = ctx.timestamp
         if htr_amount + bonus > self.oasis_htr_balance:
@@ -150,8 +152,15 @@ class Oasis(Blueprint):
                 * self.user_deposit_b[ctx.address]
                 + htr_price * deposit_amount
             ) / (self.user_deposit_b[ctx.address] + deposit_amount)
+            self.token_price_in_htr_in_deposit[ctx.address] = (
+                self.token_price_in_htr_in_deposit[ctx.address]
+                * self.user_deposit_b[ctx.address]
+                + token_price_in_htr * deposit_amount
+            ) / (self.user_deposit_b[ctx.address] + deposit_amount)
+
         else:
             self.htr_price_in_deposit[ctx.address] = htr_price
+            self.token_price_in_htr_in_deposit[ctx.address] = token_price_in_htr
             self.user_withdrawal_time[ctx.address] = now + timelock * MONTHS_IN_SECONDS
 
         self.oasis_htr_balance -= bonus + htr_amount
@@ -263,6 +272,7 @@ class Oasis(Blueprint):
         self.user_deposit_b[ctx.address] = 0
         self.user_withdrawal_time[ctx.address] = 0
         self.htr_price_in_deposit[ctx.address] = 0
+        self.token_price_in_htr_in_deposit[ctx.address] = 0
 
     @public
     def user_withdraw_bonus(self, ctx: Context) -> None:
@@ -454,6 +464,9 @@ class Oasis(Blueprint):
             "max_withdraw_b": remove_liquidity_oasis_quote.get("max_withdraw_b", 0),
             "max_withdraw_htr": remove_liquidity_oasis_quote.get("max_withdraw_htr", 0),
             "htr_price_in_deposit": self.htr_price_in_deposit.get(address, 0),
+            "token_price_in_htr_in_deposit": self.token_price_in_htr_in_deposit.get(
+                address, 0
+            ),
         }
 
     @view
