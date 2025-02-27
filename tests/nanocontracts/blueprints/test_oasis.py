@@ -248,7 +248,7 @@ class OasisTestCase(BlueprintTestCase):
             user_address,
             timestamp=self.clock.seconds(),
         )
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, 6)
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, 6, 0.03)
 
         # Calculate expected fee
         expected_fee = (deposit_amount * protocol_fee) // 1000
@@ -347,7 +347,9 @@ class OasisTestCase(BlueprintTestCase):
             user_address,
             timestamp=now,
         )
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
         user_info = self.runner.call_view_method(
             self.oasis_id, "user_info", user_address
         )
@@ -393,7 +395,9 @@ class OasisTestCase(BlueprintTestCase):
                 timestamp=now,
             )
             lp_amount_b = self._get_oasis_lp_amount_b()
-            self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+            self.runner.call_public_method(
+                self.oasis_id, "user_deposit", ctx, timelock, 0.03
+            )
             htr_amount = self._quote_add_liquidity_in(deposit_amount)
             bonus = self._get_user_bonus(timelock, htr_amount)
             user_info = self.runner.call_view_method(
@@ -452,7 +456,9 @@ class OasisTestCase(BlueprintTestCase):
                 timestamp=now,
             )
             lp_amount_b = self._get_oasis_lp_amount_b()
-            self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+            self.runner.call_public_method(
+                self.oasis_id, "user_deposit", ctx, timelock, 0.03
+            )
             htr_amount = self._quote_add_liquidity_in(deposit_amount)
             bonus = self._get_user_bonus(timelock, htr_amount)
             user_info = self.runner.call_view_method(
@@ -616,7 +622,9 @@ class OasisTestCase(BlueprintTestCase):
             )
 
             htr_amount = self._quote_add_liquidity_in(deposit_amount)
-            self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+            self.runner.call_public_method(
+                self.oasis_id, "user_deposit", ctx, timelock, 0.03
+            )
 
             expected_bonus = int(expected_bonus_rate * htr_amount)
 
@@ -647,7 +655,9 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=self.clock.seconds(),
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
 
         initial_price = self.dozer_storage.get("reserve_a") / self.dozer_storage.get(
             "reserve_b"
@@ -747,7 +757,9 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=self.clock.seconds(),
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
 
         initial_price = self.dozer_storage.get("reserve_a") / self.dozer_storage.get(
             "reserve_b"
@@ -859,7 +871,9 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=self.clock.seconds(),
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
 
         htr_amount_deposit = self._quote_add_liquidity_in(deposit_amount)
         user_bonus = self._get_user_bonus(timelock, htr_amount_deposit)
@@ -1023,7 +1037,9 @@ class OasisTestCase(BlueprintTestCase):
                 timestamp=self.clock.seconds() + (i * 100),
             )
 
-            self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+            self.runner.call_public_method(
+                self.oasis_id, "user_deposit", ctx, timelock, 0.03
+            )
 
             # Store user data for verification
             htr_amount = self._quote_add_liquidity_in(deposit_amount)
@@ -1078,7 +1094,9 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=deposit_time,
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
 
         # Try withdrawing at different times before timelock expiry
         test_times = [
@@ -1141,7 +1159,9 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=deposit_time,
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
 
         # Calculate expected bonus
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
@@ -1196,7 +1216,7 @@ class OasisTestCase(BlueprintTestCase):
 
             with self.assertRaises(NCFail):
                 self.runner.call_public_method(
-                    self.oasis_id, "user_deposit", ctx, invalid_timelock
+                    self.oasis_id, "user_deposit", ctx, invalid_timelock, 0.03
                 )
 
     def test_exact_timelock_expiry(self):
@@ -1219,7 +1239,7 @@ class OasisTestCase(BlueprintTestCase):
         )
 
         self.runner.call_public_method(
-            self.oasis_id, "user_deposit", deposit_ctx, timelock
+            self.oasis_id, "user_deposit", deposit_ctx, timelock, 0.03
         )
 
         # Try withdrawal exactly at expiry
@@ -1260,7 +1280,9 @@ class OasisTestCase(BlueprintTestCase):
             user_address,
             timestamp=initial_time,
         )
-        self.runner.call_public_method(self.oasis_id, "user_deposit", deposit_1_ctx, 12)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", deposit_1_ctx, 12, 0.03
+        )
 
         # Make second deposit with 6 month lock after 3 months
         deposit_2_amount = 2_000_00
@@ -1270,7 +1292,9 @@ class OasisTestCase(BlueprintTestCase):
             user_address,
             timestamp=initial_time + (3 * MONTHS_IN_SECONDS),
         )
-        self.runner.call_public_method(self.oasis_id, "user_deposit", deposit_2_ctx, 6)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", deposit_2_ctx, 6, 0.03
+        )
 
         user_info = self.runner.call_view_method(
             self.oasis_id, "user_info", user_address
@@ -1349,7 +1373,9 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=self.clock.seconds(),
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
 
         user_info = self.runner.call_view_method(
             self.oasis_id, "user_info", user_address
@@ -1378,7 +1404,9 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=self.clock.seconds(),
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
 
         user_info = self.runner.call_view_method(
             self.oasis_id, "user_info", user_address
@@ -1408,7 +1436,9 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=self.clock.seconds(),
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
 
         user_info = self.runner.call_view_method(
             self.oasis_id, "user_info", user_address
@@ -1471,7 +1501,9 @@ class OasisTestCase(BlueprintTestCase):
                     timestamp=self.clock.seconds(),
                 )
 
-                self.runner.call_public_method(oasis_id, "user_deposit", deposit_ctx, 6)
+                self.runner.call_public_method(
+                    oasis_id, "user_deposit", deposit_ctx, 6, 0.03
+                )
 
                 expected_fee = (deposit_amount * fee) // 1000
                 expected_deposit = deposit_amount - expected_fee
@@ -1537,7 +1569,9 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=self.clock.seconds(),
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
 
         # Calculate expected fee
         expected_fee = (deposit_amount * new_fee) // 1000
@@ -1578,7 +1612,9 @@ class OasisTestCase(BlueprintTestCase):
         )
 
         with self.assertRaises(NCFail):
-            self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+            self.runner.call_public_method(
+                self.oasis_id, "user_deposit", ctx, timelock, 0.03
+            )
 
     def test_deposit_extreme_ratio(self):
         """Test deposits when pool has extreme token ratios"""
@@ -1601,7 +1637,9 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=self.clock.seconds(),
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
 
         user_info = self.runner.call_view_method(
             self.oasis_id, "user_info", user_address
@@ -1626,13 +1664,93 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=self.clock.seconds(),
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 0.03
+        )
 
         user_info = self.runner.call_view_method(
             self.oasis_id, "user_info", user_address
         )
         self.assertEqual(user_info["user_deposit_b"], deposit_amount)
         self.check_balances([user_address])
+
+    def test_htr_price_in_deposit(self):
+        """Test that htr_price_in_deposit is set correctly during deposits"""
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        # First deposit with initial HTR price
+        user_address = self._get_any_address()[0]
+        deposit_amount = 1_000_00
+        timelock = 6
+        initial_htr_price = 0.03
+
+        ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds(),
+        )
+
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, initial_htr_price
+        )
+
+        # Verify price is set correctly
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        self.assertEqual(user_info["htr_price_in_deposit"], initial_htr_price)
+
+        # Second deposit with different HTR price
+        second_deposit_amount = 2_000_00
+        second_htr_price = 0.04
+        deposit_2_ctx = Context(
+            [NCAction(NCActionType.DEPOSIT, self.token_b, second_deposit_amount)],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds() + 100,
+        )
+
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", deposit_2_ctx, timelock, second_htr_price
+        )
+
+        # Verify weighted average price calculation
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        expected_weighted_price = (
+            initial_htr_price * deposit_amount
+            + second_htr_price * second_deposit_amount
+        ) / (deposit_amount + second_deposit_amount)
+        self.assertAlmostEqual(
+            user_info["htr_price_in_deposit"], expected_weighted_price, places=6
+        )
+
+        # Verify price is reset to 0 after withdrawal
+        withdraw_ctx = Context(
+            [
+                NCAction(
+                    NCActionType.WITHDRAWAL,
+                    self.token_b,
+                    deposit_amount + second_deposit_amount,
+                ),
+                NCAction(NCActionType.WITHDRAWAL, HTR_UID, 0),
+            ],
+            self.tx,
+            user_address,
+            timestamp=self.clock.seconds() + (timelock * MONTHS_IN_SECONDS) + 1000,
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
+
+        # Verify price is reset
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        self.assertEqual(user_info["htr_price_in_deposit"], 0)
 
     def test_pool_drain_scenario(self):
         """Test behavior when pool is nearly drained of liquidity"""
@@ -1650,7 +1768,7 @@ class OasisTestCase(BlueprintTestCase):
             timestamp=self.clock.seconds(),
         )
 
-        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, 6)
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, 6, 0.03)
 
         # Drain pool through repeated small swaps
         trading_address = self._get_any_address()[0]

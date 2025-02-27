@@ -30,6 +30,7 @@ class Oasis(Blueprint):
     oasis_htr_balance: Amount
     dev_deposit_amount: Amount
     user_deposit_b: dict[Address, Amount]
+    htr_price_in_deposit: dict[Address, float]
     user_liquidity: dict[Address, Amount]
     total_liquidity: Amount
     user_withdrawal_time: dict[Address, Timestamp]
@@ -74,7 +75,7 @@ class Oasis(Blueprint):
         self.dev_deposit_amount += action.amount
 
     @public
-    def user_deposit(self, ctx: Context, timelock: int) -> None:
+    def user_deposit(self, ctx: Context, timelock: int, htr_price: float) -> None:
         """Deposits token B with a timelock period for bonus rewards.
 
         Args:
@@ -143,7 +144,14 @@ class Oasis(Blueprint):
                 self.user_withdrawal_time[ctx.address] = (
                     now + timelock * MONTHS_IN_SECONDS
                 )
+            # updating position intial price with weighted average
+            self.htr_price_in_deposit[ctx.address] = (
+                self.htr_price_in_deposit[ctx.address]
+                * self.user_deposit_b[ctx.address]
+                + htr_price * deposit_amount
+            ) / (self.user_deposit_b[ctx.address] + deposit_amount)
         else:
+            self.htr_price_in_deposit[ctx.address] = htr_price
             self.user_withdrawal_time[ctx.address] = now + timelock * MONTHS_IN_SECONDS
 
         self.oasis_htr_balance -= bonus + htr_amount
@@ -254,6 +262,7 @@ class Oasis(Blueprint):
         self.user_liquidity[ctx.address] = 0
         self.user_deposit_b[ctx.address] = 0
         self.user_withdrawal_time[ctx.address] = 0
+        self.htr_price_in_deposit[ctx.address] = 0
 
     @public
     def user_withdraw_bonus(self, ctx: Context) -> None:
@@ -444,6 +453,7 @@ class Oasis(Blueprint):
             "user_lp_htr": remove_liquidity_oasis_quote.get("user_lp_htr", 0),
             "max_withdraw_b": remove_liquidity_oasis_quote.get("max_withdraw_b", 0),
             "max_withdraw_htr": remove_liquidity_oasis_quote.get("max_withdraw_htr", 0),
+            "htr_price_in_deposit": self.htr_price_in_deposit.get(address, 0),
         }
 
     @view
