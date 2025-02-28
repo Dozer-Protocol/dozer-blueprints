@@ -54,7 +54,7 @@ SETTINGS = HathorSettings(
             "27db2b0b1a943c2714fb19d190ce87dc0094bba463b26452dd98de21a42e96a0"
         ): "Dozer_Pool_v1_1",
         bytes.fromhex(
-            "27db2b0b1a943c2714fb19d190ce87dc0094bba463b26452dd98de21a42e96a1"
+            "8e424db8e5664ade76226356bcf5ef6ad9d0879bdad6377db835868b17c443ba"
         ): "Oasis",
     },
     SOFT_VOIDED_TX_IDS=list(
