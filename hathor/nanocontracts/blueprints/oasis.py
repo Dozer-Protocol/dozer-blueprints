@@ -287,6 +287,7 @@ class Oasis(Blueprint):
         self.user_position_closed[ctx.address] = True
 
         # Keep the deposit amounts for reference, but reset liquidity
+        self.total_liquidity -= self.user_liquidity[ctx.address]
         self.user_liquidity[ctx.address] = 0
 
     @public
