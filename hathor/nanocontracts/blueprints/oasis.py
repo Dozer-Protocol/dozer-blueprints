@@ -96,6 +96,9 @@ class Oasis(Blueprint):
         if action.token_uid != self.token_b:
             raise NCFail("Deposit token not B")
 
+        if self.user_position_closed.get(ctx.address, False):
+            raise NCFail("Need to close position before deposit")
+
         # Calculate and deduct protocol fee
         amount = action.amount
         fee_amount = (amount * self.protocol_fee) // 1000
