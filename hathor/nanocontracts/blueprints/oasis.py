@@ -291,8 +291,8 @@ class Oasis(Blueprint):
 
         # Keep the deposit amounts for reference, but reset liquidity
         self.total_liquidity -= self.user_liquidity[ctx.address]
-        self.user_liquidity[ctx.address] = 0
-        self.user_withdrawal_time[ctx.address] = 0
+        self.user_liquidity.__delitem__(ctx.address)
+        self.user_withdrawal_time.__delitem__(ctx.address)
 
     @public
     def user_withdraw(self, ctx: Context) -> None:
@@ -357,12 +357,11 @@ class Oasis(Blueprint):
             closed_balances.get(self.token_b, 0) == 0
             and closed_balances.get(HTR_UID, 0) == 0
         ):
-            self.user_deposit_b[ctx.address] = 0
-            self.user_withdrawal_time[ctx.address] = 0
-            self.htr_price_in_deposit[ctx.address] = 0
-            self.token_price_in_htr_in_deposit[ctx.address] = 0
-            self.user_position_closed[ctx.address] = False
-            self.user_withdrawal_time[ctx.address] = 0
+            self.user_deposit_b.__delitem__(ctx.address)
+            self.user_withdrawal_time.__delitem__(ctx.address)
+            self.htr_price_in_deposit.__delitem__(ctx.address)
+            self.token_price_in_htr_in_deposit.__delitem__(ctx.address)
+            self.user_position_closed.__delitem__(ctx.address)
 
     @public
     def user_withdraw_bonus(self, ctx: Context) -> None:
@@ -610,8 +609,7 @@ class Oasis(Blueprint):
             "bonus": bonus,
             "htr_amount": htr_amount,
             "withdrawal_time": withdrawal_time,
-            "has_position": address in self.user_withdrawal_time
-            and self.user_withdrawal_time[address] > 0,
+            "has_position": address in self.user_withdrawal_time,
             "fee_amount": fee_amount,
             "deposit_amount": deposit_amount,
             "protocol_fee": self.protocol_fee,
