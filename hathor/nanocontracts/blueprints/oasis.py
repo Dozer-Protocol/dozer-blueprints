@@ -610,7 +610,8 @@ class Oasis(Blueprint):
             "bonus": bonus,
             "htr_amount": htr_amount,
             "withdrawal_time": withdrawal_time,
-            "has_position": address in self.user_withdrawal_time,
+            "has_position": address in self.user_withdrawal_time
+            and self.user_withdrawal_time[address] > 0,
             "fee_amount": fee_amount,
             "deposit_amount": deposit_amount,
             "protocol_fee": self.protocol_fee,
