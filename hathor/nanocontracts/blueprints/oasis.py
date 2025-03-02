@@ -292,6 +292,7 @@ class Oasis(Blueprint):
         # Keep the deposit amounts for reference, but reset liquidity
         self.total_liquidity -= self.user_liquidity[ctx.address]
         self.user_liquidity[ctx.address] = 0
+        self.user_withdrawal_time[ctx.address] = 0
 
     @public
     def user_withdraw(self, ctx: Context) -> None:
