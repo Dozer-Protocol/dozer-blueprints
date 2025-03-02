@@ -362,6 +362,7 @@ class Oasis(Blueprint):
             self.htr_price_in_deposit[ctx.address] = 0
             self.token_price_in_htr_in_deposit[ctx.address] = 0
             self.user_position_closed[ctx.address] = False
+            self.user_withdrawal_time[ctx.address] = 0
 
     @public
     def user_withdraw_bonus(self, ctx: Context) -> None:
