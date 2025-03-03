@@ -143,13 +143,13 @@ class DAO(Blueprint):
 
     def _get_voting_power(self, ctx: Context, address: Address) -> Amount:
         """Get voting power from staking contract."""
-        return ctx.call_view_method(
+        return self.call_view_method(
             self.staking_contract, "get_max_withdrawal", address, ctx.timestamp
         )
 
     def _get_total_staked(self, ctx: Context) -> Amount:
         """Get total staked from staking contract."""
-        info = ctx.call_view_method(self.staking_contract, "front_end_api")
+        info = self.call_view_method(self.staking_contract, "front_end_api")
         return info["total_staked"]
 
     @view

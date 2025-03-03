@@ -15,8 +15,13 @@
 from typing import TYPE_CHECKING, Type
 
 from hathor.nanocontracts.blueprints.bet import Bet
+from hathor.nanocontracts.blueprints.crowdsale import Crowdsale
+from hathor.nanocontracts.blueprints.dao import DAO
 from hathor.nanocontracts.blueprints.dozer_pool_v1_1 import Dozer_Pool_v1_1
+from hathor.nanocontracts.blueprints.khensu import Khensu
 from hathor.nanocontracts.blueprints.oasis import Oasis
+from hathor.nanocontracts.blueprints.stake import Stake
+from hathor.nanocontracts.blueprints.vesting import Vesting
 
 if TYPE_CHECKING:
     from hathor.nanocontracts.blueprint import Blueprint
@@ -24,8 +29,22 @@ if TYPE_CHECKING:
 
 _blueprints_mapper: dict[str, Type["Blueprint"]] = {
     "Bet": Bet,
+    "Crowdsale": Crowdsale,
+    "Dao": DAO,
     "Dozer_Pool_v1_1": Dozer_Pool_v1_1,
+    "Khensu": Khensu,
     "Oasis": Oasis,
+    "Stake": Stake,
+    "Vesting": Vesting,
 }
 
-__all__ = ["Bet", "Dozer_Pool_v1_1", "Oasis"]
+__all__ = [
+    "Bet",
+    "Crowdsale",
+    "DAO",
+    "Dozer_Pool_v1_1",
+    "Khensu",
+    "Oasis",
+    "Stake",
+    "Vesting",
+]

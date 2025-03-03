@@ -56,6 +56,21 @@ SETTINGS = HathorSettings(
         bytes.fromhex(
             "8e424db8e5664ade76226356bcf5ef6ad9d0879bdad6377db835868b17c443ba"
         ): "Oasis",
+        bytes.fromhex(
+            "7b3ae18c763b2254baf8b9801bc0dcd3e77db57d7de7fd34cc62b526aa91d9fb"
+        ): "Crowdsale",
+        bytes.fromhex(
+            "6cfdd13e8b9c689b8d87bb8100b4e580e0e9d20ee75a8c5aee9e7bef51e0b1a0"
+        ): "Dao",
+        bytes.fromhex(
+            "a9bb69a0ff0cb89c45faf7ef3fcccd14b9f89a4be9f50a230c41c88b698f3c14"
+        ): "Khensu",
+        bytes.fromhex(
+            "ac6bf4f6a89a34e81a21a6e07e24f07739af5c3d6f4c15e16c5ae4e4108aaa48"
+        ): "Stake",
+        bytes.fromhex(
+            "42e7f272b6b966f26576a5c1d0c9637f456168c85e18a3e86c0c60e909a93275"
+        ): "Vesting",
     },
     SOFT_VOIDED_TX_IDS=list(
         map(
