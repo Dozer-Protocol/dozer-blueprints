@@ -382,7 +382,7 @@ class VestingTestCase(BlueprintTestCase):
         )
 
         self.runner.call_public_method(
-            self.contract_id, "admin_claim_allocation", admin_claim_ctx, 0, beneficiary
+            self.contract_id, "admin_claim_allocation", admin_claim_ctx, 0
         )
 
         # Verify withdrawal was successful
@@ -391,20 +391,6 @@ class VestingTestCase(BlueprintTestCase):
         )
         self.assertEqual(info["withdrawn"], expected_vested)
 
-        # Test claiming with wrong beneficiary address
-        wrong_beneficiary = self._get_any_address()[0]
-        wrong_claim_ctx = Context(
-            [NCAction(NCActionType.WITHDRAWAL, self.token_uid, expected_vested)],
-            self.tx,
-            self.admin_address,
-            timestamp=claim_time,
-        )
-
-        with self.assertRaises(InvalidBeneficiary):
-            self.runner.call_public_method(
-                self.contract_id,
-                "admin_claim_allocation",
-                wrong_claim_ctx,
-                0,
-                wrong_beneficiary,
-            )
+        # This method no longer takes a beneficiary parameter, so we don't need to test
+        # passing an invalid beneficiary as it's now impossible
+        # The test for wrong configuration is still covered elsewhere

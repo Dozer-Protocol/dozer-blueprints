@@ -257,10 +257,13 @@ class Vesting(Blueprint):
         self.available_balance -= action.amount
 
     @public
-    def admin_claim_allocation(
-        self, ctx: Context, index: int, beneficiary: Address
-    ) -> None:
-        """Claim vested tokens for an allocation as admin on behalf of beneficiary."""
+    def admin_claim_allocation(self, ctx: Context, index: int) -> None:
+        """Claim vested tokens for an allocation as admin on behalf of the beneficiary.
+        
+        This function allows the admin to withdraw tokens and send them to the 
+        beneficiary address registered in the allocation. The withdrawal action
+        will be processed to transfer funds directly to the beneficiary.
+        """
         self._only_admin(ctx)
         self._validate_index(index)
 
@@ -270,9 +273,9 @@ class Vesting(Blueprint):
         if not self.is_started:
             raise NCFail("Vesting not started")
 
-        if beneficiary != self.allocation_addresses[index]:
-            raise InvalidBeneficiary("Beneficiary address doesn't match allocation")
-
+        # Get the beneficiary address from the allocation directly
+        beneficiary = self.allocation_addresses[index]
+        
         action = self._get_token_action(ctx)
         if action.type != NCActionType.WITHDRAWAL:
             raise NCFail("Expected withdrawal action")
