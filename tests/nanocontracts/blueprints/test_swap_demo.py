@@ -1,4 +1,9 @@
-from hathor.nanocontracts.blueprints.swap_demo import InvalidActions, InvalidRatio, InvalidTokens, SwapDemo
+from hathor.nanocontracts.blueprints.swap_demo import (
+    InvalidActions,
+    InvalidRatio,
+    InvalidTokens,
+    SwapDemo,
+)
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.types import NCAction, NCActionType, TokenUid
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
@@ -8,9 +13,10 @@ class SwapDemoTestCase(BlueprintTestCase):
     def setUp(self):
         super().setUp()
 
+        self.blueprint_id = self.gen_random_blueprint_id()
         self.contract_id = self.gen_random_nanocontract_id()
-        self.runner.register_contract(SwapDemo, self.contract_id)
-        self.nc_storage = self.runner.get_storage(self.contract_id)
+
+        self.nc_catalog.blueprints[self.blueprint_id] = SwapDemo
 
         # Test doubles:
         self.token_a = self.gen_random_token_uid()
@@ -22,7 +28,7 @@ class SwapDemoTestCase(BlueprintTestCase):
     def _initialize(
         self,
         init_token_a: tuple[TokenUid, int, int],
-        init_token_b: tuple[TokenUid, int, int]
+        init_token_b: tuple[TokenUid, int, int],
     ) -> None:
         # Arrange:
         token_a, multiplier_a, amount_a = init_token_a
@@ -33,22 +39,23 @@ class SwapDemoTestCase(BlueprintTestCase):
             actions=[deposit_a, deposit_b],
             vertex=self.tx,
             address=self.address,
-            timestamp=self.now
+            timestamp=self.now,
         )
 
         # Act:
-        self.runner.call_public_method(self.contract_id,
-                                       'initialize',
-                                       context,
-                                       token_a,
-                                       token_b,
-                                       multiplier_a,
-                                       multiplier_b)
+        self.runner.create_contract(
+            self.contract_id,
+            self.blueprint_id,
+            context,
+            token_a,
+            token_b,
+            multiplier_a,
+            multiplier_b,
+        )
+        self.nc_storage = self.runner.get_storage(self.contract_id)
 
     def _swap(
-        self,
-        amount_a: tuple[int, TokenUid],
-        amount_b: tuple[int, TokenUid]
+        self, amount_a: tuple[int, TokenUid], amount_b: tuple[int, TokenUid]
     ) -> None:
         # Arrange:
         value_a, token_a = amount_a
@@ -59,11 +66,11 @@ class SwapDemoTestCase(BlueprintTestCase):
             actions=[swap_a, swap_b],
             vertex=self.tx,
             address=self.address,
-            timestamp=self.now
+            timestamp=self.now,
         )
 
         # Act:
-        self.runner.call_public_method(self.contract_id, 'swap', context)
+        self.runner.call_public_method(self.contract_id, "swap", context)
 
     def test_lifecycle(self) -> None:
         # Create a contract.
@@ -73,7 +80,7 @@ class SwapDemoTestCase(BlueprintTestCase):
         # Assert:
         self.assertEqual(100_00, self.nc_storage.get_balance(self.token_a))
         self.assertEqual(100_00, self.nc_storage.get_balance(self.token_b))
-        self.assertEqual(0, self.nc_storage.get('swaps_counter'))
+        self.assertEqual(0, self.nc_storage.get("swaps_counter"))
 
         # Make a valid swap.
         # Arrange and act within:
@@ -81,7 +88,7 @@ class SwapDemoTestCase(BlueprintTestCase):
         # Assert:
         self.assertEqual(120_00, self.nc_storage.get_balance(self.token_a))
         self.assertEqual(80_00, self.nc_storage.get_balance(self.token_b))
-        self.assertEqual(1, self.nc_storage.get('swaps_counter'))
+        self.assertEqual(1, self.nc_storage.get("swaps_counter"))
 
         # Make multiple invalid swaps raising all possible exceptions.
         with self.assertRaises(InvalidTokens):

@@ -7,6 +7,7 @@ from hathor.nanocontracts.types import (
     NCAction,
     TokenUid,
     ContractId,
+    BlueprintId,
     NCActionType,
     public,
     view,
@@ -54,6 +55,7 @@ class Khensu(Blueprint):
     token_reserve: Amount
     token_uid: TokenUid
     lp_contract: ContractId
+    dozer_pool_blueprint_id: BlueprintId
 
     # Fee management
     buy_fee_rate: int  # Basis points (e.g., 200 for 2%)
@@ -86,21 +88,22 @@ class Khensu(Blueprint):
         ctx: Context,
         admin_address: Address,
         token_uid: TokenUid,
-        lp_contract: ContractId,
+        dozer_pool_blueprint_id: BlueprintId,
         buy_fee_rate: int,
         sell_fee_rate: int,
         target_market_cap: Amount,
         liquidity_amount: Amount,
         graduation_fee: Amount,
     ) -> None:
-        if not admin_address or not token_uid or not lp_contract:
+        if not admin_address or not token_uid or not dozer_pool_blueprint_id:
             raise NCFail("Invalid initialization parameters")
 
         if buy_fee_rate > 1000 or sell_fee_rate > 1000:
             raise NCFail("Fee rates cannot exceed 1000 basis points")
         self.admin_address = admin_address
         self.token_uid = token_uid
-        self.lp_contract = lp_contract
+        self.dozer_pool_blueprint_id = dozer_pool_blueprint_id
+        self.lp_contract = ContractId(b'')  # Will be set when migrated
         self.buy_fee_rate = buy_fee_rate
         self.sell_fee_rate = sell_fee_rate
         self.target_market_cap = target_market_cap
@@ -373,16 +376,30 @@ class Khensu(Blueprint):
             if self.virtual_pool < self.liquidity_amount + self.graduation_fee:
                 raise NCFail("Insufficient HTR for migration")
 
-            # Set migration state before calling external contract
-            self.is_migrated = True
-
-            # Add liquidity to Dozer pool
+            # Create the Dozer pool contract with the required liquidity
+            # Generate a unique salt based on the token pair
+            salt = self.token_uid + HTR_UID + bytes(str(ctx.timestamp), 'utf-8')
+            
+            # Prepare token actions for the new pool
             actions = [
                 NCAction(NCActionType.DEPOSIT, HTR_UID, self.liquidity_amount),
                 NCAction(NCActionType.DEPOSIT, self.token_uid, self.token_reserve),
             ]
-
-            self.call_public_method(self.lp_contract, "add_liquidity", actions)
+            
+            # Create the Dozer pool contract
+            pool_id, _ = self.create_contract(
+                self.dozer_pool_blueprint_id, 
+                salt, 
+                actions, 
+                HTR_UID,                    # token_a
+                self.token_uid,             # token_b
+                0,                          # fee (0%)
+                50,                         # protocol_fee (50%)
+            )
+            
+            # Update state
+            self.lp_contract = pool_id
+            self.is_migrated = True
 
         except Exception as e:
             raise MigrationFailed(f"Migration failed: {str(e)}")
