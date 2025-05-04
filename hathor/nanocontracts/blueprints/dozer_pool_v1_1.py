@@ -112,7 +112,7 @@ class Dozer_Pool_v1_1(Blueprint):
 
     accumulated_fee: dict[TokenUid, Amount]
     transactions: int
-    last_activity_timestamp: Timestamp
+    last_activity_timestamp: int
     volume_a: Amount
     volume_b: Amount
 

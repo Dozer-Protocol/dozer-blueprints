@@ -30,8 +30,8 @@ class Oasis(Blueprint):
     oasis_htr_balance: Amount
     dev_deposit_amount: Amount
     user_deposit_b: dict[Address, Amount]
-    htr_price_in_deposit: dict[Address, float]
-    token_price_in_htr_in_deposit: dict[Address, float]
+    htr_price_in_deposit: dict[Address, Amount]
+    token_price_in_htr_in_deposit: dict[Address, Amount]
     user_liquidity: dict[Address, Amount]
     total_liquidity: Amount
     user_withdrawal_time: dict[Address, Timestamp]
@@ -80,7 +80,7 @@ class Oasis(Blueprint):
         self.dev_deposit_amount += action.amount
 
     @public
-    def user_deposit(self, ctx: Context, timelock: int, htr_price: float) -> None:
+    def user_deposit(self, ctx: Context, timelock: int, htr_price: Amount) -> None:
         """Deposits token B with a timelock period for bonus rewards.
 
         Args:
@@ -115,7 +115,7 @@ class Oasis(Blueprint):
 
         # Continue with deposit using reduced amount
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
-        token_price_in_htr = deposit_amount / htr_amount if htr_amount > 0 else 0
+        token_price_in_htr = deposit_amount * 100 // htr_amount if htr_amount > 0 else 0
         bonus = self._get_user_bonus(timelock, htr_amount)
         now = ctx.timestamp
         if htr_amount + bonus > self.oasis_htr_balance:
@@ -155,15 +155,23 @@ class Oasis(Blueprint):
                 )
             # updating position intial price with weighted average
             self.htr_price_in_deposit[ctx.address] = (
-                self.htr_price_in_deposit[ctx.address]
-                * self.user_deposit_b[ctx.address]
-                + htr_price * deposit_amount
-            ) / (self.user_deposit_b[ctx.address] + deposit_amount)
+                (
+                    self.htr_price_in_deposit[ctx.address]
+                    * self.user_deposit_b[ctx.address]
+                    + htr_price * deposit_amount
+                )
+                * 100
+                // (self.user_deposit_b[ctx.address] + deposit_amount)
+            )
             self.token_price_in_htr_in_deposit[ctx.address] = (
-                self.token_price_in_htr_in_deposit[ctx.address]
-                * self.user_deposit_b[ctx.address]
-                + token_price_in_htr * deposit_amount
-            ) / (self.user_deposit_b[ctx.address] + deposit_amount)
+                (
+                    self.token_price_in_htr_in_deposit[ctx.address]
+                    * self.user_deposit_b[ctx.address]
+                    + token_price_in_htr * deposit_amount
+                )
+                * 100
+                // (self.user_deposit_b[ctx.address] + deposit_amount)
+            )
 
         else:
             self.htr_price_in_deposit[ctx.address] = htr_price
@@ -402,7 +410,7 @@ class Oasis(Blueprint):
         return self.call_view_method(
             self.dozer_pool,
             "max_withdraw_b",
-            self.get_nanocontract_id(),
+            self.get_contract_id(),
         )
 
     def _quote_add_liquidity_in(self, amount: Amount) -> Amount:
@@ -412,7 +420,7 @@ class Oasis(Blueprint):
 
     def _quote_remove_liquidity_oasis(self) -> dict[str, int]:
         return self.call_view_method(
-            self.dozer_pool, "quote_remove_liquidity", self.get_nanocontract_id()
+            self.dozer_pool, "quote_remove_liquidity", self.get_contract_id()
         )
 
     def _get_user_bonus(self, timelock: int, amount: Amount) -> Amount:

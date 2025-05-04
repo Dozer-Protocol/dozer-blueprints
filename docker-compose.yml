@@ -15,7 +15,7 @@ services:
         "run",
         "pytest",
         # "-rP",
-        "tests/nanocontracts/blueprints/test_khensu.py",
+        "tests/nanocontracts/blueprints/test_dozer_pool_v1_1.py",
       ] # with stdout
     # command: [
     #     "poetry",
@@ -25,5 +25,5 @@ services:
     #     "--disable-warnings",
     #     "-qq", # quiet mode
     #     "--tb=short", # shorter traceback
-    #     "tests/nanocontracts/blueprints/test_khensu.py",
+    #     "tests/nanocontracts/blueprints/test_dozer_pool_v1_1.py",
     #   ]
