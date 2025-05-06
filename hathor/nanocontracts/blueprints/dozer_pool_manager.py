@@ -12,7 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, NamedTuple, Optional
+## TODO:
+# - Include cross pool swap
+# - Include signed pools for listing in Dozer dApp
+# - Include select HTR-USDT pool for price returns
+# - Include HTR pool-token map to help on price calculation
+
+from typing import Any, NamedTuple
 
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
@@ -20,7 +26,6 @@ from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
     Address,
     Amount,
-    Timestamp,
     TokenUid,
     NCAction,
     NCActionType,
