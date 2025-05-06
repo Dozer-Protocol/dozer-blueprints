@@ -10,20 +10,20 @@ services:
       - ./tests:/app/tests
       # - ./.git:/app/.git
 
+    # command: [
+    #   "poetry",
+    #   "run",
+    #   "pytest",
+    #   # "-rP",
+    #   "tests/nanocontracts/blueprints/test_dozer_pool_manager.py",
+    # ] # with stdout
     command: [
         "poetry",
         "run",
         "pytest",
-        # "-rP",
-        "tests/nanocontracts/blueprints/test_dozer_pool_v1_1.py",
-      ] # with stdout
-    # command: [
-    #     "poetry",
-    #     "run",
-    #     "pytest",
-    #     "--capture=no",
-    #     "--disable-warnings",
-    #     "-qq", # quiet mode
-    #     "--tb=short", # shorter traceback
-    #     "tests/nanocontracts/blueprints/test_dozer_pool_v1_1.py",
-    #   ]
+        "--capture=no",
+        "--disable-warnings",
+        "-qq", # quiet mode
+        "--tb=short", # shorter traceback
+        "tests/nanocontracts/blueprints/test_dozer_pool_manager.py",
+      ]
