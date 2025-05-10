@@ -1255,3 +1255,140 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 self.token_b,
                 3,
             )
+            
+    def test_get_user_pools(self):
+        """Test retrieving all pools where a user has liquidity"""
+        # Create multiple pools
+        pool_key1, _ = self._create_pool(self.token_a, self.token_b, fee=3)
+        pool_key2, _ = self._create_pool(self.token_a, self.token_c, fee=5)
+        pool_key3, _ = self._create_pool(self.token_b, self.token_c, fee=10)
+        
+        # Create a user address
+        user_address, _ = self._get_any_address()
+        
+        # Initially, user should have no pools
+        user_pools = self.runner.call_view_method(
+            self.nc_id, "get_user_pools", user_address
+        )
+        self.assertEqual(len(user_pools), 0)
+        
+        # Add liquidity to the first pool
+        context = Context(
+            [
+                NCAction(NCActionType.DEPOSIT, self.token_a, 500_00),
+                NCAction(NCActionType.DEPOSIT, self.token_b, 500_00),
+            ],
+            self._get_any_tx(),
+            user_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.nc_id, "add_liquidity", context, self.token_a, self.token_b, 3
+        )
+        
+        # Now user should have one pool
+        user_pools = self.runner.call_view_method(
+            self.nc_id, "get_user_pools", user_address
+        )
+        self.assertEqual(len(user_pools), 1)
+        self.assertEqual(user_pools[0], pool_key1)
+        
+        # Add liquidity to the third pool
+        context = Context(
+            [
+                NCAction(NCActionType.DEPOSIT, self.token_b, 500_00),
+                NCAction(NCActionType.DEPOSIT, self.token_c, 500_00),
+            ],
+            self._get_any_tx(),
+            user_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.nc_id, "add_liquidity", context, self.token_b, self.token_c, 10
+        )
+        
+        # Now user should have two pools
+        user_pools = self.runner.call_view_method(
+            self.nc_id, "get_user_pools", user_address
+        )
+        self.assertEqual(len(user_pools), 2)
+        self.assertIn(pool_key1, user_pools)
+        self.assertIn(pool_key3, user_pools)
+        
+    def test_get_user_positions(self):
+        """Test retrieving detailed information about all user positions"""
+        # Create multiple pools
+        pool_key1, _ = self._create_pool(self.token_a, self.token_b, fee=3, reserve_a=1000_00, reserve_b=2000_00)
+        pool_key2, _ = self._create_pool(self.token_a, self.token_c, fee=5, reserve_a=1500_00, reserve_b=1500_00)
+        
+        # Create a user address
+        user_address, _ = self._get_any_address()
+        
+        # Initially, user should have no positions
+        positions = self.runner.call_view_method(
+            self.nc_id, "get_user_positions", user_address
+        )
+        self.assertEqual(len(positions), 0)
+        
+        # Add liquidity to the first pool
+        context = Context(
+            [
+                NCAction(NCActionType.DEPOSIT, self.token_a, 500_00),
+                NCAction(NCActionType.DEPOSIT, self.token_b, 1000_00),
+            ],
+            self._get_any_tx(),
+            user_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.nc_id, "add_liquidity", context, self.token_a, self.token_b, 3
+        )
+        
+        # Now user should have one position
+        positions = self.runner.call_view_method(
+            self.nc_id, "get_user_positions", user_address
+        )
+        self.assertEqual(len(positions), 1)
+        self.assertIn(pool_key1, positions)
+        
+        # Verify position details
+        position = positions[pool_key1]
+        self.assertGreater(position["liquidity"], 0)
+        self.assertGreater(position["share"], 0)
+        self.assertGreater(position["token_a_amount"], 0)
+        self.assertGreater(position["token_b_amount"], 0)
+        self.assertEqual(position["token_a"], self.token_a)
+        self.assertEqual(position["token_b"], self.token_b)
+        self.assertEqual(position["fee"], 3/1000)
+        
+        # Add liquidity to the second pool
+        context = Context(
+            [
+                NCAction(NCActionType.DEPOSIT, self.token_a, 750_00),
+                NCAction(NCActionType.DEPOSIT, self.token_c, 750_00),
+            ],
+            self._get_any_tx(),
+            user_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.nc_id, "add_liquidity", context, self.token_a, self.token_c, 5
+        )
+        
+        # Now user should have two positions
+        positions = self.runner.call_view_method(
+            self.nc_id, "get_user_positions", user_address
+        )
+        self.assertEqual(len(positions), 2)
+        self.assertIn(pool_key1, positions)
+        self.assertIn(pool_key2, positions)
+        
+        # Verify second position details
+        position = positions[pool_key2]
+        self.assertGreater(position["liquidity"], 0)
+        self.assertGreater(position["share"], 0)
+        self.assertGreater(position["token_a_amount"], 0)
+        self.assertGreater(position["token_b_amount"], 0)
+        self.assertEqual(position["token_a"], self.token_a)
+        self.assertEqual(position["token_b"], self.token_c)
+        self.assertEqual(position["fee"], 5/1000)

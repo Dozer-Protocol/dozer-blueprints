@@ -13,7 +13,7 @@
 # limitations under the License.
 
 ## TODO:
-# - Add view methods for user info of all pools he has liquidity
+# - DONE: Add view methods for user info of all pools he has liquidity
 
 from typing import Any, NamedTuple
 
@@ -1577,6 +1577,50 @@ class DozerPoolManager(Blueprint):
             The pool key of the HTR-USD pool, or None if not set
         """
         return self.htr_usd_pool_key
+
+    @view
+    def get_user_pools(self, address: Address) -> list[str]:
+        """Get all pools where a user has liquidity.
+
+        Args:
+            address: The address to check
+
+        Returns:
+            A list of pool keys where the user has liquidity
+        """
+        user_pools = []
+        for pool_key in self.all_pools:
+            # Check if user has liquidity in this pool
+            if pool_key in self.pool_user_liquidity:
+                user_liquidity = self.pool_user_liquidity[pool_key].get(address, 0)
+                if user_liquidity > 0:
+                    user_pools.append(pool_key)
+        return user_pools
+
+    @view
+    def get_user_positions(self, address: Address) -> dict[str, dict[str, Any]]:
+        """Get detailed information about all user positions across pools.
+
+        Args:
+            address: The address to check
+
+        Returns:
+            A dictionary mapping pool keys to position information
+        """
+        positions = {}
+        for pool_key in self.all_pools:
+            # Check if user has liquidity in this pool
+            if pool_key in self.pool_user_liquidity:
+                user_liquidity = self.pool_user_liquidity[pool_key].get(address, 0)
+                if user_liquidity > 0:
+                    # Get detailed information about this position
+                    positions[pool_key] = self.user_info(address, pool_key)
+                    
+                    # Add token information to make it more user-friendly
+                    positions[pool_key]["token_a"] = self.pool_token_a[pool_key]
+                    positions[pool_key]["token_b"] = self.pool_token_b[pool_key]
+                    positions[pool_key]["fee"] = self.pool_fee_numerator[pool_key] / self.pool_fee_denominator[pool_key]
+        return positions
 
     @view
     def get_token_price_in_htr(self, token: TokenUid) -> float:
