@@ -13,6 +13,7 @@
 # limitations under the License.
 
 ## TODO:
+# - Add view methods for user info of all pools he has liquidity
 
 from typing import Any, NamedTuple
 
@@ -103,7 +104,7 @@ class DozerPoolManager(Blueprint):
     """Singleton manager for multiple liquidity pools inspired by Uniswap v2.
 
     This contract manages multiple liquidity pools in a single contract.
-    Each pool is identified by a composite key of token_a:token_b:fee.
+    Each pool is identified by a composite key of token_a/token_b/fee.
 
     The swap methods are:
     - swap_exact_tokens_for_tokens()
@@ -124,7 +125,7 @@ class DozerPoolManager(Blueprint):
     authorized_signers: dict[Address, bool]  # Addresses authorized to sign pools
     htr_usd_pool_key: str  # Reference pool key for HTR-USD price calculations
 
-    # Pool registry - token_a:token_b:fee -> exists
+    # Pool registry - token_a/token_b/fee -> exists
     pool_exists: dict[str, bool]
 
     # Token registry
@@ -140,7 +141,7 @@ class DozerPoolManager(Blueprint):
         TokenUid, str
     ]  # token -> pool_key with lowest fee (for HTR pairs)
 
-    # Pool data - using composite keys (token_a:token_b:fee)
+    # Pool data - using composite keys (token_a/token_b/fee)
     # Every pool data structure follows similar organization to Dozer_Pool_v1_1
 
     # Token information per pool
@@ -1251,9 +1252,6 @@ class DozerPoolManager(Blueprint):
 
         # Increment transaction count
         self.pool_transactions[pool_key] += 1
-
-        # Transfer the tokens (not needed as the contract already has the tokens)
-        # self._transfer_from_contract(ctx, token_out, amount_out)
 
         return amount_out
 
@@ -2368,7 +2366,12 @@ class DozerPoolManager(Blueprint):
 
     @view
     def calculate_amount_out(
-        self, amount_in: Amount, token_in: TokenUid, token_out: TokenUid, fee: Amount, fee_denominator: Amount = 1000
+        self,
+        amount_in: Amount,
+        token_in: TokenUid,
+        token_out: TokenUid,
+        fee: Amount,
+        fee_denominator: Amount = 1000,
     ) -> Amount:
         """Calculate the output amount for a given input amount, taking into account the fee denominator.
 
@@ -2415,7 +2418,12 @@ class DozerPoolManager(Blueprint):
 
     @view
     def calculate_amount_in(
-        self, amount_out: Amount, token_in: TokenUid, token_out: TokenUid, fee: Amount, fee_denominator: Amount = 1000
+        self,
+        amount_out: Amount,
+        token_in: TokenUid,
+        token_out: TokenUid,
+        fee: Amount,
+        fee_denominator: Amount = 1000,
     ) -> Amount:
         """Calculate the input amount required for a desired output amount, taking into account the fee denominator.
 
