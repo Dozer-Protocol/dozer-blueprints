@@ -13,7 +13,6 @@
 # limitations under the License.
 
 ## TODO:
-# - Include cross pool swap
 
 from typing import Any, NamedTuple
 
@@ -1051,6 +1050,214 @@ class DozerPoolManager(Blueprint):
         )
 
     @public
+    def swap_exact_tokens_for_tokens_through_path(
+        self, ctx: Context, amount_in: Amount, min_amount_out: Amount, path_str: str
+    ) -> Amount:
+        """Execute a swap through a specific path of pools.
+
+        Args:
+            ctx: The transaction context
+            amount_in: The exact amount of input tokens
+            min_amount_out: The minimum amount of output tokens to receive
+            path_str: Comma-separated string of pool keys to traverse
+
+        Returns:
+            The amount of output tokens received
+
+        Raises:
+            PoolNotFound: If any pool in the path does not exist
+            InsufficientLiquidity: If the output amount is less than min_amount_out
+            InvalidPath: If the path is invalid
+            Unauthorized: If the caller is not authorized to swap
+        """
+        # Parse the path
+        if not path_str:
+            raise InvalidPath("Empty path")
+
+        path = path_str.split(",")
+
+        # Validate path length
+        if len(path) == 0 or len(path) > 3:
+            raise InvalidPath("Invalid path length")
+
+        # Get the first pool to determine input token
+        first_pool_key = path[0]
+        if first_pool_key not in self.all_pools:
+            raise PoolNotFound()
+
+        # Determine the input token from the first action
+        if len(ctx.actions) == 0:
+            raise InvalidAction("No deposit action found")
+
+        first_action, second_action = set(ctx.actions.values())
+        if first_action.type != NCActionType.DEPOSIT:
+            raise InvalidAction("First action must be a deposit")
+
+        token_in = first_action.token_uid
+
+        # Verify the deposit amount matches amount_in
+        if first_action.amount != amount_in:
+            raise InvalidAction("Deposit amount does not match amount_in")
+
+        # Execute the swap through the path
+        current_amount = amount_in
+        current_token = token_in
+
+        # First hop
+        first_pool_key = path[0]
+        if first_pool_key not in self.all_pools:
+            raise PoolNotFound()
+
+        # Determine the output token of the first pool
+        if self.pool_token_a[first_pool_key] == current_token:
+            next_token = self.pool_token_b[first_pool_key]
+        elif self.pool_token_b[first_pool_key] == current_token:
+            next_token = self.pool_token_a[first_pool_key]
+        else:
+            raise InvalidPath("First pool does not contain input token")
+
+        # Execute the first swap
+        first_amount_out = self._swap(
+            ctx, current_amount, current_token, next_token, first_pool_key
+        )
+
+        # If there's only one hop, we're done
+        if len(path) == 1:
+            if first_amount_out < min_amount_out:
+                raise InsufficientLiquidity()
+            return first_amount_out
+
+        # Second hop
+        current_amount = first_amount_out
+        current_token = next_token
+        second_pool_key = path[1]
+
+        if second_pool_key not in self.all_pools:
+            raise PoolNotFound()
+
+        # Determine the output token of the second pool
+        if self.pool_token_a[second_pool_key] == current_token:
+            next_token = self.pool_token_b[second_pool_key]
+        elif self.pool_token_b[second_pool_key] == current_token:
+            next_token = self.pool_token_a[second_pool_key]
+        else:
+            raise InvalidPath("Second pool does not contain intermediate token")
+
+        # Execute the second swap
+        second_amount_out = self._swap(
+            ctx, current_amount, current_token, next_token, second_pool_key
+        )
+
+        # If there are only two hops, we're done
+        if len(path) == 2:
+            if second_amount_out < min_amount_out:
+                raise InsufficientLiquidity()
+            return second_amount_out
+
+        # Third hop
+        current_amount = second_amount_out
+        current_token = next_token
+        third_pool_key = path[2]
+
+        if third_pool_key not in self.all_pools:
+            raise PoolNotFound()
+
+        # Determine the output token of the third pool
+        if self.pool_token_a[third_pool_key] == current_token:
+            next_token = self.pool_token_b[third_pool_key]
+        elif self.pool_token_b[third_pool_key] == current_token:
+            next_token = self.pool_token_a[third_pool_key]
+        else:
+            raise InvalidPath("Third pool does not contain intermediate token")
+
+        # Execute the third swap
+        third_amount_out = self._swap(
+            ctx, current_amount, current_token, next_token, third_pool_key
+        )
+
+        # Check if the final output amount is sufficient
+        if third_amount_out < min_amount_out:
+            raise InsufficientLiquidity()
+
+        return third_amount_out
+
+    def _swap(
+        self,
+        ctx: Context,
+        amount_in: Amount,
+        token_in: TokenUid,
+        token_out: TokenUid,
+        pool_key: str,
+    ) -> Amount:
+        """Internal method to execute a swap in a single pool.
+
+        This is a helper method for swap_exact_tokens_for_tokens_through_path.
+
+        Args:
+            ctx: The transaction context
+            amount_in: The amount of input tokens
+            token_in: The input token
+            token_out: The output token
+            pool_key: The pool key
+
+        Returns:
+            The amount of output tokens received
+        """
+        # Get the pool reserves
+        reserve_in = 0
+        reserve_out = 0
+
+        if self.pool_token_a[pool_key] == token_in:
+            reserve_in = self.pool_reserve_a[pool_key]
+            reserve_out = self.pool_reserve_b[pool_key]
+
+            # Calculate the output amount
+            fee = self.pool_fee_numerator[pool_key]
+            a = self.pool_fee_denominator[pool_key] - fee
+            b = self.pool_fee_denominator[pool_key]
+            amount_out = (reserve_out * amount_in * a) // (
+                reserve_in * b + amount_in * a
+            )
+
+            # Update reserves
+            self.pool_reserve_a[pool_key] = reserve_in + amount_in
+            self.pool_reserve_b[pool_key] = reserve_out - amount_out
+
+            # Update volume
+            self.pool_volume_a[pool_key] += amount_in
+            self.pool_volume_b[pool_key] += amount_out
+        else:
+            reserve_in = self.pool_reserve_b[pool_key]
+            reserve_out = self.pool_reserve_a[pool_key]
+
+            # Calculate the output amount
+            fee = self.pool_fee_numerator[pool_key]
+            a = self.pool_fee_denominator[pool_key] - fee
+            b = self.pool_fee_denominator[pool_key]
+            amount_out = (reserve_out * amount_in * a) // (
+                reserve_in * b + amount_in * a
+            )
+
+            # Update reserves
+            self.pool_reserve_b[pool_key] = reserve_in + amount_in
+            self.pool_reserve_a[pool_key] = reserve_out - amount_out
+
+            # Update volume
+            self.pool_volume_b[pool_key] += amount_in
+            self.pool_volume_a[pool_key] += amount_out
+
+        # Update last activity timestamp
+        self.pool_last_activity[pool_key] = ctx.timestamp
+
+        # Increment transaction count
+        self.pool_transactions[pool_key] += 1
+
+        # Transfer the tokens (not needed as the contract already has the tokens)
+        # self._transfer_from_contract(ctx, token_out, amount_out)
+
+        return amount_out
+
+    @public
     def withdraw_cashback(
         self,
         ctx: Context,
@@ -1299,35 +1506,6 @@ class DozerPoolManager(Blueprint):
         if pool_key in self.pool_signers:
             self.pool_signers.__delitem__(pool_key)
 
-    @view
-    def get_signed_pools(self) -> list[str]:
-        """Get a list of all signed pools.
-
-        Returns:
-            A list of pool keys that are signed for listing in the Dozer dApp
-        """
-        result = []
-        for pool_key in self.all_pools:
-            if pool_key not in self.pool_signers:
-                continue
-            token_a = self.pool_token_a[pool_key].hex()
-            token_b = self.pool_token_b[pool_key].hex()
-            fee = self.pool_fee_numerator[pool_key]
-            result.append(f"{token_a}/{token_b}/{fee}")
-        return result
-
-    @view
-    def is_authorized_signer(self, address: Address) -> bool:
-        """Check if an address is an authorized signer.
-
-        Args:
-            address: The address to check
-
-        Returns:
-            True if the address is an authorized signer, False otherwise
-        """
-        return self.authorized_signers.get(address, False)
-
     @public
     def set_htr_usd_pool(
         self, ctx: Context, token_a: TokenUid, token_b: TokenUid, fee: Amount
@@ -1363,6 +1541,35 @@ class DozerPoolManager(Blueprint):
             raise InvalidTokens("HTR-USD pool must contain HTR as one of the tokens")
 
         self.htr_usd_pool_key = pool_key
+
+    @view
+    def get_signed_pools(self) -> list[str]:
+        """Get a list of all signed pools.
+
+        Returns:
+            A list of pool keys that are signed for listing in the Dozer dApp
+        """
+        result = []
+        for pool_key in self.all_pools:
+            if pool_key not in self.pool_signers:
+                continue
+            token_a = self.pool_token_a[pool_key].hex()
+            token_b = self.pool_token_b[pool_key].hex()
+            fee = self.pool_fee_numerator[pool_key]
+            result.append(f"{token_a}/{token_b}/{fee}")
+        return result
+
+    @view
+    def is_authorized_signer(self, address: Address) -> bool:
+        """Check if an address is an authorized signer.
+
+        Args:
+            address: The address to check
+
+        Returns:
+            True if the address is an authorized signer, False otherwise
+        """
+        return self.authorized_signers.get(address, False)
 
     @view
     def get_htr_usd_pool(self) -> str | None:
@@ -1777,3 +1984,478 @@ class DozerPoolManager(Blueprint):
             "balance_a": balance_a,
             "balance_b": balance_b,
         }
+
+    @view
+    def front_quote_exact_tokens_for_tokens(
+        self, amount_in: Amount, token_in: TokenUid, token_out: TokenUid, fee: Amount
+    ) -> dict[str, Any]:
+        """Calculate the amount of tokens received for a given input amount.
+
+        Args:
+            amount_in: The amount of input tokens
+            token_in: The input token
+            token_out: The output token
+            fee: The pool fee
+
+        Returns:
+            A dictionary with amount_out and price_impact
+        """
+        try:
+            pool_key = self._get_pool_key(token_in, token_out, fee)
+            if pool_key not in self.all_pools:
+                # If direct pool doesn't exist, try to find a path
+                return self.find_best_swap_path(amount_in, token_in, token_out, 3)
+
+            amount_out = self.get_amount_out(amount_in, token_in, token_out, fee)
+
+            # Calculate price impact
+            reserve_in = 0
+            reserve_out = 0
+
+            if self.pool_token_a[pool_key] == token_in:
+                reserve_in = self.pool_reserve_a[pool_key]
+                reserve_out = self.pool_reserve_b[pool_key]
+            else:
+                reserve_in = self.pool_reserve_b[pool_key]
+                reserve_out = self.pool_reserve_a[pool_key]
+
+            # Calculate quote (no fee)
+            quote = (amount_in * reserve_out) // reserve_in
+
+            if amount_out == 0:
+                price_impact = 0
+            else:
+                price_impact = 100 * (quote - amount_out) / amount_out - fee / 10
+
+            if price_impact < 0:
+                price_impact = 0
+
+            return {
+                "amount_out": amount_out,
+                "price_impact": price_impact,
+                "path": pool_key,
+                "amounts": [amount_in, amount_out],
+            }
+        except:
+            # If any error occurs, try to find a path
+            return self.find_best_swap_path(amount_in, token_in, token_out, 3)
+
+    @view
+    def front_quote_tokens_for_exact_tokens(
+        self, amount_out: Amount, token_in: TokenUid, token_out: TokenUid, fee: Amount
+    ) -> dict[str, Any]:
+        """Calculate the required amount of input tokens to obtain a specific amount of output tokens.
+
+        Args:
+            amount_out: The desired amount of output tokens
+            token_in: The input token
+            token_out: The output token
+            fee: The pool fee
+
+        Returns:
+            A dictionary with amount_in and price_impact
+        """
+        try:
+            pool_key = self._get_pool_key(token_in, token_out, fee)
+            if pool_key not in self.all_pools:
+                # If direct pool doesn't exist, try to find a path
+                # For exact output, we need a different approach
+                path_result = self.find_best_swap_path(
+                    1000000, token_in, token_out, 3
+                )  # Use a reasonable amount_in
+                if not path_result["path"]:
+                    return {
+                        "amount_in": 0,
+                        "price_impact": 0,
+                        "path": "",
+                        "amounts": [],
+                    }
+
+                # Estimate amount_in based on the path result
+                ratio = amount_out / path_result["amount_out"]
+                estimated_amount_in = int(path_result["amounts"][0] * ratio)
+
+                # Recalculate with the estimated amount_in
+                new_result = self.find_best_swap_path(
+                    estimated_amount_in, token_in, token_out, 3
+                )
+
+                # Adjust the result for exact output
+                return {
+                    "amount_in": new_result["amounts"][0],
+                    "price_impact": new_result["price_impact"],
+                    "path": new_result["path"],
+                    "amounts": new_result["amounts"],
+                }
+
+            amount_in = self.get_amount_in(amount_out, token_in, token_out, fee)
+
+            # Calculate price impact
+            reserve_in = 0
+            reserve_out = 0
+
+            if self.pool_token_a[pool_key] == token_in:
+                reserve_in = self.pool_reserve_a[pool_key]
+                reserve_out = self.pool_reserve_b[pool_key]
+            else:
+                reserve_in = self.pool_reserve_b[pool_key]
+                reserve_out = self.pool_reserve_a[pool_key]
+
+            # Calculate quote (no fee)
+            quote = (amount_out * reserve_in) // reserve_out
+
+            if amount_in == 0:
+                price_impact = 0
+            else:
+                price_impact = 100 * (amount_in - quote) / quote - fee / 10
+
+            if price_impact < 0:
+                price_impact = 0
+
+            return {
+                "amount_in": amount_in,
+                "price_impact": price_impact,
+                "path": pool_key,
+                "amounts": [amount_in, amount_out],
+            }
+        except:
+            # If any error occurs, try to find a path
+            # Same approach as above
+            path_result = self.find_best_swap_path(1000000, token_in, token_out, 3)
+            if not path_result["path"]:
+                return {"amount_in": 0, "price_impact": 0, "path": "", "amounts": []}
+
+            ratio = amount_out / path_result["amount_out"]
+            estimated_amount_in = int(path_result["amounts"][0] * ratio)
+
+            new_result = self.find_best_swap_path(
+                estimated_amount_in, token_in, token_out, 3
+            )
+
+            return {
+                "amount_in": new_result["amounts"][0],
+                "price_impact": new_result["price_impact"],
+                "path": new_result["path"],
+                "amounts": new_result["amounts"],
+            }
+
+    @view
+    def find_best_swap_path(
+        self, amount_in: Amount, token_in: TokenUid, token_out: TokenUid, max_hops: int
+    ) -> dict[str, Any]:
+        """Find the best path for swapping between two tokens.
+
+        This method calculates the optimal path for swapping from token_in to token_out,
+        considering up to max_hops intermediate swaps.
+
+        Args:
+            amount_in: The amount of input tokens
+            token_in: The input token
+            token_out: The output token
+            max_hops: Maximum number of hops (1-3)
+
+        Returns:
+            A dictionary containing:
+            - path: Comma-separated string of pool keys to traverse
+            - amounts: Expected amounts at each step
+            - amount_out: Final expected output amount
+            - price_impact: Overall price impact
+        """
+        # Limit max_hops to 3
+        if max_hops > 3:
+            max_hops = 3
+
+        # Direct swap (1 hop)
+        best_path = ""
+        best_amounts = [amount_in]
+        best_amount_out = 0
+        best_price_impact = 0
+
+        # Try all possible fee tiers for direct swap
+        for fee in [3, 5, 10, 30]:
+            try:
+                pool_key = self._get_pool_key(token_in, token_out, fee)
+                if pool_key in self.all_pools:
+                    amount_out = self.calculate_amount_out(
+                        amount_in,
+                        token_in,
+                        token_out,
+                        fee,
+                        self.pool_fee_denominator[pool_key],
+                    )
+                    if amount_out > best_amount_out:
+                        best_path = pool_key
+                        best_amounts = [amount_in, amount_out]
+                        best_amount_out = amount_out
+
+                        # Calculate price impact
+                        reserve_in = 0
+                        reserve_out = 0
+
+                        if self.pool_token_a[pool_key] == token_in:
+                            reserve_in = self.pool_reserve_a[pool_key]
+                            reserve_out = self.pool_reserve_b[pool_key]
+                        else:
+                            reserve_in = self.pool_reserve_b[pool_key]
+                            reserve_out = self.pool_reserve_a[pool_key]
+
+                        # Calculate quote (no fee)
+                        quote = (amount_in * reserve_out) // reserve_in
+
+                        if amount_out == 0:
+                            best_price_impact = 0
+                        else:
+                            best_price_impact = (
+                                100 * (quote - amount_out) / amount_out - fee / 10
+                            )
+
+                        if best_price_impact < 0:
+                            best_price_impact = 0
+            except Exception as e:
+                logger.error(f"Error finding best swap path: {e}")
+                pass
+
+        # If max_hops > 1, try 2-hop paths
+        if max_hops > 1:
+            # Get all tokens that have pools with token_in
+            intermediate_tokens = set()
+            for pool_key in self.all_pools:
+                token_a = self.pool_token_a[pool_key]
+                token_b = self.pool_token_b[pool_key]
+                if token_a == token_in or token_b == token_in:
+                    intermediate_tokens.add(token_a if token_b == token_in else token_b)
+
+            # Try all possible 2-hop paths
+            for intermediate_token in intermediate_tokens:
+                if intermediate_token == token_out or intermediate_token == token_in:
+                    continue
+
+                # Find best first hop
+                best_first_hop = ""
+                best_first_amount_out = 0
+                best_first_fee = 0
+
+                for fee1 in [3, 5, 10, 30]:
+                    try:
+                        pool_key1 = self._get_pool_key(
+                            token_in, intermediate_token, fee1
+                        )
+                        if pool_key1 in self.all_pools:
+                            amount_out1 = self.calculate_amount_out(
+                                amount_in,
+                                token_in,
+                                intermediate_token,
+                                fee1,
+                                self.pool_fee_denominator[pool_key1],
+                            )
+                            if amount_out1 > best_first_amount_out:
+                                best_first_hop = pool_key1
+                                best_first_amount_out = amount_out1
+                                best_first_fee = fee1
+                    except:
+                        pass
+
+                if best_first_hop == "":
+                    continue
+
+                # Find best second hop
+                best_second_hop = ""
+                best_second_amount_out = 0
+                best_second_fee = 0
+
+                for fee2 in [3, 5, 10, 30]:
+                    try:
+                        pool_key2 = self._get_pool_key(
+                            intermediate_token, token_out, fee2
+                        )
+                        if pool_key2 in self.all_pools:
+                            amount_out2 = self.calculate_amount_out(
+                                best_first_amount_out,
+                                intermediate_token,
+                                token_out,
+                                fee2,
+                                self.pool_fee_denominator[pool_key2],
+                            )
+                            if amount_out2 > best_second_amount_out:
+                                best_second_hop = pool_key2
+                                best_second_amount_out = amount_out2
+                                best_second_fee = fee2
+                    except:
+                        pass
+
+                if best_second_hop == "":
+                    continue
+
+                # Check if this 2-hop path is better than the current best
+                if best_second_amount_out > best_amount_out:
+                    best_path = f"{best_first_hop},{best_second_hop}"
+                    best_amounts = [
+                        amount_in,
+                        best_first_amount_out,
+                        best_second_amount_out,
+                    ]
+                    best_amount_out = best_second_amount_out
+                    # Calculate combined price impact (approximate)
+                    best_price_impact = 0  # Simplified for now
+
+        # If max_hops > 2, try 3-hop paths
+        if max_hops > 2 and token_in != HTR_UID and token_out != HTR_UID:
+            # Try using HTR as an intermediate token for a 3-hop path
+            # This is a common pattern: token_in -> HTR -> token_out
+
+            # First hop: token_in -> HTR
+            best_first_hop = ""
+            best_first_amount_out = 0
+            best_first_fee = 0
+
+            for fee1 in [3, 5, 10, 30]:
+                try:
+                    pool_key1 = self._get_pool_key(token_in, HTR_UID, fee1)
+                    if pool_key1 in self.all_pools:
+                        amount_out1 = self.calculate_amount_out(
+                            amount_in,
+                            token_in,
+                            HTR_UID,
+                            fee1,
+                            self.pool_fee_denominator[pool_key1],
+                        )
+                        if amount_out1 > best_first_amount_out:
+                            best_first_hop = pool_key1
+                            best_first_amount_out = amount_out1
+                            best_first_fee = fee1
+                except:
+                    pass
+
+            if best_first_hop != "":
+                # Second hop: HTR -> token_out
+                best_second_hop = ""
+                best_second_amount_out = 0
+                best_second_fee = 0
+
+                for fee2 in [3, 5, 10, 30]:
+                    try:
+                        pool_key2 = self._get_pool_key(HTR_UID, token_out, fee2)
+                        if pool_key2 in self.all_pools:
+                            amount_out2 = self.calculate_amount_out(
+                                best_first_amount_out,
+                                HTR_UID,
+                                token_out,
+                                fee2,
+                                self.pool_fee_denominator[pool_key2],
+                            )
+                            if amount_out2 > best_second_amount_out:
+                                best_second_hop = pool_key2
+                                best_second_amount_out = amount_out2
+                                best_second_fee = fee2
+                    except:
+                        pass
+
+                if best_second_hop != "" and best_second_amount_out > best_amount_out:
+                    best_path = f"{best_first_hop},{best_second_hop}"
+                    best_amounts = [
+                        amount_in,
+                        best_first_amount_out,
+                        best_second_amount_out,
+                    ]
+                    best_amount_out = best_second_amount_out
+
+        return {
+            "path": best_path,
+            "amounts": best_amounts,
+            "amount_out": best_amount_out,
+            "price_impact": best_price_impact,
+        }
+
+    @view
+    def calculate_amount_out(
+        self, amount_in: Amount, token_in: TokenUid, token_out: TokenUid, fee: Amount, fee_denominator: Amount = 1000
+    ) -> Amount:
+        """Calculate the output amount for a given input amount, taking into account the fee denominator.
+
+        This is a specialized version of get_amount_out for cross-pool swaps.
+
+        Args:
+            amount_in: The amount of input tokens
+            token_in: The input token
+            token_out: The output token
+            fee: The pool fee
+            fee_denominator: The denominator for the fee calculation (default: 1000)
+
+        Returns:
+            The maximum output amount
+
+        Raises:
+            PoolNotFound: If the pool does not exist
+            InsufficientLiquidity: If there is not enough liquidity
+        """
+        pool_key = self._get_pool_key(token_in, token_out, fee)
+        if pool_key not in self.all_pools:
+            raise PoolNotFound()
+
+        # Get reserves
+        reserve_in = 0
+        reserve_out = 0
+
+        if self.pool_token_a[pool_key] == token_in:
+            reserve_in = self.pool_reserve_a[pool_key]
+            reserve_out = self.pool_reserve_b[pool_key]
+        else:
+            reserve_in = self.pool_reserve_b[pool_key]
+            reserve_out = self.pool_reserve_a[pool_key]
+
+        if reserve_in == 0 or reserve_out == 0:
+            raise InsufficientLiquidity()
+
+        # Calculate amount out with fee
+        amount_in_with_fee = amount_in * (fee_denominator - fee)
+        numerator = amount_in_with_fee * reserve_out
+        denominator = reserve_in * fee_denominator + amount_in_with_fee
+
+        return numerator // denominator
+
+    @view
+    def calculate_amount_in(
+        self, amount_out: Amount, token_in: TokenUid, token_out: TokenUid, fee: Amount, fee_denominator: Amount = 1000
+    ) -> Amount:
+        """Calculate the input amount required for a desired output amount, taking into account the fee denominator.
+
+        This is a specialized version of get_amount_in for cross-pool swaps.
+
+        Args:
+            amount_out: The desired amount of output tokens
+            token_in: The input token
+            token_out: The output token
+            fee: The pool fee
+            fee_denominator: The denominator for the fee calculation (default: 1000)
+
+        Returns:
+            The minimum input amount required
+
+        Raises:
+            PoolNotFound: If the pool does not exist
+            InsufficientLiquidity: If there is not enough liquidity
+        """
+        pool_key = self._get_pool_key(token_in, token_out, fee)
+        if pool_key not in self.all_pools:
+            raise PoolNotFound()
+
+        # Get reserves
+        reserve_in = 0
+        reserve_out = 0
+
+        if self.pool_token_a[pool_key] == token_in:
+            reserve_in = self.pool_reserve_a[pool_key]
+            reserve_out = self.pool_reserve_b[pool_key]
+        else:
+            reserve_in = self.pool_reserve_b[pool_key]
+            reserve_out = self.pool_reserve_a[pool_key]
+
+        if reserve_in == 0 or reserve_out == 0 or amount_out >= reserve_out:
+            raise InsufficientLiquidity()
+
+        # Calculate amount in with fee
+        numerator = reserve_in * amount_out * fee_denominator
+        denominator = (reserve_out - amount_out) * (fee_denominator - fee)
+
+        # Round up
+        return (numerator // denominator) + 1

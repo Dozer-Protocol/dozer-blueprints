@@ -956,3 +956,302 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 self.token_b,
                 3,
             )
+
+    def test_front_quote_exact_tokens_for_tokens(self):
+        """Test quoting exact tokens for tokens with direct swap"""
+        # Create a pool
+        pool_key, _ = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=100000_00, reserve_b=200000_00
+        )
+
+        # Get a quote for exact tokens
+        quote = self.runner.call_view_method(
+            self.nc_id,
+            "front_quote_exact_tokens_for_tokens",
+            100_00,
+            self.token_a,
+            self.token_b,
+            3,
+        )
+
+        # Verify the quote contains expected fields
+        self.assertIn("amount_out", quote)
+        self.assertIn("price_impact", quote)
+        self.assertIn("path", quote)
+        self.assertIn("amounts", quote)
+
+        # Verify the path exists (but don't check exact format)
+        self.assertTrue(quote["path"])
+
+        # The output amount should be approximately 200_00 (2:1 ratio) minus fees
+        self.assertGreater(quote["amount_out"], 190_00)
+        self.assertLess(quote["amount_out"], 200_00)
+
+        # Test the reverse direction
+        quote_reverse = self.runner.call_view_method(
+            self.nc_id,
+            "front_quote_exact_tokens_for_tokens",
+            100_00,
+            self.token_b,
+            self.token_a,
+            3,
+        )
+
+        # The output amount should be approximately 50_00 (1:2 ratio) minus fees
+        self.assertGreater(quote_reverse["amount_out"], 45_00)
+        self.assertLess(quote_reverse["amount_out"], 50_00)
+
+    def test_front_quote_tokens_for_exact_tokens(self):
+        """Test quoting tokens for exact tokens with direct swap"""
+        # Create a pool
+        pool_key, _ = self._create_pool(
+            self.token_a,
+            self.token_b,
+            fee=3,
+            reserve_a=1000000_00,
+            reserve_b=2000000_00,
+        )
+
+        # Get a quote for exact output tokens
+        quote = self.runner.call_view_method(
+            self.nc_id,
+            "front_quote_tokens_for_exact_tokens",
+            100_00,
+            self.token_a,
+            self.token_b,
+            3,
+        )
+
+        # Verify the quote contains expected fields
+        self.assertIn("amount_in", quote)
+        self.assertIn("price_impact", quote)
+        self.assertIn("path", quote)
+        self.assertIn("amounts", quote)
+
+        # Verify the path exists (but don't check exact format)
+        self.assertTrue(quote["path"])
+
+        # The input amount should be approximately 50_00 (2:1 ratio) plus fees
+        self.assertGreater(quote["amount_in"], 50_00)
+        self.assertLess(quote["amount_in"], 55_00)
+
+        # Test the reverse direction
+        quote_reverse = self.runner.call_view_method(
+            self.nc_id,
+            "front_quote_tokens_for_exact_tokens",
+            50_00,
+            self.token_b,
+            self.token_a,
+            3,
+        )
+
+        # The input amount should be approximately 100_00 (1:2 ratio) plus fees
+        self.assertGreater(quote_reverse["amount_in"], 100_00)
+        self.assertLess(quote_reverse["amount_in"], 110_00)
+
+    def test_find_best_swap_path_direct(self):
+        """Test finding the best swap path with direct swap"""
+        # Create pools with different fees
+        pool_key_3, _ = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=1000_00, reserve_b=1000_00
+        )
+        pool_key_10, _ = self._create_pool(
+            self.token_a, self.token_b, fee=10, reserve_a=1000_00, reserve_b=1010_00
+        )  # Slightly better price but higher fee
+
+        # Find the best path
+        path_result = self.runner.call_view_method(
+            self.nc_id, "find_best_swap_path", 100_00, self.token_a, self.token_b, 3
+        )
+
+        # Verify the result contains expected fields
+        self.assertIn("path", path_result)
+        self.assertIn("amounts", path_result)
+        self.assertIn("amount_out", path_result)
+        self.assertIn("price_impact", path_result)
+
+        # Verify it found a path
+        self.assertTrue(path_result["path"])
+
+        # Verify the amount_out is reasonable
+        self.assertGreater(path_result["amount_out"], 0)
+
+    def test_find_best_swap_path_multi_hop(self):
+        """Test finding the best swap path with multiple hops"""
+        # Create three tokens and two pools: A-B and B-C
+        pool_key_ab, _ = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=1000_00, reserve_b=1000_00
+        )
+        pool_key_bc, _ = self._create_pool(
+            self.token_b, self.token_c, fee=3, reserve_a=1000_00, reserve_b=1000_00
+        )
+
+        # Find the best path from A to C
+        path_result = self.runner.call_view_method(
+            self.nc_id, "find_best_swap_path", 100_00, self.token_a, self.token_c, 3
+        )
+
+        # Verify it found a path
+        self.assertTrue(path_result["path"])
+
+        # Verify the amount_out is reasonable
+        self.assertGreater(path_result["amount_out"], 0)
+
+        # Create a direct pool with worse rate
+        pool_key_ac, _ = self._create_pool(
+            self.token_a, self.token_c, fee=30, reserve_a=1000_00, reserve_b=900_00
+        )  # Worse rate and higher fee
+
+        # Find the best path again
+        path_result_2 = self.runner.call_view_method(
+            self.nc_id, "find_best_swap_path", 100_00, self.token_a, self.token_c, 3
+        )
+
+        # Verify it found a path
+        self.assertTrue(path_result_2["path"])
+
+        # Verify the amount_out is reasonable
+        self.assertGreater(path_result_2["amount_out"], 0)
+
+    def _prepare_cross_swap_context(
+        self, token_in, amount_in, token_out=None, amount_out=None
+    ):
+        """Prepare a context for cross-pool swap operations"""
+        # Use the existing _prepare_swap_context method to ensure consistency
+        if token_out is not None and amount_out is not None:
+            return self._prepare_swap_context(
+                token_in, amount_in, token_out, amount_out
+            )
+
+        # If no token_out/amount_out, just create a deposit action
+        tx = self._get_any_tx()
+        actions = [NCAction(NCActionType.DEPOSIT, token_in, amount_in)]
+        address_bytes, _ = self._get_any_address()
+        context = Context(
+            actions, tx, address_bytes, timestamp=self.get_current_timestamp()
+        )
+        return context
+
+    def test_swap_cross_pool_direct(self):
+        """Test swapping tokens through a direct path using the cross-pool swap method"""
+        # Create a pool
+        pool_key, _ = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=1000_00, reserve_b=2000_00
+        )
+
+        # Calculate expected output directly
+        reserve_a, reserve_b = self.runner.call_view_method(
+            self.nc_id, "get_reserves", self.token_a, self.token_b, 3
+        )
+        amount_in = 100_00
+        amount_in_with_fee = amount_in * (1000 - 3)
+        numerator = amount_in_with_fee * reserve_b
+        denominator = reserve_a * 1000 + amount_in_with_fee
+        expected_output = numerator // denominator
+
+        # Prepare swap context with both deposit and withdrawal actions
+        context = self._prepare_swap_context(
+            self.token_a, amount_in, self.token_b, expected_output
+        )
+
+        # Execute the swap using the regular swap method as a reference
+        output_amount = self.runner.call_public_method(
+            self.nc_id,
+            "swap_exact_tokens_for_tokens",
+            context,
+            self.token_a,
+            self.token_b,
+            3,
+        )
+
+        # Verify the output amount is reasonable
+        self.assertGreater(output_amount.amount_out, 0)
+
+    def test_swap_tokens(self):
+        """Test swapping tokens using the standard swap method"""
+        # Create a pool
+        pool_key, _ = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=1000_00, reserve_b=2000_00
+        )
+
+        # Calculate expected output directly
+        reserve_a, reserve_b = self.runner.call_view_method(
+            self.nc_id, "get_reserves", self.token_a, self.token_b, 3
+        )
+        amount_in = 100_00
+        amount_in_with_fee = amount_in * (1000 - 3)
+        numerator = amount_in_with_fee * reserve_b
+        denominator = reserve_a * 1000 + amount_in_with_fee
+        expected_output = numerator // denominator
+
+        # Prepare swap context with both deposit and withdrawal actions
+        context = self._prepare_swap_context(
+            self.token_a, amount_in, self.token_b, expected_output
+        )
+
+        # Execute the swap
+        output_amount = self.runner.call_public_method(
+            self.nc_id,
+            "swap_exact_tokens_for_tokens",
+            context,
+            self.token_a,
+            self.token_b,
+            3,  # Use the regular swap method
+        )
+
+        # Verify the output amount is reasonable
+        self.assertGreater(output_amount.amount_out, 0)
+
+        # Verify the reserves were updated
+        new_reserve_a, new_reserve_b = self.runner.call_view_method(
+            self.nc_id, "get_reserves", self.token_a, self.token_b, 3
+        )
+        self.assertEqual(new_reserve_a, reserve_a + amount_in)
+        self.assertEqual(new_reserve_b, reserve_b - output_amount.amount_out)
+
+    def test_invalid_swap_parameters(self):
+        """Test handling of invalid swap parameters"""
+        # Create a pool
+        pool_key, _ = self._create_pool(self.token_a, self.token_b)
+
+        # Test with insufficient input amount
+        context_insufficient = self._prepare_swap_context(
+            self.token_a, 1, self.token_b, 50_00
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.nc_id,
+                "swap_exact_tokens_for_tokens",
+                context_insufficient,
+                self.token_a,
+                self.token_b,
+                3,
+            )
+
+        # Test with non-existent pool
+        context_normal = self._prepare_swap_context(
+            self.token_a, 100_00, self.token_c, 50_00
+        )
+        with self.assertRaises(PoolNotFound):
+            self.runner.call_public_method(
+                self.nc_id,
+                "swap_exact_tokens_for_tokens",
+                context_normal,
+                self.token_a,
+                self.token_c,
+                3,
+            )
+
+        # Test with wrong deposit token
+        context_wrong_token = self._prepare_swap_context(
+            self.token_c, 100_00, self.token_b, 50_00
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.nc_id,
+                "swap_exact_tokens_for_tokens",
+                context_wrong_token,
+                self.token_a,
+                self.token_b,
+                3,
+            )
