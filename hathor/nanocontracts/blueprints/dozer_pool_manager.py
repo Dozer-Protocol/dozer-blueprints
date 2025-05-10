@@ -14,7 +14,6 @@
 
 ## TODO:
 # - Include cross pool swap
-# - Include signed pools for listing in Dozer dApp
 # - Include select HTR-USDT pool for price returns
 # - Include HTR pool-token map to help on price calculation
 
@@ -116,12 +115,14 @@ class DozerPoolManager(Blueprint):
     - Protocol fee collection
     - Liquidity management
     - Pool statistics tracking
+    - Signed pools for listing in Dozer dApp
     """
 
     # Administrative state
     owner: Address
     default_fee: Amount
     default_protocol_fee: Amount
+    authorized_signers: dict[Address, bool]  # Addresses authorized to sign pools
 
     # Pool registry - token_a:token_b:fee -> exists
     pool_exists: dict[str, bool]
@@ -129,6 +130,10 @@ class DozerPoolManager(Blueprint):
     # Token registry
     all_pools: list[str]  # List of all pool keys
     token_to_pools: dict[TokenUid, list[str]]  # Token -> list of pool keys
+
+    # Signed pools for dApp listing
+    signed_pools: list[str]  # List of all signed pools
+    pool_signers: dict[str, Address]  # pool_key -> signer_address
 
     # Pool data - using composite keys (token_a:token_b:fee)
     # Every pool data structure follows similar organization to Dozer_Pool_v1_1
@@ -179,7 +184,8 @@ class DozerPoolManager(Blueprint):
         self.default_fee = 3  # 0.3%
         self.default_protocol_fee = 10  # 10% of fees
 
-        # No need to initialize collections as they are already initialized by the Blueprint system
+        # Add owner as authorized signer
+        self.authorized_signers[ctx.address] = True
 
     def _get_pool_key(self, token_a: TokenUid, token_b: TokenUid, fee: Amount) -> str:
         """Create a standardized pool key from tokens and fee.
@@ -594,8 +600,8 @@ class DozerPoolManager(Blueprint):
         self.pool_last_activity[pool_key] = ctx.timestamp
 
         # Initialize balance dictionaries
-        self.pool_balance_a[pool_key] = {}
-        self.pool_balance_b[pool_key] = {}
+        # self.pool_balance_a[pool_key] = {}
+        # self.pool_balance_b[pool_key] = {}
 
         # Update registry
         # all_pools should already be initialized by the Blueprint system
@@ -1144,29 +1150,164 @@ class DozerPoolManager(Blueprint):
         if new_fee < 0:
             raise InvalidFee("Invalid fee")
 
-        self.default_fee = new_fee
-
     @public
     def change_protocol_fee(self, ctx: Context, new_fee: Amount) -> None:
-        """Set the protocol fee percentage.
+        """Change the protocol fee.
 
         Args:
             ctx: The transaction context
-            new_fee: The new protocol fee percentage
+            new_fee: The new protocol fee
 
         Raises:
             Unauthorized: If the caller is not the owner
             InvalidFee: If the fee is invalid
         """
         if ctx.address != self.owner:
-            raise Unauthorized("Only owner can set protocol fee")
+            raise Unauthorized("Only the owner can change the protocol fee")
 
         if new_fee > 50:
-            raise InvalidFee("Protocol fee too high")
-        if new_fee < 0:
-            raise InvalidFee("Invalid protocol fee")
+            raise InvalidFee("Protocol fee must be <= 5%")
 
         self.default_protocol_fee = new_fee
+
+    @public
+    def add_authorized_signer(self, ctx: Context, signer_address: Address) -> None:
+        """Add an address to the list of authorized signers.
+
+        Only the contract owner can add authorized signers.
+        Authorized signers can sign pools for listing in the Dozer dApp.
+
+        Args:
+            ctx: The transaction context
+            signer_address: The address to authorize as a signer
+
+        Raises:
+            Unauthorized: If the caller is not the owner
+        """
+        if ctx.address != self.owner:
+            raise Unauthorized("Only the owner can add authorized signers")
+
+        self.authorized_signers[signer_address] = True
+
+    @public
+    def remove_authorized_signer(self, ctx: Context, signer_address: Address) -> None:
+        """Remove an address from the list of authorized signers.
+
+        Only the contract owner can remove authorized signers.
+        The owner cannot be removed as an authorized signer.
+
+        Args:
+            ctx: The transaction context
+            signer_address: The address to remove authorization from
+
+        Raises:
+            Unauthorized: If the caller is not the owner
+            NCFail: If trying to remove the owner as a signer
+        """
+        if ctx.address != self.owner:
+            raise Unauthorized("Only the owner can remove authorized signers")
+
+        if signer_address == self.owner:
+            raise NCFail("Cannot remove the owner as an authorized signer")
+
+        if signer_address in self.authorized_signers:
+            del self.authorized_signers[signer_address]
+
+    @public
+    def sign_pool(
+        self, ctx: Context, token_a: TokenUid, token_b: TokenUid, fee: Amount
+    ) -> None:
+        """Sign a pool for listing in the Dozer dApp.
+
+        Only authorized signers can sign pools.
+        Signed pools are eligible for listing in the Dozer dApp.
+
+        Args:
+            ctx: The transaction context
+            token_a: First token of the pair
+            token_b: Second token of the pair
+            fee: Fee for the pool
+
+        Raises:
+            Unauthorized: If the caller is not an authorized signer
+            PoolNotFound: If the pool does not exist
+        """
+        if not self.authorized_signers.get(ctx.address, False):
+            raise Unauthorized("Only authorized signers can sign pools")
+
+        # Ensure tokens are ordered
+        if token_a > token_b:
+            token_a, token_b = token_b, token_a
+
+        pool_key = self._get_pool_key(token_a, token_b, fee)
+        self._validate_pool_exists(pool_key)
+
+        self.pool_signers[pool_key] = ctx.address
+
+    @public
+    def unsign_pool(
+        self, ctx: Context, token_a: TokenUid, token_b: TokenUid, fee: Amount
+    ) -> None:
+        """Remove a pool's signature for listing in the Dozer dApp.
+
+        Only the owner or the original signer can unsign a pool.
+
+        Args:
+            ctx: The transaction context
+            token_a: First token of the pair
+            token_b: Second token of the pair
+            fee: Fee for the pool
+
+        Raises:
+            Unauthorized: If the caller is not the owner or original signer
+            PoolNotFound: If the pool does not exist
+        """
+        # Ensure tokens are ordered
+        if token_a > token_b:
+            token_a, token_b = token_b, token_a
+
+        pool_key = self._get_pool_key(token_a, token_b, fee)
+        self._validate_pool_exists(pool_key)
+
+        if not pool_key in self.pool_signers:
+            # Pool is not signed, nothing to do
+            return
+
+        original_signer = self.pool_signers.get(pool_key)
+        if ctx.address != self.owner and ctx.address != original_signer:
+            raise Unauthorized("Only the owner or original signer can unsign a pool")
+
+        if pool_key in self.pool_signers:
+            self.pool_signers.__delitem__(pool_key)
+
+    @view
+    def get_signed_pools(self) -> list[str]:
+        """Get a list of all signed pools.
+
+        Returns:
+            A list of pool keys that are signed for listing in the Dozer dApp
+        """
+        result = []
+        for pool_key in self.all_pools:
+            if pool_key not in self.pool_signers:
+                continue
+            token_a = self.pool_token_a[pool_key].hex()
+            token_b = self.pool_token_b[pool_key].hex()
+            fee = self.pool_fee_numerator[pool_key]
+            result.append(f"{token_a}/{token_b}/{fee}")
+        return result
+
+    @view
+    def is_authorized_signer(self, address: Address) -> bool:
+        """Check if an address is an authorized signer.
+
+        Args:
+            address: The address to check
+
+        Returns:
+            True if the address is an authorized signer, False otherwise
+        """
+        return self.authorized_signers.get(address, False)
 
     @public
     def change_owner(self, ctx: Context, new_owner: Address) -> None:
@@ -1302,7 +1443,7 @@ class DozerPoolManager(Blueprint):
     def front_end_api_pool(
         self,
         pool_key: str,
-    ) -> dict[str, float]:
+    ) -> dict[str, Any]:
         """Get pool information for frontend display.
 
         Args:
@@ -1326,6 +1467,8 @@ class DozerPoolManager(Blueprint):
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
 
+        is_signed = pool_key in self.pool_signers
+
         return {
             "reserve0": self.pool_reserve_a[pool_key],
             "reserve1": self.pool_reserve_b[pool_key],
@@ -1336,6 +1479,8 @@ class DozerPoolManager(Blueprint):
             "fee1": self.pool_accumulated_fee[pool_key].get(token_b, 0),
             "dzr_rewards": 1000,  # Placeholder as in original implementation
             "transactions": self.pool_transactions[pool_key],
+            "is_signed": is_signed,
+            "signer": self.pool_signers.get(pool_key, None),
         }
 
     @view
@@ -1355,6 +1500,7 @@ class DozerPoolManager(Blueprint):
             PoolNotFound: If the pool does not exist
         """
         self._validate_pool_exists(pool_key)
+        is_signed = pool_key in self.pool_signers
 
         return {
             "token_a": self.pool_token_a[pool_key],
@@ -1368,6 +1514,8 @@ class DozerPoolManager(Blueprint):
             "volume_a": self.pool_volume_a[pool_key],
             "volume_b": self.pool_volume_b[pool_key],
             "last_activity": self.pool_last_activity[pool_key],
+            "is_signed": is_signed,
+            "signer": self.pool_signers.get(pool_key, None),
         }
 
     @view

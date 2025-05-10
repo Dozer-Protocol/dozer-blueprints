@@ -552,6 +552,252 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertIn("fee", pool_info)
         self.assertIn("volume", pool_info)
         self.assertIn("transactions", pool_info)
+        self.assertIn("is_signed", pool_info)
+        self.assertIn("signer", pool_info)
 
         # Verify transaction count
         self.assertEqual(pool_info["transactions"], 1)
+
+        # Verify pool is not signed by default
+        self.assertFalse(pool_info["is_signed"])
+        self.assertIsNone(pool_info["signer"])
+
+    def test_add_authorized_signer(self):
+        """Test adding an authorized signer"""
+        # Create a new address to be an authorized signer
+        signer_address, _ = self._get_any_address()
+
+        # Create context with owner address
+        tx = self._get_any_tx()
+        context = Context(
+            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+        )
+
+        # Add the signer
+        self.runner.call_public_method(
+            self.nc_id, "add_authorized_signer", context, signer_address
+        )
+
+        # Verify the signer was added
+        is_authorized = self.runner.call_view_method(
+            self.nc_id, "is_authorized_signer", signer_address
+        )
+        self.assertTrue(is_authorized)
+
+        # Try to add a signer with non-owner address (should fail)
+        non_owner_address, _ = self._get_any_address()
+        non_owner_context = Context(
+            [], tx, non_owner_address, timestamp=self.get_current_timestamp()
+        )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.nc_id,
+                "add_authorized_signer",
+                non_owner_context,
+                self._get_any_address()[0],
+            )
+
+    def test_remove_authorized_signer(self):
+        """Test removing an authorized signer"""
+        # Create a new address to be an authorized signer
+        signer_address, _ = self._get_any_address()
+
+        # Add the signer
+        tx = self._get_any_tx()
+        owner_context = Context(
+            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+        )
+
+        self.runner.call_public_method(
+            self.nc_id, "add_authorized_signer", owner_context, signer_address
+        )
+
+        # Verify the signer was added
+        is_authorized = self.runner.call_view_method(
+            self.nc_id, "is_authorized_signer", signer_address
+        )
+        self.assertTrue(is_authorized)
+
+        # Remove the signer
+        self.runner.call_public_method(
+            self.nc_id, "remove_authorized_signer", owner_context, signer_address
+        )
+
+        # Verify the signer was removed
+        is_authorized = self.runner.call_view_method(
+            self.nc_id, "is_authorized_signer", signer_address
+        )
+        self.assertFalse(is_authorized)
+
+        # Try to remove the owner as a signer (should fail)
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.nc_id,
+                "remove_authorized_signer",
+                owner_context,
+                self.owner_address,
+            )
+
+        # Try to remove a signer with non-owner address (should fail)
+        non_owner_address, _ = self._get_any_address()
+        non_owner_context = Context(
+            [], tx, non_owner_address, timestamp=self.get_current_timestamp()
+        )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.nc_id,
+                "remove_authorized_signer",
+                non_owner_context,
+                signer_address,
+            )
+
+    def test_sign_pool(self):
+        """Test signing a pool for listing in the Dozer dApp"""
+        # Create a pool
+        pool_key, _ = self._create_pool(self.token_a, self.token_b)
+
+        # Sign the pool with owner address
+        tx = self._get_any_tx()
+        owner_context = Context(
+            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+        )
+
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", owner_context, self.token_a, self.token_b, 3
+        )
+
+        # Verify the pool is signed
+        pool_info = self.runner.call_view_method(self.nc_id, "pool_info", pool_key)
+        self.assertTrue(pool_info["is_signed"])
+        self.assertEqual(pool_info["signer"], self.owner_address)
+
+        # Get signed pools
+        signed_pools = self.runner.call_view_method(self.nc_id, "get_signed_pools")
+        self.assertEqual(len(signed_pools), 1)
+        self.assertEqual(signed_pools[0], pool_key)
+
+        # Try to sign a pool with unauthorized address (should fail)
+        unauthorized_address, _ = self._get_any_address()
+        unauthorized_context = Context(
+            [], tx, unauthorized_address, timestamp=self.get_current_timestamp()
+        )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.nc_id,
+                "sign_pool",
+                unauthorized_context,
+                self.token_a,
+                self.token_b,
+                3,
+            )
+
+        # Create a new authorized signer
+        signer_address, _ = self._get_any_address()
+        self.runner.call_public_method(
+            self.nc_id, "add_authorized_signer", owner_context, signer_address
+        )
+
+        # Create another pool
+        pool_key2, _ = self._create_pool(self.token_a, self.token_c)
+
+        # Sign the second pool with the new signer
+        signer_context = Context(
+            [], tx, signer_address, timestamp=self.get_current_timestamp()
+        )
+
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", signer_context, self.token_a, self.token_c, 3
+        )
+
+        # Verify the second pool is signed
+        pool_info2 = self.runner.call_view_method(self.nc_id, "pool_info", pool_key2)
+        self.assertTrue(pool_info2["is_signed"])
+        self.assertEqual(pool_info2["signer"], signer_address)
+
+        # Get signed pools (should now have 2)
+        signed_pools = self.runner.call_view_method(self.nc_id, "get_signed_pools")
+        self.assertEqual(len(signed_pools), 2)
+        self.assertIn(pool_key, signed_pools)
+        self.assertIn(pool_key2, signed_pools)
+
+    def test_unsign_pool(self):
+        """Test unsigning a pool"""
+        # Create a pool
+        pool_key, _ = self._create_pool(self.token_a, self.token_b)
+
+        # Create a new authorized signer
+        tx = self._get_any_tx()
+        owner_context = Context(
+            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+        )
+
+        signer_address, _ = self._get_any_address()
+        self.runner.call_public_method(
+            self.nc_id, "add_authorized_signer", owner_context, signer_address
+        )
+
+        # Sign the pool with the signer
+        signer_context = Context(
+            [], tx, signer_address, timestamp=self.get_current_timestamp()
+        )
+
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", signer_context, self.token_a, self.token_b, 3
+        )
+
+        # Verify the pool is signed
+        pool_info = self.runner.call_view_method(self.nc_id, "pool_info", pool_key)
+        self.assertTrue(pool_info["is_signed"])
+        self.assertEqual(pool_info["signer"], signer_address)
+
+        # Unsign the pool with the original signer
+        self.runner.call_public_method(
+            self.nc_id, "unsign_pool", signer_context, self.token_a, self.token_b, 3
+        )
+
+        # Verify the pool is unsigned
+        pool_info = self.runner.call_view_method(self.nc_id, "pool_info", pool_key)
+        self.assertFalse(pool_info["is_signed"])
+        self.assertIsNone(pool_info["signer"])
+
+        # Sign the pool again with the signer
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", signer_context, self.token_a, self.token_b, 3
+        )
+
+        # Verify the pool is signed
+        pool_info = self.runner.call_view_method(self.nc_id, "pool_info", pool_key)
+        self.assertTrue(pool_info["is_signed"])
+
+        # Unsign the pool with the owner (even though they didn't sign it)
+        self.runner.call_public_method(
+            self.nc_id, "unsign_pool", owner_context, self.token_a, self.token_b, 3
+        )
+
+        # Verify the pool is unsigned
+        pool_info = self.runner.call_view_method(self.nc_id, "pool_info", pool_key)
+        self.assertFalse(pool_info["is_signed"])
+
+        # Try to unsign with unauthorized address (should fail)
+        unauthorized_address, _ = self._get_any_address()
+        unauthorized_context = Context(
+            [], tx, unauthorized_address, timestamp=self.get_current_timestamp()
+        )
+
+        # Sign the pool first
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", signer_context, self.token_a, self.token_b, 3
+        )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.nc_id,
+                "unsign_pool",
+                unauthorized_context,
+                self.token_a,
+                self.token_b,
+                3,
+            )
