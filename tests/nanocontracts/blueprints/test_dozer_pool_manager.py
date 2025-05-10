@@ -5,6 +5,7 @@ from logging import getLogger
 from hathor.conf import HathorSettings
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprints.dozer_pool_manager import (
+    HTR_UID,
     DozerPoolManager,
     InsufficientLiquidity,
     InvalidAction,
@@ -561,6 +562,160 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Verify pool is not signed by default
         self.assertFalse(pool_info["is_signed"])
         self.assertIsNone(pool_info["signer"])
+
+    def test_set_htr_usd_pool(self):
+        """Test setting the HTR-USD pool for price calculations"""
+        # Create HTR token UID (all zeros)
+        htr_token = HTR_UID
+
+        # Create a USD token (using token_a as a stand-in for a stablecoin)
+        usd_token = self.token_a
+
+        # Create an HTR-USD pool
+        htr_usd_pool_key, _ = self._create_pool(
+            htr_token, usd_token, fee=3, reserve_a=1000_00, reserve_b=1000_00
+        )
+
+        # Set the HTR-USD pool with owner address
+        tx = self._get_any_tx()
+        owner_context = Context(
+            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+        )
+
+        self.runner.call_public_method(
+            self.nc_id, "set_htr_usd_pool", owner_context, htr_token, usd_token, 3
+        )
+
+        # Verify the HTR-USD pool was set correctly
+        htr_usd_pool = self.runner.call_view_method(self.nc_id, "get_htr_usd_pool")
+        self.assertEqual(htr_usd_pool, htr_usd_pool_key)
+
+        # Try to set the HTR-USD pool with non-owner address (should fail)
+        non_owner_address, _ = self._get_any_address()
+        non_owner_context = Context(
+            [], tx, non_owner_address, timestamp=self.get_current_timestamp()
+        )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.nc_id,
+                "set_htr_usd_pool",
+                non_owner_context,
+                htr_token,
+                usd_token,
+                3,
+            )
+
+        # Try to set a non-HTR pool as the HTR-USD pool (should fail)
+        non_htr_pool_key, _ = self._create_pool(self.token_b, self.token_c)
+
+        with self.assertRaises(InvalidTokens):
+            self.runner.call_public_method(
+                self.nc_id,
+                "set_htr_usd_pool",
+                owner_context,
+                self.token_b,
+                self.token_c,
+                3,
+            )
+
+    def test_htr_token_map(self):
+        """Test the HTR token map for tracking HTR pairs"""
+        # Create HTR token UID (all zeros)
+        htr_token = HTR_UID
+
+        # Create pools with HTR and different tokens
+        pool_key1, _ = self._create_pool(htr_token, self.token_a, fee=3)
+        pool_key2, _ = self._create_pool(htr_token, self.token_b, fee=5)
+
+        # Create another pool with the same token but different fee
+        pool_key3, _ = self._create_pool(htr_token, self.token_a, fee=10)
+
+        # Get all token prices in HTR
+        token_prices = self.runner.call_view_method(
+            self.nc_id, "get_all_token_prices_in_htr"
+        )
+
+        # Verify HTR itself has a price of 1
+        self.assertEqual(token_prices[htr_token.hex()], 1_000000)
+
+        # Verify token_a and token_b are in the map
+        self.assertIn(self.token_a.hex(), token_prices)
+        self.assertIn(self.token_b.hex(), token_prices)
+
+        # Verify the token_a price uses the pool with the lowest fee (pool_key1 with fee=3)
+        token_a_price = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_htr", self.token_a
+        )
+        self.assertEqual(token_prices[self.token_a.hex()], token_a_price)
+
+        # Create a non-HTR pool
+        non_htr_pool_key, _ = self._create_pool(self.token_b, self.token_c)
+
+        # Verify token_c is not in the HTR token map
+        token_c_price = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_htr", self.token_c
+        )
+        self.assertEqual(token_c_price, 0)
+
+    def test_token_prices_in_usd(self):
+        """Test getting token prices in USD"""
+        # Create HTR token UID (all zeros)
+        htr_token = HTR_UID
+
+        # Create a USD token (using token_a as a stand-in for a stablecoin)
+        usd_token = self.token_a
+
+        # Create an HTR-USD pool with 1 HTR = 10 USD
+        htr_usd_pool_key, _ = self._create_pool(
+            htr_token, usd_token, fee=3, reserve_a=1000_00, reserve_b=10000_00
+        )
+
+        # Set the HTR-USD pool
+        tx = self._get_any_tx()
+        owner_context = Context(
+            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+        )
+
+        self.runner.call_public_method(
+            self.nc_id, "set_htr_usd_pool", owner_context, htr_token, usd_token, 3
+        )
+
+        # Create a token-HTR pool with 1 token_b = 2 HTR
+        token_b_htr_pool_key, _ = self._create_pool(
+            htr_token, self.token_b, fee=3, reserve_a=2000_00, reserve_b=1000_00
+        )
+
+        # Get token_b price in HTR
+        token_b_price_in_htr = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_htr", self.token_b
+        )
+        # Should be around 2_000000 (2 HTR per token_b)
+        self.assertGreater(token_b_price_in_htr, 1_900000)
+        self.assertLess(token_b_price_in_htr, 2_100000)
+
+        # Get token_b price in USD
+        token_b_price_in_usd = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_usd", self.token_b
+        )
+        # Should be around 20_000000 (2 HTR * 10 USD per HTR)
+        self.assertGreater(token_b_price_in_usd, 19_000000)
+        self.assertLess(token_b_price_in_usd, 21_000000)
+
+        # Get all token prices in USD
+        token_prices_in_usd = self.runner.call_view_method(
+            self.nc_id, "get_all_token_prices_in_usd"
+        )
+
+        # Verify HTR price in USD
+        self.assertIn(htr_token.hex(), token_prices_in_usd)
+        # Should be around 10_000000 (10 USD per HTR)
+        self.assertGreater(token_prices_in_usd[htr_token.hex()], 9_500000)
+        self.assertLess(token_prices_in_usd[htr_token.hex()], 10_500000)
+
+        # Verify token_b price in USD matches the individual call
+        self.assertIn(self.token_b.hex(), token_prices_in_usd)
+        self.assertEqual(token_prices_in_usd[self.token_b.hex()], token_b_price_in_usd)
 
     def test_add_authorized_signer(self):
         """Test adding an authorized signer"""

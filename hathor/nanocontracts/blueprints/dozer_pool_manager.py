@@ -14,11 +14,10 @@
 
 ## TODO:
 # - Include cross pool swap
-# - Include select HTR-USDT pool for price returns
-# - Include HTR pool-token map to help on price calculation
 
 from typing import Any, NamedTuple
 
+from hathor.conf import settings
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
@@ -36,6 +35,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 PRECISION = 10**20
+HTR_UID = settings.HATHOR_TOKEN_UID
 
 
 # Custom error classes
@@ -123,6 +123,7 @@ class DozerPoolManager(Blueprint):
     default_fee: Amount
     default_protocol_fee: Amount
     authorized_signers: dict[Address, bool]  # Addresses authorized to sign pools
+    htr_usd_pool_key: str  # Reference pool key for HTR-USD price calculations
 
     # Pool registry - token_a:token_b:fee -> exists
     pool_exists: dict[str, bool]
@@ -134,6 +135,11 @@ class DozerPoolManager(Blueprint):
     # Signed pools for dApp listing
     signed_pools: list[str]  # List of all signed pools
     pool_signers: dict[str, Address]  # pool_key -> signer_address
+
+    # Price calculation
+    htr_token_map: dict[
+        TokenUid, str
+    ]  # token -> pool_key with lowest fee (for HTR pairs)
 
     # Pool data - using composite keys (token_a:token_b:fee)
     # Every pool data structure follows similar organization to Dozer_Pool_v1_1
@@ -608,14 +614,27 @@ class DozerPoolManager(Blueprint):
         self.all_pools.append(pool_key)
 
         # Update token to pools mapping
-        partial = self.token_to_pools.get(token_a, [])
-        partial.append(pool_key)
-        self.token_to_pools[token_a] = partial
+        partial_a = self.token_to_pools.get(token_a, [])
+        partial_a.append(pool_key)
+        self.token_to_pools[token_a] = partial_a
 
         # For token_b
-        partial = self.token_to_pools.get(token_b, [])
-        partial.append(pool_key)
-        self.token_to_pools[token_b] = partial
+        partial_b = self.token_to_pools.get(token_b, [])
+        partial_b.append(pool_key)
+        self.token_to_pools[token_b] = partial_b
+
+        # Update HTR token map if this is an HTR pool
+        if token_a == HTR_UID or token_b == HTR_UID:
+            other_token = token_b if token_a == HTR_UID else token_a
+
+            # If token not in map or new pool has lower fee, update the map
+            current_pool_key = self.htr_token_map.get(other_token)
+            if (
+                current_pool_key is None
+                or self.pool_fee_numerator[pool_key]
+                < self.pool_fee_numerator[current_pool_key]
+            ):
+                self.htr_token_map[other_token] = pool_key
 
         return pool_key
 
@@ -1308,6 +1327,197 @@ class DozerPoolManager(Blueprint):
             True if the address is an authorized signer, False otherwise
         """
         return self.authorized_signers.get(address, False)
+
+    @public
+    def set_htr_usd_pool(
+        self, ctx: Context, token_a: TokenUid, token_b: TokenUid, fee: Amount
+    ) -> None:
+        """Set the HTR-USD pool for price calculations.
+
+        Only the owner can set the HTR-USD pool.
+        The pool must exist and contain HTR as one of the tokens.
+
+        Args:
+            ctx: The transaction context
+            token_a: First token of the pair
+            token_b: Second token of the pair
+            fee: Fee for the pool
+
+        Raises:
+            Unauthorized: If the caller is not the owner
+            PoolNotFound: If the pool does not exist
+            InvalidTokens: If neither token is HTR
+        """
+        if ctx.address != self.owner:
+            raise Unauthorized("Only the owner can set the HTR-USD pool")
+
+        # Ensure tokens are ordered
+        if token_a > token_b:
+            token_a, token_b = token_b, token_a
+
+        pool_key = self._get_pool_key(token_a, token_b, fee)
+        self._validate_pool_exists(pool_key)
+
+        # Verify that one of the tokens is HTR
+        if token_a != HTR_UID and token_b != HTR_UID:
+            raise InvalidTokens("HTR-USD pool must contain HTR as one of the tokens")
+
+        self.htr_usd_pool_key = pool_key
+
+    @view
+    def get_htr_usd_pool(self) -> str | None:
+        """Get the current HTR-USD pool key.
+
+        Returns:
+            The pool key of the HTR-USD pool, or None if not set
+        """
+        return self.htr_usd_pool_key
+
+    @view
+    def get_token_price_in_htr(self, token: TokenUid) -> float:
+        """Get the price of a token in HTR.
+
+        Args:
+            token: The token to get the price for
+
+        Returns:
+            The price of the token in HTR with 6 decimal places, or 0 if not available
+        """
+        # HTR itself has a price of 1 in HTR
+        if token == HTR_UID:
+            return 1_000000  # 1 with 6 decimal places
+
+        # Check if we have this token in the HTR token map
+        pool_key = self.htr_token_map.get(token)
+        if pool_key is None:
+            return 0
+
+        reserve_a = self.pool_reserve_a[pool_key]
+        reserve_b = self.pool_reserve_b[pool_key]
+
+        # Determine which reserve is HTR and which is the token
+        if self.pool_token_a[pool_key] == HTR_UID:
+            htr_reserve = reserve_a
+            token_reserve = reserve_b
+        else:
+            htr_reserve = reserve_b
+            token_reserve = reserve_a
+
+        # Calculate price: HTR per token with 6 decimal places
+        if token_reserve == 0:
+            return 0
+
+        return (htr_reserve * 1_000000) // token_reserve
+
+    @view
+    def get_all_token_prices_in_htr(self) -> dict[str, float]:
+        """Get the prices of all tokens that have HTR pools in HTR.
+
+        Returns:
+            A dictionary mapping token UIDs (hex) to their prices in HTR with 6 decimal places
+        """
+        result = {}
+        result[HTR_UID.hex()] = 1_000000  # HTR itself has a price of 1 in HTR
+
+        # We can't use a for loop in public methods, but this is a view method
+        for pool_key in self.all_pools:
+            token_a = self.pool_token_a[pool_key]
+            token_b = self.pool_token_b[pool_key]
+            if token_a == HTR_UID:
+                token = token_b
+            elif token_b == HTR_UID:
+                token = token_a
+            else:
+                continue
+            price = self.get_token_price_in_htr(token)
+            if price > 0:
+                result[token.hex()] = price
+
+        return result
+
+    @view
+    def get_token_price_in_usd(self, token: TokenUid) -> float:
+        """Get the price of a token in USD.
+
+        Args:
+            token: The token to get the price for
+
+        Returns:
+            The price of the token in USD with 6 decimal places, or 0 if not available
+        """
+        # First, check if we have a HTR-USD pool set
+        if not self.htr_usd_pool_key:
+            return 0
+
+        # Get the token price in HTR
+        token_price_in_htr = self.get_token_price_in_htr(token)
+        if token_price_in_htr == 0:
+            return 0
+
+        # Get the HTR price in USD
+        pool_key = self.htr_usd_pool_key
+        reserve_a = self.pool_reserve_a[pool_key]
+        reserve_b = self.pool_reserve_b[pool_key]
+
+        # Determine which reserve is HTR and which is USD
+        if self.pool_token_a[pool_key] == HTR_UID:
+            htr_reserve = reserve_a
+            usd_reserve = reserve_b
+        else:
+            htr_reserve = reserve_b
+            usd_reserve = reserve_a
+
+        # Calculate HTR price in USD with 6 decimal places
+        if htr_reserve == 0:
+            return 0
+
+        htr_price_in_usd = (usd_reserve * 1_000000) // htr_reserve
+
+        # Calculate token price in USD: token_price_in_htr * htr_price_in_usd / 1_000000
+        return (token_price_in_htr * htr_price_in_usd) // 1_000000
+
+    @view
+    def get_all_token_prices_in_usd(self) -> dict[str, float]:
+        """Get the prices of all tokens that have HTR pools in USD.
+
+        Returns:
+            A dictionary mapping token UIDs (hex) to their prices in USD with 6 decimal places
+        """
+        # First, check if we have a HTR-USD pool set
+        if not self.htr_usd_pool_key:
+            return {}
+
+        # Get all token prices in HTR
+        token_prices_in_htr = self.get_all_token_prices_in_htr()
+        if not token_prices_in_htr:
+            return {}
+
+        # Get the HTR price in USD
+        pool_key = self.htr_usd_pool_key
+        reserve_a = self.pool_reserve_a[pool_key]
+        reserve_b = self.pool_reserve_b[pool_key]
+
+        # Determine which reserve is HTR and which is USD
+        if self.pool_token_a[pool_key] == HTR_UID:
+            htr_reserve = reserve_a
+            usd_reserve = reserve_b
+        else:
+            htr_reserve = reserve_b
+            usd_reserve = reserve_a
+
+        # Calculate HTR price in USD with 6 decimal places
+        if htr_reserve == 0:
+            return {}
+
+        htr_price_in_usd = (usd_reserve * 1_000000) // htr_reserve
+
+        # Calculate all token prices in USD
+        result = {}
+        for token_hex, price_in_htr in token_prices_in_htr.items():
+            price_in_usd = (price_in_htr * htr_price_in_usd) // 1_000000
+            result[token_hex] = price_in_usd
+
+        return result
 
     @public
     def change_owner(self, ctx: Context, new_owner: Address) -> None:
