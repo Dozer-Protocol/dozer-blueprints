@@ -1,3 +1,5 @@
+import json
+import math
 import os
 import random
 from logging import getLogger
@@ -113,10 +115,46 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         return result, context
 
     def _remove_liquidity(
-        self, token_a, token_b, fee, amount_a, amount_b, address=None
+        self, token_a, token_b, fee, amount_a, amount_b=None, address=None
     ):
-        """Remove liquidity from an existing pool"""
+        """Remove liquidity from an existing pool
+
+        Args:
+            token_a: First token of the pair
+            token_b: Second token of the pair
+            fee: Fee for the pool
+            amount_a: Amount of token A to withdraw
+            amount_b: Amount of token B to withdraw (optional, will be calculated using quote if not provided)
+            address: Address to remove liquidity from (optional)
+
+        Note:
+            The contract uses the quote method to calculate the optimal amount of token B based on amount_a.
+            If amount_b is less than the optimal amount, the difference is returned as change.
+            If amount_b is not provided, it will be calculated using the quote method.
+        """
+        # Ensure tokens are ordered correctly
+        if token_a > token_b:
+            token_a, token_b = token_b, token_a
+            amount_a, amount_b = amount_b, amount_a
+
+        # Get current reserves
+        reserves = self.runner.call_view_method(
+            self.nc_id, "get_reserves", token_a, token_b, fee
+        )
+
+        # Calculate optimal amount_b using quote if not provided
+        if amount_b is None:
+            amount_b = self.runner.call_view_method(
+                self.nc_id, "quote", amount_a, reserves[0], reserves[1]
+            )
+            # Ensure amount_b is an integer
+            amount_b = int(amount_b)
+
         tx = self._get_any_tx()
+        # Ensure both amounts are integers
+        amount_a = int(amount_a) if amount_a is not None else 0
+        amount_b = int(amount_b) if amount_b is not None else 0
+
         actions = [
             NCAction(NCActionType.WITHDRAWAL, token_a, amount_a),
             NCAction(NCActionType.WITHDRAWAL, token_b, amount_b),
@@ -128,10 +166,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         context = Context(
             actions, tx, address_bytes, timestamp=self.get_current_timestamp()
         )
-        self.runner.call_public_method(
+        result = self.runner.call_public_method(
             self.nc_id, "remove_liquidity", context, token_a, token_b, fee
         )
-        return context
+        return context, result
 
     def _prepare_swap_context(self, token_in, amount_in, token_out, amount_out):
         """Prepare a context for swap operations"""
@@ -317,14 +355,18 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.nc_id, "liquidity_of", add_context.address, pool_key
         )
 
-        # Calculate amount to remove (half of the user's liquidity)
+        # Calculate amount of token A to remove (half of the user's liquidity)
         amount_to_remove_a = (
             initial_reserve_a * initial_user_liquidity // (initial_total_liquidity * 2)
         )
 
-        # Remove liquidity
-        remove_context = self._remove_liquidity(
-            self.token_a, self.token_b, 3, amount_to_remove_a, 0, add_context.address
+        # Remove liquidity - the optimal amount of token B will be calculated using quote
+        remove_context, _ = self._remove_liquidity(
+            self.token_a,
+            self.token_b,
+            3,
+            amount_to_remove_a,
+            address=add_context.address,
         )
 
         # Verify reserves decreased
@@ -1255,23 +1297,23 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 self.token_b,
                 3,
             )
-            
+
     def test_get_user_pools(self):
         """Test retrieving all pools where a user has liquidity"""
         # Create multiple pools
         pool_key1, _ = self._create_pool(self.token_a, self.token_b, fee=3)
         pool_key2, _ = self._create_pool(self.token_a, self.token_c, fee=5)
         pool_key3, _ = self._create_pool(self.token_b, self.token_c, fee=10)
-        
+
         # Create a user address
         user_address, _ = self._get_any_address()
-        
+
         # Initially, user should have no pools
         user_pools = self.runner.call_view_method(
             self.nc_id, "get_user_pools", user_address
         )
         self.assertEqual(len(user_pools), 0)
-        
+
         # Add liquidity to the first pool
         context = Context(
             [
@@ -1285,14 +1327,14 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.runner.call_public_method(
             self.nc_id, "add_liquidity", context, self.token_a, self.token_b, 3
         )
-        
+
         # Now user should have one pool
         user_pools = self.runner.call_view_method(
             self.nc_id, "get_user_pools", user_address
         )
         self.assertEqual(len(user_pools), 1)
         self.assertEqual(user_pools[0], pool_key1)
-        
+
         # Add liquidity to the third pool
         context = Context(
             [
@@ -1306,7 +1348,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.runner.call_public_method(
             self.nc_id, "add_liquidity", context, self.token_b, self.token_c, 10
         )
-        
+
         # Now user should have two pools
         user_pools = self.runner.call_view_method(
             self.nc_id, "get_user_pools", user_address
@@ -1314,22 +1356,26 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(len(user_pools), 2)
         self.assertIn(pool_key1, user_pools)
         self.assertIn(pool_key3, user_pools)
-        
+
     def test_get_user_positions(self):
         """Test retrieving detailed information about all user positions"""
         # Create multiple pools
-        pool_key1, _ = self._create_pool(self.token_a, self.token_b, fee=3, reserve_a=1000_00, reserve_b=2000_00)
-        pool_key2, _ = self._create_pool(self.token_a, self.token_c, fee=5, reserve_a=1500_00, reserve_b=1500_00)
-        
+        pool_key1, _ = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=1000_00, reserve_b=2000_00
+        )
+        pool_key2, _ = self._create_pool(
+            self.token_a, self.token_c, fee=5, reserve_a=1500_00, reserve_b=1500_00
+        )
+
         # Create a user address
         user_address, _ = self._get_any_address()
-        
+
         # Initially, user should have no positions
         positions = self.runner.call_view_method(
             self.nc_id, "get_user_positions", user_address
         )
         self.assertEqual(len(positions), 0)
-        
+
         # Add liquidity to the first pool
         context = Context(
             [
@@ -1343,14 +1389,14 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.runner.call_public_method(
             self.nc_id, "add_liquidity", context, self.token_a, self.token_b, 3
         )
-        
+
         # Now user should have one position
         positions = self.runner.call_view_method(
             self.nc_id, "get_user_positions", user_address
         )
         self.assertEqual(len(positions), 1)
         self.assertIn(pool_key1, positions)
-        
+
         # Verify position details
         position = positions[pool_key1]
         self.assertGreater(position["liquidity"], 0)
@@ -1359,8 +1405,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertGreater(position["token_b_amount"], 0)
         self.assertEqual(position["token_a"], self.token_a)
         self.assertEqual(position["token_b"], self.token_b)
-        self.assertEqual(position["fee"], 3/1000)
-        
+        self.assertEqual(position["fee"], 3 / 1000)
+
         # Add liquidity to the second pool
         context = Context(
             [
@@ -1374,7 +1420,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.runner.call_public_method(
             self.nc_id, "add_liquidity", context, self.token_a, self.token_c, 5
         )
-        
+
         # Now user should have two positions
         positions = self.runner.call_view_method(
             self.nc_id, "get_user_positions", user_address
@@ -1382,7 +1428,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(len(positions), 2)
         self.assertIn(pool_key1, positions)
         self.assertIn(pool_key2, positions)
-        
+
         # Verify second position details
         position = positions[pool_key2]
         self.assertGreater(position["liquidity"], 0)
@@ -1391,4 +1437,363 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertGreater(position["token_b_amount"], 0)
         self.assertEqual(position["token_a"], self.token_a)
         self.assertEqual(position["token_b"], self.token_c)
-        self.assertEqual(position["fee"], 5/1000)
+        self.assertEqual(position["fee"], 5 / 1000)
+
+    def test_random_user_interactions(self):
+        """Test random user interactions with pools to stress test the contract.
+        This test performs 50 random operations (add liquidity, remove liquidity, swaps)
+        and verifies state consistency after each operation.
+        """
+        # Create a pool with initial reserves
+        initial_reserve_a = 10000_00
+        initial_reserve_b = 10000_00
+        fee = 3
+        pool_key, _ = self._create_pool(
+            self.token_a,
+            self.token_b,
+            fee=fee,
+            reserve_a=initial_reserve_a,
+            reserve_b=initial_reserve_b,
+        )
+
+        # Helper functions to get current reserves and calculate expected output
+        def get_reserves():
+            return self.runner.call_view_method(
+                self.nc_id, "get_reserves", self.token_a, self.token_b, fee
+            )
+
+        def get_amount_out(amount_in, reserve_in, reserve_out):
+            amount_in_with_fee = amount_in * (1000 - fee)
+            numerator = amount_in_with_fee * reserve_out
+            denominator = reserve_in * 1000 + amount_in_with_fee
+            return numerator // denominator
+
+        def calculate_liquidity_amount(
+            amount_a, amount_b, reserve_a, reserve_b, total_liquidity
+        ):
+            """Calculate the expected liquidity tokens for adding liquidity."""
+            if total_liquidity == 0:
+                # First liquidity provision
+                return math.sqrt(amount_a * amount_b)
+            else:
+                # Subsequent liquidity provisions
+                liquidity_a = amount_a * total_liquidity // reserve_a
+                liquidity_b = amount_b * total_liquidity // reserve_b
+                return min(liquidity_a, liquidity_b)
+
+        # Track users, total volume, and transaction count
+        all_users = set()
+        user_liquidities = {}
+        total_volume = 0
+        transactions = 0
+
+        # Get initial state
+        initial_pool_info = self.runner.call_view_method(
+            self.nc_id, "pool_info", pool_key
+        )
+        initial_total_liquidity = initial_pool_info["total_liquidity"]
+
+        # Perform random operations
+        for operation_count in range(50):  # 50 random operations
+            # Choose a random action: add liquidity, remove liquidity, swap A to B, or swap B to A
+            action = random.choice(
+                ["add_liquidity", "remove_liquidity", "swap_a_to_b", "swap_b_to_a"]
+            )
+
+            # Get current state before operation
+            reserve_a, reserve_b = get_reserves()
+            pool_info = self.runner.call_view_method(self.nc_id, "pool_info", pool_key)
+            total_liquidity = pool_info["total_liquidity"]
+            current_transaction_count = pool_info["transactions"]
+
+            if action == "add_liquidity":
+                # Random liquidity amounts
+                amount_a = random.randint(10_00, 200_00)
+                # Calculate amount_b to maintain the current ratio
+                amount_b = (
+                    amount_a * reserve_b // reserve_a if reserve_a > 0 else amount_a
+                )
+
+                # Create a random user address
+                address_bytes, _ = self._get_any_address()
+                all_users.add(address_bytes)
+
+                # Get user's current liquidity
+                user_current_liquidity = self.runner.call_view_method(
+                    self.nc_id, "liquidity_of", address_bytes, pool_key
+                )
+
+                # Calculate expected liquidity to be minted
+                expected_liquidity = calculate_liquidity_amount(
+                    amount_a, amount_b, reserve_a, reserve_b, total_liquidity
+                )
+
+                # Add liquidity
+                context = Context(
+                    [
+                        NCAction(NCActionType.DEPOSIT, self.token_a, amount_a),
+                        NCAction(NCActionType.DEPOSIT, self.token_b, amount_b),
+                    ],
+                    self._get_any_tx(),
+                    address_bytes,
+                    timestamp=self.get_current_timestamp(),
+                )
+                result = self.runner.call_public_method(
+                    self.nc_id,
+                    "add_liquidity",
+                    context,
+                    self.token_a,
+                    self.token_b,
+                    fee,
+                )
+
+                # Check if any change was returned
+                change_token = None
+                change_amount = 0
+                if result:
+                    change_token, change_amount = result
+
+                # Adjust expected amounts if change was returned
+                if change_token == self.token_a:
+                    amount_a -= change_amount
+                elif change_token == self.token_b:
+                    amount_b -= change_amount
+
+                # Assert reserves after adding liquidity
+                new_reserve_a, new_reserve_b = get_reserves()
+                self.assertEqual(new_reserve_a, reserve_a + amount_a)
+                self.assertEqual(new_reserve_b, reserve_b + amount_b)
+
+                # Get user's new liquidity
+                user_new_liquidity = self.runner.call_view_method(
+                    self.nc_id, "liquidity_of", address_bytes, pool_key
+                )
+                liquidity_added = user_new_liquidity - user_current_liquidity
+
+                # Store user's liquidity for later verification
+                user_liquidities[address_bytes] = user_new_liquidity
+
+                # Assert total liquidity increased by the expected amount
+                new_pool_info = self.runner.call_view_method(
+                    self.nc_id, "pool_info", pool_key
+                )
+                new_total_liquidity = new_pool_info["total_liquidity"]
+                self.assertEqual(new_total_liquidity, total_liquidity + liquidity_added)
+
+            elif action == "remove_liquidity" and len(all_users) > 0:
+                # Choose a random user who has added liquidity
+                user_address = random.choice(list(all_users))
+
+                # Get user's liquidity
+                user_liquidity = self.runner.call_view_method(
+                    self.nc_id, "liquidity_of", user_address, pool_key
+                )
+
+                if user_liquidity > 0:
+                    # Calculate amount_a based on liquidity share (half of their liquidity)
+                    user_info = self.runner.call_view_method(
+                        self.nc_id, "user_info", user_address, pool_key
+                    )
+                    amount_a = user_info["token_a_amount"] // 2
+
+                    # Calculate the expected amount_b using the quote method
+                    expected_amount_b = self.runner.call_view_method(
+                        self.nc_id, "quote", amount_a, reserve_a, reserve_b
+                    )
+
+                    # Calculate expected liquidity to be burned
+                    expected_liquidity_burned = amount_a * total_liquidity // reserve_a
+
+                    # Remove liquidity using the helper method
+                    _, result = self._remove_liquidity(
+                        self.token_a, self.token_b, fee, amount_a, address=user_address
+                    )
+
+                    # Assert reserves after removing liquidity
+                    new_reserve_a, new_reserve_b = get_reserves()
+                    self.assertEqual(new_reserve_a, reserve_a - amount_a)
+                    self.assertEqual(new_reserve_b, reserve_b - expected_amount_b)
+
+                    # Get user's new liquidity
+                    user_new_liquidity = self.runner.call_view_method(
+                        self.nc_id, "liquidity_of", user_address, pool_key
+                    )
+                    liquidity_removed = user_liquidity - user_new_liquidity
+
+                    # Update stored user liquidity
+                    user_liquidities[user_address] = user_new_liquidity
+
+                    # Assert total liquidity decreased by the expected amount
+                    new_pool_info = self.runner.call_view_method(
+                        self.nc_id, "pool_info", pool_key
+                    )
+                    new_total_liquidity = new_pool_info["total_liquidity"]
+                    self.assertEqual(
+                        new_total_liquidity, total_liquidity - liquidity_removed
+                    )
+
+            elif action == "swap_a_to_b":
+                # Random swap amount
+                swap_amount_a = random.randint(1_00, 100_00)
+                expected_amount_b = get_amount_out(swap_amount_a, reserve_a, reserve_b)
+
+                if expected_amount_b > 0:
+                    # Create a random user address
+                    address_bytes, _ = self._get_any_address()
+                    all_users.add(address_bytes)
+
+                    # Execute swap
+                    context = Context(
+                        [
+                            NCAction(NCActionType.DEPOSIT, self.token_a, swap_amount_a),
+                            NCAction(
+                                NCActionType.WITHDRAWAL, self.token_b, expected_amount_b
+                            ),
+                        ],
+                        self._get_any_tx(),
+                        address_bytes,
+                        timestamp=self.get_current_timestamp(),
+                    )
+                    result = self.runner.call_public_method(
+                        self.nc_id,
+                        "swap_exact_tokens_for_tokens",
+                        context,
+                        self.token_a,
+                        self.token_b,
+                        fee,
+                    )
+                    transactions += 1
+                    total_volume += swap_amount_a
+
+                    # Assert reserves after swapping
+                    new_reserve_a, new_reserve_b = get_reserves()
+                    self.assertEqual(new_reserve_a, reserve_a + swap_amount_a)
+                    self.assertEqual(new_reserve_b, reserve_b - result.amount_out)
+                    self.assertEqual(result.amount_out, expected_amount_b)
+
+                    # Assert total liquidity remains unchanged (except for protocol fees)
+                    new_pool_info = self.runner.call_view_method(
+                        self.nc_id, "pool_info", pool_key
+                    )
+                    new_total_liquidity = new_pool_info["total_liquidity"]
+                    # Protocol fees may increase total liquidity slightly
+                    self.assertGreaterEqual(new_total_liquidity, total_liquidity)
+
+                    # Assert transaction count increased
+                    self.assertEqual(
+                        new_pool_info["transactions"], current_transaction_count + 1
+                    )
+
+            elif action == "swap_b_to_a":
+                # Random swap amount
+                swap_amount_b = random.randint(1_00, 100_00)
+                expected_amount_a = get_amount_out(swap_amount_b, reserve_b, reserve_a)
+
+                if expected_amount_a > 0:
+                    # Create a random user address
+                    address_bytes, _ = self._get_any_address()
+                    all_users.add(address_bytes)
+
+                    # Execute swap
+                    context = Context(
+                        [
+                            NCAction(NCActionType.DEPOSIT, self.token_b, swap_amount_b),
+                            NCAction(
+                                NCActionType.WITHDRAWAL, self.token_a, expected_amount_a
+                            ),
+                        ],
+                        self._get_any_tx(),
+                        address_bytes,
+                        timestamp=self.get_current_timestamp(),
+                    )
+
+                    result = self.runner.call_public_method(
+                        self.nc_id,
+                        "swap_exact_tokens_for_tokens",
+                        context,
+                        self.token_b,
+                        self.token_a,
+                        fee,
+                    )
+                    transactions += 1
+                    total_volume += swap_amount_b
+
+                    # Assert reserves after swapping
+                    new_reserve_a, new_reserve_b = get_reserves()
+                    self.assertEqual(new_reserve_a, reserve_a - result.amount_out)
+                    self.assertEqual(new_reserve_b, reserve_b + swap_amount_b)
+                    self.assertEqual(result.amount_out, expected_amount_a)
+
+                    # Assert total liquidity remains unchanged (except for protocol fees)
+                    new_pool_info = self.runner.call_view_method(
+                        self.nc_id, "pool_info", pool_key
+                    )
+                    new_total_liquidity = new_pool_info["total_liquidity"]
+                    # Protocol fees may increase total liquidity slightly
+                    self.assertGreaterEqual(new_total_liquidity, total_liquidity)
+
+                    # Assert transaction count increased
+                    self.assertEqual(
+                        new_pool_info["transactions"], current_transaction_count + 1
+                    )
+
+            # Assert that reserves are always positive after each action
+            current_reserve_a, current_reserve_b = get_reserves()
+            self.assertGreater(current_reserve_a, 0)
+            self.assertGreater(current_reserve_b, 0)
+
+            # Verify pool state consistency after each operation
+            current_pool_info = self.runner.call_view_method(
+                self.nc_id, "pool_info", pool_key
+            )
+            self.assertEqual(current_pool_info["reserve_a"], current_reserve_a)
+            self.assertEqual(current_pool_info["reserve_b"], current_reserve_b)
+
+        # Final assertions
+        final_reserve_a, final_reserve_b = get_reserves()
+        final_pool_info = self.runner.call_view_method(
+            self.nc_id, "pool_info", pool_key
+        )
+        final_total_liquidity = final_pool_info["total_liquidity"]
+
+        # Verify reserves match what we expect
+        self.assertEqual(final_pool_info["reserve_a"], final_reserve_a)
+        self.assertEqual(final_pool_info["reserve_b"], final_reserve_b)
+
+        # Verify transaction count
+        self.assertEqual(final_pool_info["transactions"], transactions)
+
+        # Verify total liquidity
+        self.assertEqual(final_pool_info["total_liquidity"], final_total_liquidity)
+
+        # Check that the sum of all user liquidities equals total liquidity (minus protocol fees)
+        total_user_liquidity = 0
+        for user in all_users:
+            user_liquidity = self.runner.call_view_method(
+                self.nc_id, "liquidity_of", user, pool_key
+            )
+            total_user_liquidity += user_liquidity
+
+            # Verify user_info is consistent with liquidity
+            if user_liquidity > 0:
+                user_info = self.runner.call_view_method(
+                    self.nc_id, "user_info", user, pool_key
+                )
+                expected_token_a = (
+                    final_reserve_a * user_liquidity // final_total_liquidity
+                )
+                expected_token_b = (
+                    final_reserve_b * user_liquidity // final_total_liquidity
+                )
+
+                # Allow for small rounding differences
+                self.assertAlmostEqual(
+                    user_info["token_a_amount"], expected_token_a, delta=10
+                )
+                self.assertAlmostEqual(
+                    user_info["token_b_amount"], expected_token_b, delta=10
+                )
+
+        # Account for protocol fees that might have been collected
+        # Protocol fees increase total_liquidity but don't belong to any user
+        self.assertLessEqual(total_user_liquidity, final_total_liquidity)
