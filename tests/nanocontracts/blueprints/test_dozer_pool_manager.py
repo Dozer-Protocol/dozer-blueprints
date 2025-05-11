@@ -1308,47 +1308,133 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
     def test_front_quote_exact_tokens_for_tokens(self):
         """Test quoting exact tokens for tokens with direct swap"""
-        # Create a pool
+        # Create a pool with specific reserves for precise calculations
+        reserve_a = 100000_00
+        reserve_b = 200000_00
+        fee = 3
+        fee_denominator = 1000
         pool_key, _ = self._create_pool(
-            self.token_a, self.token_b, fee=3, reserve_a=100000_00, reserve_b=200000_00
+            self.token_a, self.token_b, fee=fee, reserve_a=reserve_a, reserve_b=reserve_b
         )
+
+        # Calculate the expected output amount using the same formula as the contract
+        # amount_out = (reserve_out * amount_in * (fee_denominator - fee)) // (reserve_in * fee_denominator + amount_in * (fee_denominator - fee))
+        amount_in = 100_00
+        a = fee_denominator - fee  # 997
+        b = fee_denominator  # 1000
+        expected_amount_out = (reserve_b * amount_in * a) // (reserve_a * b + amount_in * a)
 
         # Get a quote for exact tokens
         quote = self.runner.call_view_method(
             self.nc_id,
             "front_quote_exact_tokens_for_tokens",
-            100_00,
+            amount_in,
             self.token_a,
             self.token_b,
-            3,
+            fee,
         )
 
         # Verify the quote contains expected fields
-        self.assertIn("amount_out", quote)
-        self.assertIn("price_impact", quote)
-        self.assertIn("path", quote)
-        self.assertIn("amounts", quote)
+        self.assertIn("amount_out", quote, "Quote should contain amount_out field")
+        self.assertIn("price_impact", quote, "Quote should contain price_impact field")
+        self.assertIn("path", quote, "Quote should contain path field")
+        self.assertIn("amounts", quote, "Quote should contain amounts field")
 
-        # Verify the path exists (but don't check exact format)
-        self.assertTrue(quote["path"])
+        # Verify the path matches the pool key
+        self.assertEqual(
+            quote["path"], 
+            pool_key,
+            "Path should match the pool key for direct swap",
+        )
 
-        # The output amount should be approximately 200_00 (2:1 ratio) minus fees
-        self.assertGreater(quote["amount_out"], 190_00)
-        self.assertLess(quote["amount_out"], 200_00)
+        # Verify the exact output amount
+        self.assertEqual(
+            quote["amount_out"],
+            expected_amount_out,
+            "Output amount doesn't match expected calculation",
+        )
+
+        # Verify the amounts array contains input and output amounts
+        self.assertEqual(
+            quote["amounts"],
+            [amount_in, expected_amount_out],
+            "Amounts array should contain input and output amounts",
+        )
+
+        # Calculate expected price impact
+        # Calculate quote (no fee)
+        no_fee_quote = (amount_in * reserve_b) // reserve_a
+        expected_price_impact = 100 * (no_fee_quote - expected_amount_out) / expected_amount_out - fee / 10
+        if expected_price_impact < 0:
+            expected_price_impact = 0
+
+        # Verify price impact (allowing for small floating point differences)
+        self.assertAlmostEqual(
+            quote["price_impact"],
+            expected_price_impact,
+            delta=0.01,
+            msg="Price impact doesn't match expected calculation",
+        )
 
         # Test the reverse direction
+        amount_in_reverse = 100_00
+        expected_amount_out_reverse = (reserve_a * amount_in_reverse * a) // (reserve_b * b + amount_in_reverse * a)
+
         quote_reverse = self.runner.call_view_method(
             self.nc_id,
             "front_quote_exact_tokens_for_tokens",
-            100_00,
+            amount_in_reverse,
             self.token_b,
             self.token_a,
-            3,
+            fee,
         )
 
-        # The output amount should be approximately 50_00 (1:2 ratio) minus fees
-        self.assertGreater(quote_reverse["amount_out"], 45_00)
-        self.assertLess(quote_reverse["amount_out"], 50_00)
+        # Verify the exact output amount for reverse direction
+        self.assertEqual(
+            quote_reverse["amount_out"],
+            expected_amount_out_reverse,
+            "Reverse output amount doesn't match expected calculation",
+        )
+
+        # Verify the amounts array for reverse direction
+        self.assertEqual(
+            quote_reverse["amounts"],
+            [amount_in_reverse, expected_amount_out_reverse],
+            "Reverse amounts array should contain input and output amounts",
+        )
+
+        # Test with a non-existent direct pool (should find a path)
+        # Create a token_a -> token_c pool and a token_c -> token_b pool
+        self._create_pool(
+            self.token_a, self.token_c, fee=fee, reserve_a=100000_00, reserve_b=150000_00
+        )
+        self._create_pool(
+            self.token_c, self.token_b, fee=fee, reserve_a=150000_00, reserve_b=300000_00
+        )
+
+        # Get a quote for a multi-hop path
+        multi_hop_quote = self.runner.call_view_method(
+            self.nc_id,
+            "front_quote_exact_tokens_for_tokens",
+            amount_in,
+            self.token_a,
+            self.token_b,
+            fee,
+        )
+
+        # Verify the multi-hop path exists and is different from the direct pool key
+        self.assertNotEqual(
+            multi_hop_quote["path"],
+            pool_key,
+            "Multi-hop path should be different from direct pool key",
+        )
+
+        # Verify the amounts array has 3 elements for a 2-hop path
+        self.assertEqual(
+            len(multi_hop_quote["amounts"]),
+            3,
+            "Multi-hop amounts array should have 3 elements for a 2-hop path",
+        )
 
     def test_front_quote_tokens_for_exact_tokens(self):
         """Test quoting tokens for exact tokens with direct swap"""
