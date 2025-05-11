@@ -2048,8 +2048,6 @@ class DozerPoolManager(Blueprint):
                 # If direct pool doesn't exist, try to find a path
                 return self.find_best_swap_path(amount_in, token_in, token_out, 3)
 
-            amount_out = self.get_amount_out(amount_in, token_in, token_out, fee)
-
             # Calculate price impact
             reserve_in = 0
             reserve_out = 0
@@ -2060,6 +2058,10 @@ class DozerPoolManager(Blueprint):
             else:
                 reserve_in = self.pool_reserve_b[pool_key]
                 reserve_out = self.pool_reserve_a[pool_key]
+                
+            # Calculate amount_out using the correct parameters
+            fee_denominator = 1000
+            amount_out = self.get_amount_out(amount_in, reserve_in, reserve_out, fee, fee_denominator)
 
             # Calculate quote (no fee)
             quote = (amount_in * reserve_out) // reserve_in
@@ -2130,8 +2132,6 @@ class DozerPoolManager(Blueprint):
                     "amounts": new_result["amounts"],
                 }
 
-            amount_in = self.get_amount_in(amount_out, token_in, token_out, fee)
-
             # Calculate price impact
             reserve_in = 0
             reserve_out = 0
@@ -2142,6 +2142,10 @@ class DozerPoolManager(Blueprint):
             else:
                 reserve_in = self.pool_reserve_b[pool_key]
                 reserve_out = self.pool_reserve_a[pool_key]
+                
+            # Calculate amount_in using the correct parameters
+            fee_denominator = 1000
+            amount_in = self.get_amount_in(amount_out, reserve_in, reserve_out, fee, fee_denominator)
 
             # Calculate quote (no fee)
             quote = (amount_out * reserve_in) // reserve_out
