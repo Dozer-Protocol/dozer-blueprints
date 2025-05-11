@@ -945,8 +945,17 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         usd_token = self.token_a
 
         # Create an HTR-USD pool with 1 HTR = 10 USD
+        # Using exact values to ensure precise price calculations
+        htr_reserve = 1000_00  # 1000 HTR
+        usd_reserve = 10000_00  # 10000 USD
         htr_usd_pool_key, _ = self._create_pool(
-            htr_token, usd_token, fee=3, reserve_a=1000_00, reserve_b=10000_00
+            htr_token, usd_token, fee=3, reserve_a=htr_reserve, reserve_b=usd_reserve
+        )
+
+        # Verify the HTR-USD pool doesn't exist in the contract yet
+        self.assertIsNone(
+            self.nc_storage.get("htr_usd_pool_key", default=None),
+            "HTR-USD pool should not be set yet",
         )
 
         # Set the HTR-USD pool
@@ -959,26 +968,64 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.nc_id, "set_htr_usd_pool", owner_context, htr_token, usd_token, 3
         )
 
-        # Create a token-HTR pool with 1 token_b = 2 HTR
-        token_b_htr_pool_key, _ = self._create_pool(
-            htr_token, self.token_b, fee=3, reserve_a=2000_00, reserve_b=1000_00
+        # Verify the HTR-USD pool was set correctly
+        self.assertEqual(
+            self.nc_storage.get("htr_usd_pool_key"),
+            htr_usd_pool_key,
+            "HTR-USD pool key was not set correctly",
         )
+
+        # Create a token-HTR pool with 1 token_b = 2 HTR
+        # Using exact values for precise price calculations
+        token_b_htr_reserve_htr = 2000_00  # 2000 HTR
+        token_b_htr_reserve_b = 1000_00  # 1000 token_b
+        token_b_htr_pool_key, _ = self._create_pool(
+            htr_token,
+            self.token_b,
+            fee=3,
+            reserve_a=token_b_htr_reserve_htr,
+            reserve_b=token_b_htr_reserve_b,
+        )
+
+        # Calculate expected token_b price in HTR (with 6 decimal places)
+        # Price = (HTR reserve * 1_000000) // token_b reserve
+        expected_token_b_price_in_htr = (
+            token_b_htr_reserve_htr * 1_000000
+        ) // token_b_htr_reserve_b
 
         # Get token_b price in HTR
         token_b_price_in_htr = self.runner.call_view_method(
             self.nc_id, "get_token_price_in_htr", self.token_b
         )
-        # Should be around 2_000000 (2 HTR per token_b)
-        self.assertGreater(token_b_price_in_htr, 1_900000)
-        self.assertLess(token_b_price_in_htr, 2_100000)
+
+        # Verify exact price calculation
+        self.assertEqual(
+            token_b_price_in_htr,
+            expected_token_b_price_in_htr,
+            "Token B price in HTR doesn't match expected value",
+        )
+
+        # Calculate expected HTR price in USD (with 6 decimal places)
+        # Price = (USD reserve * 1_000000) // HTR reserve
+        expected_htr_price_in_usd = (usd_reserve * 1_000000) // htr_reserve
+
+        # Calculate expected token_b price in USD
+        # Price = (token_b price in HTR * HTR price in USD) // 1_000000
+        expected_token_b_price_in_usd = (
+            expected_token_b_price_in_htr * expected_htr_price_in_usd
+        ) // 1_000000
 
         # Get token_b price in USD
         token_b_price_in_usd = self.runner.call_view_method(
             self.nc_id, "get_token_price_in_usd", self.token_b
         )
-        # Should be around 20_000000 (2 HTR * 10 USD per HTR)
-        self.assertGreater(token_b_price_in_usd, 19_000000)
-        self.assertLess(token_b_price_in_usd, 21_000000)
+
+        # Verify exact price calculation
+        self.assertEqual(
+            token_b_price_in_usd,
+            expected_token_b_price_in_usd,
+            "Token B price in USD doesn't match expected value",
+        )
 
         # Get all token prices in USD
         token_prices_in_usd = self.runner.call_view_method(
@@ -986,14 +1033,38 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
 
         # Verify HTR price in USD
-        self.assertIn(htr_token.hex(), token_prices_in_usd)
-        # Should be around 10_000000 (10 USD per HTR)
-        self.assertGreater(token_prices_in_usd[htr_token.hex()], 9_500000)
-        self.assertLess(token_prices_in_usd[htr_token.hex()], 10_500000)
+        self.assertIn(
+            htr_token.hex(),
+            token_prices_in_usd,
+            "HTR token not found in token prices",
+        )
+        self.assertEqual(
+            token_prices_in_usd[htr_token.hex()],
+            expected_htr_price_in_usd,
+            "HTR price in USD doesn't match expected value",
+        )
 
         # Verify token_b price in USD matches the individual call
-        self.assertIn(self.token_b.hex(), token_prices_in_usd)
-        self.assertEqual(token_prices_in_usd[self.token_b.hex()], token_b_price_in_usd)
+        self.assertIn(
+            self.token_b.hex(),
+            token_prices_in_usd,
+            "Token B not found in token prices",
+        )
+        self.assertEqual(
+            token_prices_in_usd[self.token_b.hex()],
+            token_b_price_in_usd,
+            "Token B price in USD from get_all_token_prices_in_usd doesn't match individual call",
+        )
+
+        # Test with a token that doesn't have an HTR pool
+        token_c_price_in_usd = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_usd", self.token_c
+        )
+        self.assertEqual(
+            token_c_price_in_usd,
+            0,
+            "Token C price in USD should be 0 since it doesn't have an HTR pool",
+        )
 
     def test_add_authorized_signer(self):
         """Test adding an authorized signer"""
