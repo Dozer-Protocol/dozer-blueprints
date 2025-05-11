@@ -479,18 +479,44 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Initial reserves
         initial_reserve_a = self.nc_storage.get(f"pool_reserve_a:{pool_key}")
         initial_reserve_b = self.nc_storage.get(f"pool_reserve_b:{pool_key}")
+        initial_volume_a = self.nc_storage.get(f"pool_volume_a:{pool_key}")
+        initial_volume_b = self.nc_storage.get(f"pool_volume_b:{pool_key}")
+        initial_total_liquidity = self.nc_storage.get(
+            f"pool_total_liquidity:{pool_key}"
+        )
+        initial_owner_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", self.owner_address, pool_key
+        )
+
+        # Define the exact amount of output tokens we want
+        swap_amount_out = 500_00
+
+        # Calculate the required input amount using get_amount_in
+        # This is the same calculation used in the blueprint
+        fee_numerator = self.nc_storage.get(f"pool_fee_numerator:{pool_key}")
+        fee_denominator = self.nc_storage.get(f"pool_fee_denominator:{pool_key}")
+        required_amount_in = self.runner.call_view_method(
+            self.nc_id,
+            "get_amount_in",
+            swap_amount_out,
+            initial_reserve_a,
+            initial_reserve_b,
+            fee_numerator,
+            fee_denominator,
+        )
+
+        # Add some extra for slippage
+        swap_amount_in = required_amount_in + 10_00
+        expected_slippage = swap_amount_in - required_amount_in
+
+        # Calculate expected fee amount
+        fee_amount = required_amount_in * fee_numerator // fee_denominator
+
+        # Calculate expected protocol fee
+        protocol_fee_percent = self.nc_storage.get("default_protocol_fee")
+        protocol_fee_amount = fee_amount * protocol_fee_percent // 100
 
         # Execute swap
-        swap_amount_out = 100_00
-        swap_amount_in = self.runner.call_view_method(
-            self.nc_id,
-            "front_quote_tokens_for_exact_tokens",
-            swap_amount_out,
-            self.token_a,
-            self.token_b,
-            3,
-        )["amounts"][0]
-
         result, context = self._swap_tokens_for_exact_tokens(
             self.token_a, self.token_b, 3, swap_amount_in, swap_amount_out
         )
@@ -498,20 +524,82 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Verify reserves changed correctly
         self.assertEqual(
             self.nc_storage.get(f"pool_reserve_a:{pool_key}"),
-            initial_reserve_a + swap_amount_in,
+            initial_reserve_a + required_amount_in,
+            "Reserve A did not increase by the expected amount",
         )
         self.assertEqual(
             self.nc_storage.get(f"pool_reserve_b:{pool_key}"),
             initial_reserve_b - swap_amount_out,
+            "Reserve B did not decrease by the expected amount",
         )
 
         # Verify transaction count increased
-        self.assertEqual(self.nc_storage.get(f"pool_transactions:{pool_key}"), 1)
+        self.assertEqual(
+            self.nc_storage.get(f"pool_transactions:{pool_key}"),
+            1,
+            "Transaction count did not increase correctly",
+        )
+
+        # Verify volume updated correctly
+        self.assertEqual(
+            self.nc_storage.get(f"pool_volume_a:{pool_key}"),
+            initial_volume_a + required_amount_in,
+            "Volume A did not increase by the expected amount",
+        )
+        self.assertEqual(
+            self.nc_storage.get(f"pool_volume_b:{pool_key}"),
+            initial_volume_b,
+            "Volume B should not have changed",
+        )
+
+        # Verify protocol fee was collected correctly
+        # Check that owner's liquidity increased
+        new_owner_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", self.owner_address, pool_key
+        )
+        self.assertGreater(
+            new_owner_liquidity,
+            initial_owner_liquidity,
+            "Owner's liquidity should have increased due to protocol fees",
+        )
+
+        # Verify total liquidity increased by the same amount
+        new_total_liquidity = self.nc_storage.get(f"pool_total_liquidity:{pool_key}")
+        liquidity_increase = new_total_liquidity - initial_total_liquidity
+        self.assertEqual(
+            new_owner_liquidity - initial_owner_liquidity,
+            liquidity_increase,
+            "Owner's liquidity increase should match total liquidity increase",
+        )
 
         # Verify swap result
-        self.assertEqual(result.token_in, self.token_a)
-        self.assertEqual(result.token_out, self.token_b)
-        self.assertEqual(result.amount_out, swap_amount_out)
+        self.assertEqual(
+            result.amount_in, swap_amount_in, "Input amount in result doesn't match"
+        )
+        self.assertEqual(
+            result.slippage_in,
+            expected_slippage,
+            "Slippage in result doesn't match expected value",
+        )
+        self.assertEqual(
+            result.token_in, self.token_a, "Input token in result doesn't match"
+        )
+        self.assertEqual(
+            result.amount_out, swap_amount_out, "Output amount in result doesn't match"
+        )
+        self.assertEqual(
+            result.token_out, self.token_b, "Output token in result doesn't match"
+        )
+
+        # Verify user balance was updated with slippage
+        user_balance = self.runner.call_view_method(
+            self.nc_id, "balance_of", context.address, pool_key
+        )
+        self.assertEqual(
+            user_balance[0],
+            expected_slippage,
+            "User balance should have been updated with slippage amount",
+        )
 
     def test_change_protocol_fee(self):
         """Test changing the protocol fee"""
