@@ -98,9 +98,16 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
         return pool_key, context.address
 
-    def _add_liquidity(self, token_a, token_b, fee, amount_a, amount_b):
+    def _add_liquidity(self, token_a, token_b, fee, amount_a, amount_b=None):
         """Add liquidity to an existing pool"""
         tx = self._get_any_tx()
+        if amount_b is None:
+            reserve_a, reserve_b = self.runner.call_view_method(
+                self.nc_id, "get_reserves", token_a, token_b, fee
+            )
+            amount_b = self.runner.call_view_method(
+                self.nc_id, "quote", amount_a, reserve_a, reserve_b
+            )
         actions = [
             NCAction(NCActionType.DEPOSIT, token_a, amount_a),
             NCAction(NCActionType.DEPOSIT, token_b, amount_b),
@@ -308,31 +315,45 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             f"pool_total_liquidity:{pool_key}"
         )
 
+        amount_a = 500_00
+        reserve_a, reserve_b = self.runner.call_view_method(
+            self.nc_id, "get_reserves", self.token_a, self.token_b, 3
+        )
+        amount_b = self.runner.call_view_method(
+            self.nc_id, "quote", amount_a, reserve_a, reserve_b
+        )
+
+        liquidity_increase = initial_total_liquidity * amount_a // reserve_a
         # Add liquidity
         result, context = self._add_liquidity(
-            self.token_a, self.token_b, 3, 500_00, 600_00
+            self.token_a,
+            self.token_b,
+            3,
+            amount_a,
+            amount_b,
         )
 
         # Verify reserves increased
-        self.assertGreater(
-            self.nc_storage.get(f"pool_reserve_a:{pool_key}"), initial_reserve_a
+        self.assertEqual(
+            self.nc_storage.get(f"pool_reserve_a:{pool_key}"),
+            initial_reserve_a + amount_a,
         )
-        self.assertGreater(
-            self.nc_storage.get(f"pool_reserve_b:{pool_key}"), initial_reserve_b
+        self.assertEqual(
+            self.nc_storage.get(f"pool_reserve_b:{pool_key}"),
+            initial_reserve_b + amount_b,
         )
 
         # Verify total liquidity increased
-        self.assertGreater(
+        self.assertEqual(
             self.nc_storage.get(f"pool_total_liquidity:{pool_key}"),
-            initial_total_liquidity,
+            initial_total_liquidity + liquidity_increase,
         )
 
-        # Verify user liquidity was updated
-        self.assertGreater(
+        self.assertEqual(
             self.runner.call_view_method(
-                self.nc_id, "liquidity_of", creator_address, pool_key
+                self.nc_id, "liquidity_of", context.address, pool_key
             ),
-            0,
+            liquidity_increase,
         )
 
     def test_remove_liquidity(self):
@@ -342,7 +363,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Add liquidity with a new user
         result, add_context = self._add_liquidity(
-            self.token_a, self.token_b, 3, 500_00, 600_00
+            self.token_a,
+            self.token_b,
+            3,
+            500_00,
         )
 
         # Initial values before removal
@@ -360,35 +384,47 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             initial_reserve_a * initial_user_liquidity // (initial_total_liquidity * 2)
         )
 
-        # Remove liquidity - the optimal amount of token B will be calculated using quote
+        liquidity_decrease = initial_user_liquidity // 2
+
+        amount_to_remove_b = self.runner.call_view_method(
+            self.nc_id,
+            "quote",
+            amount_to_remove_a,
+            initial_reserve_a,
+            initial_reserve_b,
+        )
+
         remove_context, _ = self._remove_liquidity(
             self.token_a,
             self.token_b,
             3,
             amount_to_remove_a,
+            amount_to_remove_b,
             address=add_context.address,
         )
 
         # Verify reserves decreased
-        self.assertLess(
-            self.nc_storage.get(f"pool_reserve_a:{pool_key}"), initial_reserve_a
+        self.assertEqual(
+            self.nc_storage.get(f"pool_reserve_a:{pool_key}"),
+            initial_reserve_a - amount_to_remove_a,
         )
-        self.assertLess(
-            self.nc_storage.get(f"pool_reserve_b:{pool_key}"), initial_reserve_b
+        self.assertEqual(
+            self.nc_storage.get(f"pool_reserve_b:{pool_key}"),
+            initial_reserve_b - amount_to_remove_b,
         )
 
         # Verify total liquidity decreased
-        self.assertLess(
+        self.assertEqual(
             self.nc_storage.get(f"pool_total_liquidity:{pool_key}"),
-            initial_total_liquidity,
+            initial_total_liquidity - liquidity_decrease,
         )
 
         # Verify user liquidity decreased
-        self.assertLess(
+        self.assertEqual(
             self.runner.call_view_method(
                 self.nc_id, "liquidity_of", remove_context.address, pool_key
             ),
-            initial_user_liquidity,
+            initial_user_liquidity - liquidity_decrease,
         )
 
     def test_swap_exact_tokens_for_tokens(self):
@@ -404,9 +440,14 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Execute swap
         swap_amount_in = 100_00
-        swap_amount_out = (
-            90_00  # Less than the maximum possible to account for slippage
-        )
+        swap_amount_out = self.runner.call_view_method(
+            self.nc_id,
+            "front_quote_exact_tokens_for_tokens",
+            swap_amount_in,
+            self.token_a,
+            self.token_b,
+            3,
+        )["amounts"][1]
         result, context = self._swap_exact_tokens_for_tokens(
             self.token_a, self.token_b, 3, swap_amount_in, swap_amount_out
         )
@@ -440,15 +481,24 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         initial_reserve_b = self.nc_storage.get(f"pool_reserve_b:{pool_key}")
 
         # Execute swap
-        swap_amount_in = 110_00  # More than needed to account for slippage
         swap_amount_out = 100_00
+        swap_amount_in = self.runner.call_view_method(
+            self.nc_id,
+            "front_quote_tokens_for_exact_tokens",
+            swap_amount_out,
+            self.token_a,
+            self.token_b,
+            3,
+        )["amounts"][0]
+
         result, context = self._swap_tokens_for_exact_tokens(
             self.token_a, self.token_b, 3, swap_amount_in, swap_amount_out
         )
 
         # Verify reserves changed correctly
-        self.assertGreater(
-            self.nc_storage.get(f"pool_reserve_a:{pool_key}"), initial_reserve_a
+        self.assertEqual(
+            self.nc_storage.get(f"pool_reserve_a:{pool_key}"),
+            initial_reserve_a + swap_amount_in,
         )
         self.assertEqual(
             self.nc_storage.get(f"pool_reserve_b:{pool_key}"),
