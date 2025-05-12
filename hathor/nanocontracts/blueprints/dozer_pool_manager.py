@@ -12,9 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-## TODO:
-# - DONE: Add view methods for user info of all pools he has liquidity
-
 from typing import Any, NamedTuple
 
 from hathor.conf import settings
@@ -1615,11 +1612,14 @@ class DozerPoolManager(Blueprint):
                 if user_liquidity > 0:
                     # Get detailed information about this position
                     positions[pool_key] = self.user_info(address, pool_key)
-                    
+
                     # Add token information to make it more user-friendly
                     positions[pool_key]["token_a"] = self.pool_token_a[pool_key]
                     positions[pool_key]["token_b"] = self.pool_token_b[pool_key]
-                    positions[pool_key]["fee"] = self.pool_fee_numerator[pool_key] / self.pool_fee_denominator[pool_key]
+                    positions[pool_key]["fee"] = (
+                        self.pool_fee_numerator[pool_key]
+                        / self.pool_fee_denominator[pool_key]
+                    )
         return positions
 
     @view
@@ -2058,10 +2058,12 @@ class DozerPoolManager(Blueprint):
             else:
                 reserve_in = self.pool_reserve_b[pool_key]
                 reserve_out = self.pool_reserve_a[pool_key]
-                
+
             # Calculate amount_out using the correct parameters
             fee_denominator = 1000
-            amount_out = self.get_amount_out(amount_in, reserve_in, reserve_out, fee, fee_denominator)
+            amount_out = self.get_amount_out(
+                amount_in, reserve_in, reserve_out, fee, fee_denominator
+            )
 
             # Calculate quote (no fee)
             quote = (amount_in * reserve_out) // reserve_in
@@ -2142,10 +2144,12 @@ class DozerPoolManager(Blueprint):
             else:
                 reserve_in = self.pool_reserve_b[pool_key]
                 reserve_out = self.pool_reserve_a[pool_key]
-                
+
             # Calculate amount_in using the correct parameters
             fee_denominator = 1000
-            amount_in = self.get_amount_in(amount_out, reserve_in, reserve_out, fee, fee_denominator)
+            amount_in = self.get_amount_in(
+                amount_out, reserve_in, reserve_out, fee, fee_denominator
+            )
 
             # Calculate quote (no fee)
             quote = (amount_out * reserve_in) // reserve_out

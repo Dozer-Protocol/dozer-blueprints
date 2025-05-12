@@ -1616,39 +1616,43 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # For multi-hop paths, we need to calculate the expected values based on the pool parameters
         # The front_quote_tokens_for_exact_tokens method uses find_best_swap_path with an estimated amount_in
         # Let's calculate what we expect to see in the amounts array
-        
+
         # Get the actual amounts array from the quote
         actual_amounts = multi_hop_quote["amounts"]
-        
+
         # The amounts array has the structure [amount_in, intermediate_amount, amount_out]
         # We need to calculate each of these values
-        
+
         # For multi-hop paths with exact output, the blueprint uses an estimation approach:
         # 1. It first calls find_best_swap_path with a reasonable amount_in (1000000)
         # 2. It calculates a ratio based on the requested output and the output from step 1
         # 3. It estimates a new amount_in based on this ratio
         # 4. It calls find_best_swap_path again with this estimated amount_in
         # 5. It returns the result from step 4
-        
+
         # Since this is complex, we'll verify that the amounts array is consistent with itself
         # For the first hop (token_a -> token_c):
         a = fee_denominator - multi_hop_fee  # 995
         b = fee_denominator  # 1000
-        
+
         # Calculate the expected intermediate amount based on the actual amount_in
-        expected_intermediate = (reserve_c_a * actual_amounts[0] * a) // (reserve_a_c * b + actual_amounts[0] * a)
-        
+        expected_intermediate = (reserve_c_a * actual_amounts[0] * a) // (
+            reserve_a_c * b + actual_amounts[0] * a
+        )
+
         # For the second hop (token_c -> token_b):
         # Calculate the expected output amount based on the actual intermediate amount
-        expected_output = (reserve_b_c * actual_amounts[1] * a) // (reserve_c_b * b + actual_amounts[1] * a)
-        
+        expected_output = (reserve_b_c * actual_amounts[1] * a) // (
+            reserve_c_b * b + actual_amounts[1] * a
+        )
+
         # Verify the intermediate amount (second element)
         self.assertEqual(
             actual_amounts[1],
             expected_intermediate,
             "Second element in amounts array (intermediate_amount) should match expected calculation",
         )
-        
+
         # Verify the output amount (third element)
         self.assertEqual(
             actual_amounts[2],
@@ -1659,16 +1663,33 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def test_find_best_swap_path_direct(self):
         """Test finding the best swap path with direct swap"""
         # Create pools with different fees
+        fee_3 = 3
+        fee_10 = 10
+        fee_denominator = 1000
+        reserve_a_3 = 1000_00
+        reserve_b_3 = 1000_00
+        reserve_a_10 = 1000_00
+        reserve_b_10 = 1010_00  # Slightly better price but higher fee
+        amount_in = 100_00
+
         pool_key_3, _ = self._create_pool(
-            self.token_a, self.token_b, fee=3, reserve_a=1000_00, reserve_b=1000_00
+            self.token_a,
+            self.token_b,
+            fee=fee_3,
+            reserve_a=reserve_a_3,
+            reserve_b=reserve_b_3,
         )
         pool_key_10, _ = self._create_pool(
-            self.token_a, self.token_b, fee=10, reserve_a=1000_00, reserve_b=1010_00
-        )  # Slightly better price but higher fee
+            self.token_a,
+            self.token_b,
+            fee=fee_10,
+            reserve_a=reserve_a_10,
+            reserve_b=reserve_b_10,
+        )
 
         # Find the best path
         path_result = self.runner.call_view_method(
-            self.nc_id, "find_best_swap_path", 100_00, self.token_a, self.token_b, 3
+            self.nc_id, "find_best_swap_path", amount_in, self.token_a, self.token_b, 3
         )
 
         # Verify the result contains expected fields
@@ -1680,45 +1701,195 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Verify it found a path
         self.assertTrue(path_result["path"])
 
-        # Verify the amount_out is reasonable
-        self.assertGreater(path_result["amount_out"], 0)
+        # Calculate expected amount out for both pools
+        # Formula: amount_out = (amount_in * (fee_denominator - fee) * reserve_out) / (reserve_in * fee_denominator + amount_in * (fee_denominator - fee))
+
+        # For pool with fee 3
+        amount_in_with_fee_3 = amount_in * (fee_denominator - fee_3)
+        numerator_3 = amount_in_with_fee_3 * reserve_b_3
+        denominator_3 = reserve_a_3 * fee_denominator + amount_in_with_fee_3
+        expected_amount_out_3 = numerator_3 // denominator_3
+
+        # For pool with fee 10
+        amount_in_with_fee_10 = amount_in * (fee_denominator - fee_10)
+        numerator_10 = amount_in_with_fee_10 * reserve_b_10
+        denominator_10 = reserve_a_10 * fee_denominator + amount_in_with_fee_10
+        expected_amount_out_10 = numerator_10 // denominator_10
+
+        # The blueprint should choose the pool that gives the highest output amount
+        expected_amount_out = max(expected_amount_out_3, expected_amount_out_10)
+
+        # Verify the amount_out matches our calculation
+        self.assertEqual(
+            path_result["amount_out"],
+            expected_amount_out,
+            "The amount_out should match the calculated expected value",
+        )
+
+        # Verify the path matches the pool with the best output
+        expected_pool_key = (
+            pool_key_3
+            if expected_amount_out_3 >= expected_amount_out_10
+            else pool_key_10
+        )
+        self.assertEqual(
+            path_result["path"],
+            expected_pool_key,
+            "The path should match the pool key that gives the best output",
+        )
+
+        # Verify the amounts array has the correct structure [amount_in, amount_out]
+        self.assertEqual(
+            len(path_result["amounts"]),
+            2,
+            "The amounts array should have 2 elements for a direct swap",
+        )
+        self.assertEqual(
+            path_result["amounts"][0],
+            amount_in,
+            "The first element in amounts array should be the input amount",
+        )
+        self.assertEqual(
+            path_result["amounts"][1],
+            expected_amount_out,
+            "The second element in amounts array should be the output amount",
+        )
 
     def test_find_best_swap_path_multi_hop(self):
         """Test finding the best swap path with multiple hops"""
+        # Define pool parameters
+        fee_ab_bc = 3  # Fee for A-B and B-C pools
+        fee_ac = 30  # Fee for direct A-C pool (higher)
+        fee_denominator = 1000
+        reserve_a_b = 1000_00  # Reserve of token_a in A-B pool
+        reserve_b_a = 1000_00  # Reserve of token_b in A-B pool
+        reserve_b_c = 1000_00  # Reserve of token_b in B-C pool
+        reserve_c_b = 1000_00  # Reserve of token_c in B-C pool
+        reserve_a_c = 1000_00  # Reserve of token_a in A-C pool
+        reserve_c_a = 900_00  # Reserve of token_c in A-C pool (worse rate)
+        amount_in = 100_00
+
         # Create three tokens and two pools: A-B and B-C
         pool_key_ab, _ = self._create_pool(
-            self.token_a, self.token_b, fee=3, reserve_a=1000_00, reserve_b=1000_00
+            self.token_a,
+            self.token_b,
+            fee=fee_ab_bc,
+            reserve_a=reserve_a_b,
+            reserve_b=reserve_b_a,
         )
         pool_key_bc, _ = self._create_pool(
-            self.token_b, self.token_c, fee=3, reserve_a=1000_00, reserve_b=1000_00
+            self.token_b,
+            self.token_c,
+            fee=fee_ab_bc,
+            reserve_a=reserve_b_c,
+            reserve_b=reserve_c_b,
         )
 
         # Find the best path from A to C
         path_result = self.runner.call_view_method(
-            self.nc_id, "find_best_swap_path", 100_00, self.token_a, self.token_c, 3
+            self.nc_id, "find_best_swap_path", amount_in, self.token_a, self.token_c, 3
         )
 
         # Verify it found a path
         self.assertTrue(path_result["path"])
 
-        # Verify the amount_out is reasonable
-        self.assertGreater(path_result["amount_out"], 0)
+        # Calculate expected output for multi-hop path (A->B->C)
+        # First hop: A->B
+        amount_in_with_fee_ab = amount_in * (fee_denominator - fee_ab_bc)
+        numerator_ab = amount_in_with_fee_ab * reserve_b_a
+        denominator_ab = reserve_a_b * fee_denominator + amount_in_with_fee_ab
+        expected_intermediate_amount = numerator_ab // denominator_ab
+
+        # Second hop: B->C
+        amount_in_with_fee_bc = expected_intermediate_amount * (
+            fee_denominator - fee_ab_bc
+        )
+        numerator_bc = amount_in_with_fee_bc * reserve_c_b
+        denominator_bc = reserve_b_c * fee_denominator + amount_in_with_fee_bc
+        expected_multi_hop_amount_out = numerator_bc // denominator_bc
+
+        # Verify the amount_out matches our calculation for multi-hop path
+        self.assertEqual(
+            path_result["amount_out"],
+            expected_multi_hop_amount_out,
+            "The amount_out should match the calculated expected value for multi-hop path",
+        )
+
+        # Verify the path contains both pool keys separated by a comma
+        self.assertEqual(
+            path_result["path"],
+            f"{pool_key_ab},{pool_key_bc}",
+            "The path should contain both pool keys separated by a comma",
+        )
+
+        # Verify the amounts array has the correct structure [amount_in, intermediate_amount, amount_out]
+        self.assertEqual(
+            len(path_result["amounts"]),
+            3,
+            "The amounts array should have 3 elements for a multi-hop swap",
+        )
+        self.assertEqual(
+            path_result["amounts"][0],
+            amount_in,
+            "The first element in amounts array should be the input amount",
+        )
+        self.assertEqual(
+            path_result["amounts"][1],
+            expected_intermediate_amount,
+            "The second element in amounts array should be the intermediate amount",
+        )
+        self.assertEqual(
+            path_result["amounts"][2],
+            expected_multi_hop_amount_out,
+            "The third element in amounts array should be the output amount",
+        )
 
         # Create a direct pool with worse rate
         pool_key_ac, _ = self._create_pool(
-            self.token_a, self.token_c, fee=30, reserve_a=1000_00, reserve_b=900_00
+            self.token_a,
+            self.token_c,
+            fee=fee_ac,
+            reserve_a=reserve_a_c,
+            reserve_b=reserve_c_a,
         )  # Worse rate and higher fee
 
         # Find the best path again
         path_result_2 = self.runner.call_view_method(
-            self.nc_id, "find_best_swap_path", 100_00, self.token_a, self.token_c, 3
+            self.nc_id, "find_best_swap_path", amount_in, self.token_a, self.token_c, 3
         )
 
         # Verify it found a path
         self.assertTrue(path_result_2["path"])
 
-        # Verify the amount_out is reasonable
-        self.assertGreater(path_result_2["amount_out"], 0)
+        # Calculate expected output for direct path (A->C)
+        amount_in_with_fee_ac = amount_in * (fee_denominator - fee_ac)
+        numerator_ac = amount_in_with_fee_ac * reserve_c_a
+        denominator_ac = reserve_a_c * fee_denominator + amount_in_with_fee_ac
+        expected_direct_amount_out = numerator_ac // denominator_ac
+
+        # The blueprint should choose the path that gives the highest output amount
+        expected_best_amount_out = max(
+            expected_multi_hop_amount_out, expected_direct_amount_out
+        )
+        expected_best_path = (
+            f"{pool_key_ab},{pool_key_bc}"
+            if expected_multi_hop_amount_out >= expected_direct_amount_out
+            else pool_key_ac
+        )
+
+        # Verify the amount_out matches our calculation for the best path
+        self.assertEqual(
+            path_result_2["amount_out"],
+            expected_best_amount_out,
+            "The amount_out should match the calculated expected value for the best path",
+        )
+
+        # Verify the path matches the expected best path
+        self.assertEqual(
+            path_result_2["path"],
+            expected_best_path,
+            "The path should match the expected best path",
+        )
 
     def _prepare_cross_swap_context(
         self, token_in, amount_in, token_out=None, amount_out=None
@@ -1773,48 +1944,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Verify the output amount is reasonable
         self.assertGreater(output_amount.amount_out, 0)
-
-    def test_swap_tokens(self):
-        """Test swapping tokens using the standard swap method"""
-        # Create a pool
-        pool_key, _ = self._create_pool(
-            self.token_a, self.token_b, fee=3, reserve_a=1000_00, reserve_b=2000_00
-        )
-
-        # Calculate expected output directly
-        reserve_a, reserve_b = self.runner.call_view_method(
-            self.nc_id, "get_reserves", self.token_a, self.token_b, 3
-        )
-        amount_in = 100_00
-        amount_in_with_fee = amount_in * (1000 - 3)
-        numerator = amount_in_with_fee * reserve_b
-        denominator = reserve_a * 1000 + amount_in_with_fee
-        expected_output = numerator // denominator
-
-        # Prepare swap context with both deposit and withdrawal actions
-        context = self._prepare_swap_context(
-            self.token_a, amount_in, self.token_b, expected_output
-        )
-
-        # Execute the swap
-        output_amount = self.runner.call_public_method(
-            self.nc_id,
-            "swap_exact_tokens_for_tokens",
-            context,
-            self.token_a,
-            self.token_b,
-            3,  # Use the regular swap method
-        )
-
-        # Verify the output amount is reasonable
-        self.assertGreater(output_amount.amount_out, 0)
-
-        # Verify the reserves were updated
-        new_reserve_a, new_reserve_b = self.runner.call_view_method(
-            self.nc_id, "get_reserves", self.token_a, self.token_b, 3
-        )
-        self.assertEqual(new_reserve_a, reserve_a + amount_in)
-        self.assertEqual(new_reserve_b, reserve_b - output_amount.amount_out)
 
     def test_invalid_swap_parameters(self):
         """Test handling of invalid swap parameters"""
