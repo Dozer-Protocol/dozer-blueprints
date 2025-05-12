@@ -20,7 +20,7 @@ from hathor.nanocontracts.blueprints.dozer_pool_manager import (
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.storage import NCStorage
-from hathor.nanocontracts.types import NCAction, NCActionType
+from hathor.nanocontracts.types import Amount, NCAction, NCActionType
 from hathor.util import not_none
 from hathor.wallet import KeyPair
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
@@ -1910,41 +1910,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
         return context
 
-    def test_swap_cross_pool_direct(self):
-        """Test swapping tokens through a direct path using the cross-pool swap method"""
-        # Create a pool
-        pool_key, _ = self._create_pool(
-            self.token_a, self.token_b, fee=3, reserve_a=1000_00, reserve_b=2000_00
-        )
-
-        # Calculate expected output directly
-        reserve_a, reserve_b = self.runner.call_view_method(
-            self.nc_id, "get_reserves", self.token_a, self.token_b, 3
-        )
-        amount_in = 100_00
-        amount_in_with_fee = amount_in * (1000 - 3)
-        numerator = amount_in_with_fee * reserve_b
-        denominator = reserve_a * 1000 + amount_in_with_fee
-        expected_output = numerator // denominator
-
-        # Prepare swap context with both deposit and withdrawal actions
-        context = self._prepare_swap_context(
-            self.token_a, amount_in, self.token_b, expected_output
-        )
-
-        # Execute the swap using the regular swap method as a reference
-        output_amount = self.runner.call_public_method(
-            self.nc_id,
-            "swap_exact_tokens_for_tokens",
-            context,
-            self.token_a,
-            self.token_b,
-            3,
-        )
-
-        # Verify the output amount is reasonable
-        self.assertGreater(output_amount.amount_out, 0)
-
     def test_invalid_swap_parameters(self):
         """Test handling of invalid swap parameters"""
         # Create a pool
@@ -2491,3 +2456,142 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Account for protocol fees that might have been collected
         # Protocol fees increase total_liquidity but don't belong to any user
         self.assertLessEqual(total_user_liquidity, final_total_liquidity)
+
+    def test_swap_exact_tokens_for_tokens_through_path(self):
+        """Test swapping tokens through a specific path using swap_exact_tokens_for_tokens_through_path"""
+        # Define pool parameters
+        fee_ab_bc = 3  # Fee for A-B and B-C pools
+        fee_denominator = 1000
+        reserve_a_b = 1000_00  # Reserve of token_a in A-B pool
+        reserve_b_a = 1000_00  # Reserve of token_b in A-B pool
+        reserve_b_c = 1000_00  # Reserve of token_b in B-C pool
+        reserve_c_b = 1000_00  # Reserve of token_c in B-C pool
+        amount_in = 100_00
+
+        # Create two pools: A-B and B-C for a multi-hop path
+        pool_key_ab, _ = self._create_pool(
+            self.token_a,
+            self.token_b,
+            fee=fee_ab_bc,
+            reserve_a=reserve_a_b,
+            reserve_b=reserve_b_a,
+        )
+        pool_key_bc, _ = self._create_pool(
+            self.token_b,
+            self.token_c,
+            fee=fee_ab_bc,
+            reserve_a=reserve_b_c,
+            reserve_b=reserve_c_b,
+        )
+
+        # Calculate expected output for multi-hop path (A->B->C)
+        # First hop: A->B
+        amount_in_with_fee_ab = amount_in * (fee_denominator - fee_ab_bc)
+        numerator_ab = amount_in_with_fee_ab * reserve_b_a
+        denominator_ab = reserve_a_b * fee_denominator + amount_in_with_fee_ab
+        expected_intermediate_amount = numerator_ab // denominator_ab
+
+        # Second hop: B->C
+        amount_in_with_fee_bc = expected_intermediate_amount * (
+            fee_denominator - fee_ab_bc
+        )
+        numerator_bc = amount_in_with_fee_bc * reserve_c_b
+        denominator_bc = reserve_b_c * fee_denominator + amount_in_with_fee_bc
+        expected_amount_out = numerator_bc // denominator_bc
+
+        # The path string is a comma-separated list of pool keys
+        path_str = f"{pool_key_ab},{pool_key_bc}"
+
+        # Set min_amount_out to slightly less than expected to account for potential rounding
+        min_amount_out = int(expected_amount_out * 0.99)  # 99% of expected
+
+        # Prepare swap context with deposit action for token_a
+        context = self._prepare_cross_swap_context(
+            self.token_a, amount_in, self.token_c, min_amount_out
+        )
+
+        # Execute the swap through the specified path
+        result = self.runner.call_public_method(
+            self.nc_id,
+            "swap_exact_tokens_for_tokens_through_path",
+            context,
+            amount_in,
+            min_amount_out,
+            path_str,
+        )
+
+        # Verify the result is the expected amount
+        self.assertIsInstance(result, int)
+        self.assertEqual(result, expected_amount_out)
+
+        # Verify the output amount matches our calculation
+        self.assertEqual(
+            result,
+            expected_amount_out,
+            "The output amount should match the calculated expected value",
+        )
+
+        # Verify the reserves were updated correctly
+        # First pool (A-B) should have token_a increased and token_b decreased
+        new_reserve_a_b, new_reserve_b_a = self.runner.call_view_method(
+            self.nc_id, "get_reserves", self.token_a, self.token_b, fee_ab_bc
+        )
+        self.assertEqual(
+            new_reserve_a_b,
+            reserve_a_b + amount_in,
+            "Reserve of token_a in A-B pool should be increased by amount_in",
+        )
+        self.assertEqual(
+            new_reserve_b_a,
+            reserve_b_a - expected_intermediate_amount,
+            "Reserve of token_b in A-B pool should be decreased by intermediate amount",
+        )
+
+        # Second pool (B-C) should have token_b increased and token_c decreased
+        new_reserve_b_c, new_reserve_c_b = self.runner.call_view_method(
+            self.nc_id, "get_reserves", self.token_b, self.token_c, fee_ab_bc
+        )
+        self.assertEqual(
+            new_reserve_b_c,
+            reserve_b_c + expected_intermediate_amount,
+            "Reserve of token_b in B-C pool should be increased by intermediate amount",
+        )
+        self.assertEqual(
+            new_reserve_c_b,
+            reserve_c_b - expected_amount_out,
+            "Reserve of token_c in B-C pool should be decreased by output amount",
+        )
+
+        # Test with an invalid path (non-existent pool key)
+        invalid_path = "invalid_pool_key"
+        context_invalid = self._prepare_cross_swap_context(
+            self.token_a, amount_in, self.token_c, min_amount_out
+        )
+
+        # Verify that an exception is raised for invalid path
+        with self.assertRaises(Exception):
+            self.runner.call_public_method(
+                self.nc_id,
+                "swap_exact_tokens_for_tokens_through_path",
+                context_invalid,
+                amount_in,
+                min_amount_out,
+                invalid_path,
+            )
+
+        # Test with insufficient min_amount_out
+        excessive_min_amount_out = expected_amount_out * 2  # Double the expected output
+        context_insufficient = self._prepare_cross_swap_context(
+            self.token_a, amount_in, self.token_c, excessive_min_amount_out
+        )
+
+        # Verify that an exception is raised for insufficient output
+        with self.assertRaises(Exception):
+            self.runner.call_public_method(
+                self.nc_id,
+                "swap_exact_tokens_for_tokens_through_path",
+                context_insufficient,
+                amount_in,
+                excessive_min_amount_out,
+                path_str,
+            )
