@@ -1049,24 +1049,24 @@ class DozerPoolManager(Blueprint):
 
     @public
     def swap_exact_tokens_for_tokens_through_path(
-        self, ctx: Context, amount_in: Amount, min_amount_out: Amount, path_str: str
-    ) -> Amount:
+        self, ctx: Context, path_str: str
+    ) -> SwapResult:
         """Execute a swap with exact input amount through a specific path of pools.
+
+        The input and output tokens and amounts are extracted from the transaction context.
 
         Args:
             ctx: The transaction context
-            amount_in: The exact amount of input tokens
-            min_amount_out: The minimum amount of output tokens to receive
             path_str: Comma-separated string of pool keys to traverse
 
         Returns:
-            The amount of output tokens received
+            SwapResult with details of the swap
 
         Raises:
             PoolNotFound: If any pool in the path does not exist
-            InsufficientLiquidity: If the output amount is less than min_amount_out
+            InsufficientLiquidity: If there is insufficient liquidity
             InvalidPath: If the path is invalid
-            Unauthorized: If the caller is not authorized to swap
+            InvalidAction: If the actions are invalid
         """
         # Parse the path
         if not path_str:
@@ -1078,24 +1078,26 @@ class DozerPoolManager(Blueprint):
         if len(path) == 0 or len(path) > 3:
             raise InvalidPath("Invalid path length")
 
+        # Find deposit and withdrawal actions
+        deposit_action = None
+        withdrawal_action = None
+        for action in ctx.actions.values():
+            if action.type == NCActionType.DEPOSIT:
+                deposit_action = action
+            elif action.type == NCActionType.WITHDRAWAL:
+                withdrawal_action = action
+
+        if not deposit_action or not withdrawal_action:
+            raise InvalidAction("Missing deposit or withdrawal action")
+
+        # Get the input amount and token from the deposit action
+        amount_in = deposit_action.amount
+        token_in = deposit_action.token_uid
+
         # Get the first pool to determine input token
         first_pool_key = path[0]
         if first_pool_key not in self.all_pools:
             raise PoolNotFound()
-
-        # Determine the input token from the first action
-        if len(ctx.actions) == 0:
-            raise InvalidAction("No deposit action found")
-
-        first_action, second_action = set(ctx.actions.values())
-        if first_action.type != NCActionType.DEPOSIT:
-            raise InvalidAction("First action must be a deposit")
-
-        token_in = first_action.token_uid
-
-        # Verify the deposit amount matches amount_in
-        if first_action.amount != amount_in:
-            raise InvalidAction("Deposit amount does not match amount_in")
 
         # Execute the swap through the path
         current_amount = amount_in
@@ -1121,63 +1123,79 @@ class DozerPoolManager(Blueprint):
 
         # If there's only one hop, we're done
         if len(path) == 1:
-            if first_amount_out < min_amount_out:
-                raise InsufficientLiquidity()
-            return first_amount_out
-
-        # Second hop
-        current_amount = first_amount_out
-        current_token = next_token
-        second_pool_key = path[1]
-
-        if second_pool_key not in self.all_pools:
-            raise PoolNotFound()
-
-        # Determine the output token of the second pool
-        if self.pool_token_a[second_pool_key] == current_token:
-            next_token = self.pool_token_b[second_pool_key]
-        elif self.pool_token_b[second_pool_key] == current_token:
-            next_token = self.pool_token_a[second_pool_key]
+            token_out = next_token
+            amount_out = first_amount_out
         else:
-            raise InvalidPath("Second pool does not contain intermediate token")
+            # Second hop
+            current_amount = first_amount_out
+            current_token = next_token
+            second_pool_key = path[1]
 
-        # Execute the second swap
-        second_amount_out = self._swap(
-            ctx, current_amount, current_token, next_token, second_pool_key
+            if second_pool_key not in self.all_pools:
+                raise PoolNotFound()
+
+            # Determine the output token of the second pool
+            if self.pool_token_a[second_pool_key] == current_token:
+                next_token = self.pool_token_b[second_pool_key]
+            elif self.pool_token_b[second_pool_key] == current_token:
+                next_token = self.pool_token_a[second_pool_key]
+            else:
+                raise InvalidPath("Second pool does not contain intermediate token")
+
+            # Execute the second swap
+            second_amount_out = self._swap(
+                ctx, current_amount, current_token, next_token, second_pool_key
+            )
+
+            # If there are only two hops, we're done
+            if len(path) == 2:
+                token_out = next_token
+                amount_out = second_amount_out
+            else:
+                # Third hop
+                current_amount = second_amount_out
+                current_token = next_token
+                third_pool_key = path[2]
+
+                if third_pool_key not in self.all_pools:
+                    raise PoolNotFound()
+
+                # Determine the output token of the third pool
+                if self.pool_token_a[third_pool_key] == current_token:
+                    next_token = self.pool_token_b[third_pool_key]
+                elif self.pool_token_b[third_pool_key] == current_token:
+                    next_token = self.pool_token_a[third_pool_key]
+                else:
+                    raise InvalidPath("Third pool does not contain intermediate token")
+
+                # Execute the third swap
+                third_amount_out = self._swap(
+                    ctx, current_amount, current_token, next_token, third_pool_key
+                )
+
+                token_out = next_token
+                amount_out = third_amount_out
+
+        # Check if the output amount matches the withdrawal action
+        if withdrawal_action.token_uid != token_out:
+            raise InvalidAction("Withdrawal token does not match output token")
+
+        # Calculate slippage (if the withdrawal amount is less than the calculated output)
+        slippage_out = 0
+        if withdrawal_action.amount < amount_out:
+            slippage_out = amount_out - withdrawal_action.amount
+            # Add slippage to user balance for the output token in the last pool
+            last_pool_key = path[-1]
+            self._update_balance(ctx.address, slippage_out, token_out, last_pool_key)
+            amount_out = withdrawal_action.amount
+
+        return SwapResult(
+            amount_in,
+            0,  # No input slippage in exact input swap
+            token_in,
+            amount_out,
+            token_out
         )
-
-        # If there are only two hops, we're done
-        if len(path) == 2:
-            if second_amount_out < min_amount_out:
-                raise InsufficientLiquidity()
-            return second_amount_out
-
-        # Third hop
-        current_amount = second_amount_out
-        current_token = next_token
-        third_pool_key = path[2]
-
-        if third_pool_key not in self.all_pools:
-            raise PoolNotFound()
-
-        # Determine the output token of the third pool
-        if self.pool_token_a[third_pool_key] == current_token:
-            next_token = self.pool_token_b[third_pool_key]
-        elif self.pool_token_b[third_pool_key] == current_token:
-            next_token = self.pool_token_a[third_pool_key]
-        else:
-            raise InvalidPath("Third pool does not contain intermediate token")
-
-        # Execute the third swap
-        third_amount_out = self._swap(
-            ctx, current_amount, current_token, next_token, third_pool_key
-        )
-
-        # Check if the final output amount is sufficient
-        if third_amount_out < min_amount_out:
-            raise InsufficientLiquidity()
-
-        return third_amount_out
 
     def _swap(
         self,
@@ -1254,24 +1272,24 @@ class DozerPoolManager(Blueprint):
 
     @public
     def swap_tokens_for_exact_tokens_through_path(
-        self, ctx: Context, amount_out: Amount, max_amount_in: Amount, path_str: str
-    ) -> Amount:
+        self, ctx: Context, path_str: str
+    ) -> SwapResult:
         """Execute a swap with exact output amount through a specific path of pools.
+
+        The input and output tokens and amounts are extracted from the transaction context.
 
         Args:
             ctx: The transaction context
-            amount_out: The exact amount of output tokens to receive
-            max_amount_in: The maximum amount of input tokens to spend
             path_str: Comma-separated string of pool keys to traverse
 
         Returns:
-            The amount of input tokens spent
+            SwapResult with details of the swap
 
         Raises:
             PoolNotFound: If any pool in the path does not exist
-            InsufficientLiquidity: If the required input amount exceeds max_amount_in
+            InsufficientLiquidity: If there is insufficient liquidity
             InvalidPath: If the path is invalid
-            Unauthorized: If the caller is not authorized to swap
+            InvalidAction: If the actions are invalid
         """
         # Parse the path
         if not path_str:
@@ -1282,18 +1300,6 @@ class DozerPoolManager(Blueprint):
         # Validate path length
         if len(path) == 0 or len(path) > 3:
             raise InvalidPath("Invalid path length")
-
-        # Determine the input and output tokens from the path
-        # For exact output swaps, we need to work backwards from the last pool to the first
-
-        # Get the last pool to determine output token
-        last_pool_key = path[-1]
-        if last_pool_key not in self.all_pools:
-            raise PoolNotFound()
-
-        # Determine the output token from the last action
-        if len(ctx.actions) < 2:
-            raise InvalidAction("No withdrawal action found")
 
         # Find deposit and withdrawal actions
         deposit_action = None
@@ -1307,11 +1313,13 @@ class DozerPoolManager(Blueprint):
         if not deposit_action or not withdrawal_action:
             raise InvalidAction("Missing deposit or withdrawal action")
 
+        # Get the output amount and token from the withdrawal action
+        amount_out = withdrawal_action.amount
         token_out = withdrawal_action.token_uid
-
-        # Verify the withdrawal amount matches amount_out
-        if withdrawal_action.amount != amount_out:
-            raise InvalidAction("Withdraw amount does not match amount_out")
+        
+        # Get the actual input amount from deposit action
+        actual_amount_in = deposit_action.amount
+        token_in = deposit_action.token_uid
 
         # For a single hop path
         if len(path) == 1:
@@ -1319,17 +1327,11 @@ class DozerPoolManager(Blueprint):
             if pool_key not in self.all_pools:
                 raise PoolNotFound()
 
-            # Determine the input token for this pool
-            if self.pool_token_a[pool_key] == token_out:
-                token_in = self.pool_token_b[pool_key]
-            elif self.pool_token_b[pool_key] == token_out:
-                token_in = self.pool_token_a[pool_key]
-            else:
+            # Verify the tokens match the pool
+            if (token_out != self.pool_token_a[pool_key] and token_out != self.pool_token_b[pool_key]):
                 raise InvalidPath("Pool does not contain output token")
-
-            # Verify the deposit token matches the input token
-            if deposit_action.token_uid != token_in:
-                raise InvalidAction("Deposit token does not match input token")
+            if (token_in != self.pool_token_a[pool_key] and token_in != self.pool_token_b[pool_key]):
+                raise InvalidPath("Pool does not contain input token")
 
             # Calculate the required input amount
             reserve_in = 0
@@ -1350,51 +1352,69 @@ class DozerPoolManager(Blueprint):
                 amount_out, reserve_in, reserve_out, fee, fee_denominator
             )
 
-            # Check if the required input amount exceeds max_amount_in
-            if amount_in > max_amount_in:
-                raise InsufficientLiquidity()
+            # Check if the provided amount is sufficient
+            if actual_amount_in < amount_in:
+                raise InvalidAction("Amount in is too low")
 
-            # Execute the swap
+            # Calculate slippage
+            slippage_in = actual_amount_in - amount_in
+
+            # Update user balance for slippage
+            if slippage_in > 0:
+                self._update_balance(ctx.address, slippage_in, token_in, pool_key)
+
+            # Execute the swap (updates reserves and statistics)
             self._swap(ctx, amount_in, token_in, token_out, pool_key)
 
-            return amount_in
+            return SwapResult(
+                actual_amount_in,
+                slippage_in,
+                token_in,
+                amount_out,
+                token_out
+            )
 
-        # For multi-hop paths (2 or 3 hops), we need to work backwards
-        # This is more complex and requires calculating each step in reverse
-
-        # For a 2-hop path: token_in -> intermediate -> token_out
+        # For multi-hop paths, we need to calculate backwards
+        # This implementation handles 2 or 3 hops
+        
+        # Get the last pool
+        last_pool_key = path[-1]
+        if last_pool_key not in self.all_pools:
+            raise PoolNotFound()
+        
+        # Verify the output token is in the last pool
+        if (token_out != self.pool_token_a[last_pool_key] and 
+            token_out != self.pool_token_b[last_pool_key]):
+            raise InvalidPath("Last pool does not contain output token")
+        
+        # For 2-hop path: token_in -> intermediate -> token_out
         if len(path) == 2:
             # Get the second pool (intermediate -> token_out)
             second_pool_key = path[1]
-            if second_pool_key not in self.all_pools:
-                raise PoolNotFound()
-
+        
             # Determine the intermediate token
             if self.pool_token_a[second_pool_key] == token_out:
                 intermediate_token = self.pool_token_b[second_pool_key]
-            elif self.pool_token_b[second_pool_key] == token_out:
-                intermediate_token = self.pool_token_a[second_pool_key]
             else:
-                raise InvalidPath("Second pool does not contain output token")
-
+                intermediate_token = self.pool_token_a[second_pool_key]
+            
             # Get the first pool (token_in -> intermediate)
             first_pool_key = path[0]
             if first_pool_key not in self.all_pools:
                 raise PoolNotFound()
-
-            # Determine the input token
-            if self.pool_token_a[first_pool_key] == intermediate_token:
-                token_in = self.pool_token_b[first_pool_key]
-            elif self.pool_token_b[first_pool_key] == intermediate_token:
-                token_in = self.pool_token_a[first_pool_key]
-            else:
+            
+            # Verify the input token is in the first pool
+            if (token_in != self.pool_token_a[first_pool_key] and 
+                token_in != self.pool_token_b[first_pool_key]):
+                raise InvalidPath("First pool does not contain input token")
+            
+            # Verify the intermediate token connects the pools
+            if (intermediate_token != self.pool_token_a[first_pool_key] and 
+                intermediate_token != self.pool_token_b[first_pool_key]):
                 raise InvalidPath("First pool does not contain intermediate token")
-
-            # Verify the deposit token matches the input token
-            if deposit_action.token_uid != token_in:
-                raise InvalidAction("Deposit token does not match input token")
-
-            # Calculate the required intermediate amount for the second hop
+            
+            # Calculate backwards from the output
+            # First, calculate how much intermediate token we need
             second_reserve_in = 0
             second_reserve_out = 0
             if self.pool_token_a[second_pool_key] == intermediate_token:
@@ -1403,20 +1423,15 @@ class DozerPoolManager(Blueprint):
             else:
                 second_reserve_in = self.pool_reserve_b[second_pool_key]
                 second_reserve_out = self.pool_reserve_a[second_pool_key]
-
+                
             second_fee = self.pool_fee_numerator[second_pool_key]
             second_fee_denominator = self.pool_fee_denominator[second_pool_key]
-
-            # Calculate the required intermediate amount
+            
             intermediate_amount = self.get_amount_in(
-                amount_out,
-                second_reserve_in,
-                second_reserve_out,
-                second_fee,
-                second_fee_denominator,
+                amount_out, second_reserve_in, second_reserve_out, second_fee, second_fee_denominator
             )
-
-            # Now calculate the required input amount for the first hop
+            
+            # Then, calculate how much input token we need
             first_reserve_in = 0
             first_reserve_out = 0
             if self.pool_token_a[first_pool_key] == token_in:
@@ -1425,42 +1440,52 @@ class DozerPoolManager(Blueprint):
             else:
                 first_reserve_in = self.pool_reserve_b[first_pool_key]
                 first_reserve_out = self.pool_reserve_a[first_pool_key]
-
+                
             first_fee = self.pool_fee_numerator[first_pool_key]
             first_fee_denominator = self.pool_fee_denominator[first_pool_key]
-
-            # Calculate the required input amount
+            
             amount_in = self.get_amount_in(
-                intermediate_amount,
-                first_reserve_in,
-                first_reserve_out,
-                first_fee,
-                first_fee_denominator,
+                intermediate_amount, first_reserve_in, first_reserve_out, first_fee, first_fee_denominator
             )
-
-            # Check if the required input amount exceeds max_amount_in
-            if amount_in > max_amount_in:
-                raise InsufficientLiquidity()
-
-            # Execute the first swap
-            first_output = self._swap(
+            
+            # Check if the provided amount is sufficient
+            if actual_amount_in < amount_in:
+                raise InvalidAction("Amount in is too low")
+                
+            # Calculate slippage
+            slippage_in = actual_amount_in - amount_in
+            
+            # Update user balance for slippage
+            if slippage_in > 0:
+                self._update_balance(ctx.address, slippage_in, token_in, first_pool_key)
+                
+            # Execute the swaps
+            # First swap: token_in -> intermediate
+            first_amount_out = self._swap(
                 ctx, amount_in, token_in, intermediate_token, first_pool_key
             )
-
-            # Execute the second swap
+            
+            # Second swap: intermediate -> token_out
             self._swap(
-                ctx, first_output, intermediate_token, token_out, second_pool_key
+                ctx, first_amount_out, intermediate_token, token_out, second_pool_key
             )
-
-            return amount_in
-
-        # For a 3-hop path, the logic is similar but with one more step
+            
+            return SwapResult(
+                actual_amount_in,
+                slippage_in,
+                token_in,
+                amount_out,
+                token_out
+            )
+            
+        # For 3-hop path: token_in -> first_intermediate -> second_intermediate -> token_out
         if len(path) == 3:
-            # This would be implemented similarly to the 2-hop case but with an additional step
-            # For brevity, we'll raise a NotImplementedError for now
-            raise NotImplementedError("3-hop exact output swaps not yet implemented")
-
-        # Should never reach here due to the path length validation
+            # This would be a more complex implementation following the same pattern as the 2-hop path
+            # For brevity, I'll implement a placeholder that raises an error
+            # In a real implementation, this would calculate through all three hops
+            raise NotImplementedError("3-hop paths are not yet implemented")
+            
+        # This should never happen due to the path length validation above
         raise InvalidPath("Invalid path length")
 
     @public

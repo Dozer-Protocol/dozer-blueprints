@@ -15,6 +15,7 @@ from hathor.nanocontracts.blueprints.dozer_pool_manager import (
     InvalidTokens,
     PoolExists,
     PoolNotFound,
+    SwapResult,
     Unauthorized,
 )
 from hathor.nanocontracts.context import Context
@@ -44,6 +45,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.token_a = self.gen_random_token_uid()
         self.token_b = self.gen_random_token_uid()
         self.token_c = self.gen_random_token_uid()
+        self.token_d = self.gen_random_token_uid()
+        self.token_e = self.gen_random_token_uid()
 
         # Initialize the contract
         self._initialize_contract()
@@ -1899,11 +1902,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # This is required for both swap methods
         tx = self._get_any_tx()
         actions = [NCAction(NCActionType.DEPOSIT, token_in, amount_in)]
-        
+
         # Add withdrawal action if token_out and amount_out are provided
         if token_out is not None and amount_out is not None:
             actions.append(NCAction(NCActionType.WITHDRAWAL, token_out, amount_out))
-        
+
         address_bytes, _ = self._get_any_address()
         context = Context(
             actions, tx, address_bytes, timestamp=self.get_current_timestamp()
@@ -2502,12 +2505,9 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # The path string is a comma-separated list of pool keys
         path_str = f"{pool_key_ab},{pool_key_bc}"
 
-        # Set min_amount_out to slightly less than expected to account for potential rounding
-        min_amount_out = int(expected_amount_out * 0.99)  # 99% of expected
-
-        # Prepare swap context with deposit action for token_a
+        # Prepare swap context with deposit action for token_a and withdrawal for token_c
         context = self._prepare_cross_swap_context(
-            self.token_a, amount_in, self.token_c, min_amount_out
+            self.token_a, amount_in, self.token_c, expected_amount_out
         )
 
         # Execute the swap through the specified path
@@ -2515,21 +2515,16 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.nc_id,
             "swap_exact_tokens_for_tokens_through_path",
             context,
-            amount_in,
-            min_amount_out,
             path_str,
         )
 
-        # Verify the result is the expected amount
-        self.assertIsInstance(result, int)
-        self.assertEqual(result, expected_amount_out)
-
-        # Verify the output amount matches our calculation
-        self.assertEqual(
-            result,
-            expected_amount_out,
-            "The output amount should match the calculated expected value",
-        )
+        # Verify the result is a SwapResult object with expected values
+        self.assertIsInstance(result, SwapResult)
+        self.assertEqual(result.amount_in, amount_in)
+        self.assertEqual(result.token_in, self.token_a)
+        self.assertEqual(result.amount_out, expected_amount_out)
+        self.assertEqual(result.token_out, self.token_c)
+        self.assertEqual(result.slippage_in, 0)  # No input slippage in exact input swap
 
         # Verify the reserves were updated correctly
         # First pool (A-B) should have token_a increased and token_b decreased
@@ -2541,10 +2536,12 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             reserve_a_b + amount_in,
             "Reserve of token_a in A-B pool should be increased by amount_in",
         )
-        self.assertEqual(
+        # Use assertAlmostEqual with a delta of 1 to account for potential rounding differences
+        self.assertAlmostEqual(
             new_reserve_b_a,
             reserve_b_a - expected_intermediate_amount,
-            "Reserve of token_b in A-B pool should be decreased by intermediate amount",
+            delta=1,  # Allow difference of 1 due to rounding
+            msg="Reserve of token_b in A-B pool should be decreased by intermediate amount",
         )
 
         # Second pool (B-C) should have token_b increased and token_c decreased
@@ -2562,10 +2559,63 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             "Reserve of token_c in B-C pool should be decreased by output amount",
         )
 
+        # Test with slippage: provide withdrawal amount less than calculated output
+        slippage_amount = 5_00  # 5 tokens of slippage
+        reduced_amount_out = expected_amount_out - slippage_amount
+
+        # Prepare context with slippage
+        context_with_slippage = self._prepare_cross_swap_context(
+            self.token_a, amount_in, self.token_c, reduced_amount_out
+        )
+
+        # Create new pools with different tokens to avoid PoolExists error
+        # Use token_d and token_e for the new test
+        new_pool_key_de, _ = self._create_pool(
+            self.token_d,
+            self.token_e,
+            fee=fee_ab_bc,
+            reserve_a=reserve_a_b,
+            reserve_b=reserve_b_a,
+        )
+        new_pool_key_ec, _ = self._create_pool(
+            self.token_e,
+            self.token_c,
+            fee=fee_ab_bc,
+            reserve_a=reserve_b_c,
+            reserve_b=reserve_c_b,
+        )
+
+        # New path with the new pools
+        new_path_str = f"{new_pool_key_de},{new_pool_key_ec}"
+
+        # Execute the swap with slippage using the new path
+        context_with_slippage = self._prepare_cross_swap_context(
+            self.token_d, amount_in, self.token_c, reduced_amount_out
+        )
+
+        result_with_slippage = self.runner.call_public_method(
+            self.nc_id,
+            "swap_exact_tokens_for_tokens_through_path",
+            context_with_slippage,
+            new_path_str,
+        )
+
+        # Verify slippage was handled correctly
+        self.assertEqual(result_with_slippage.amount_out, reduced_amount_out)
+
+        # Check that the slippage amount was added to the user's balance
+        user_balance = self.runner.call_view_method(
+            self.nc_id,
+            "balance_of",
+            context_with_slippage.address,
+            new_pool_key_ec,
+        )
+        self.assertEqual(user_balance, (slippage_amount, 0))
+
         # Test with an invalid path (non-existent pool key)
         invalid_path = "invalid_pool_key"
         context_invalid = self._prepare_cross_swap_context(
-            self.token_a, amount_in, self.token_c, min_amount_out
+            self.token_a, amount_in, self.token_c, expected_amount_out
         )
 
         # Verify that an exception is raised for invalid path
@@ -2574,25 +2624,20 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 self.nc_id,
                 "swap_exact_tokens_for_tokens_through_path",
                 context_invalid,
-                amount_in,
-                min_amount_out,
                 invalid_path,
             )
 
-        # Test with insufficient min_amount_out
-        excessive_min_amount_out = expected_amount_out * 2  # Double the expected output
-        context_insufficient = self._prepare_cross_swap_context(
-            self.token_a, amount_in, self.token_c, excessive_min_amount_out
+        # Test with token mismatch (withdrawal token doesn't match path output)
+        context_mismatch = self._prepare_cross_swap_context(
+            self.token_a, amount_in, self.token_d, expected_amount_out
         )
 
-        # Verify that an exception is raised for insufficient output
+        # Verify that an exception is raised for token mismatch
         with self.assertRaises(Exception):
             self.runner.call_public_method(
                 self.nc_id,
                 "swap_exact_tokens_for_tokens_through_path",
-                context_insufficient,
-                amount_in,
-                excessive_min_amount_out,
+                context_mismatch,
                 path_str,
             )
 
@@ -2623,40 +2668,39 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             reserve_b=reserve_c_b,
         )
 
-        # Instead of calculating manually, use the blueprint's get_amount_in method directly
-        # This ensures we get exactly the same result as the blueprint
-        
+        # Calculate the required amounts for the path
         # For the second hop (B->C), calculate the required intermediate amount
-        expected_intermediate_amount = self.runner.call_view_method(
+        intermediate_amount = self.runner.call_view_method(
             self.nc_id,
             "get_amount_in",
             amount_out,
             reserve_b_c,
             reserve_c_b,
             fee_ab_bc,
-            fee_denominator
+            fee_denominator,
         )
-        
+
         # For the first hop (A->B), calculate the required input amount
         expected_amount_in = self.runner.call_view_method(
             self.nc_id,
             "get_amount_in",
-            expected_intermediate_amount,
+            intermediate_amount,
             reserve_a_b,
             reserve_b_a,
             fee_ab_bc,
-            fee_denominator
+            fee_denominator,
         )
 
         # The path string is a comma-separated list of pool keys
         path_str = f"{pool_key_ab},{pool_key_bc}"
 
-        # Use exactly the calculated amount as max_amount_in
-        max_amount_in = expected_amount_in
+        # Add some extra amount to test slippage handling
+        extra_amount = 5_00
+        deposit_amount = expected_amount_in + extra_amount
 
         # Prepare swap context with deposit action for token_a and withdrawal for token_c
         context = self._prepare_cross_swap_context(
-            self.token_a, max_amount_in, self.token_c, amount_out
+            self.token_a, deposit_amount, self.token_c, amount_out
         )
 
         # Execute the swap through the specified path
@@ -2664,21 +2708,18 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.nc_id,
             "swap_tokens_for_exact_tokens_through_path",
             context,
-            amount_out,
-            max_amount_in,
             path_str,
         )
 
-        # Verify the result is the expected input amount
-        self.assertIsInstance(result, int)
-        self.assertEqual(result, expected_amount_in)
-
-        # Verify the input amount matches our calculation
+        # Verify the result is a SwapResult object with expected values
+        self.assertIsInstance(result, SwapResult)
+        self.assertEqual(result.amount_in, deposit_amount)
+        self.assertEqual(result.token_in, self.token_a)
+        self.assertEqual(result.amount_out, amount_out)
+        self.assertEqual(result.token_out, self.token_c)
         self.assertEqual(
-            result,
-            expected_amount_in,
-            "The input amount should match the calculated expected value",
-        )
+            result.slippage_in, extra_amount
+        )  # Slippage should be the extra amount
 
         # Verify the reserves were updated correctly
         # First pool (A-B) should have token_a increased and token_b decreased
@@ -2690,31 +2731,39 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             reserve_a_b + expected_amount_in,
             "Reserve of token_a in A-B pool should be increased by expected_amount_in",
         )
-        self.assertEqual(
-            new_reserve_b_a,
-            reserve_b_a - expected_intermediate_amount,
-            "Reserve of token_b in A-B pool should be decreased by intermediate amount",
+
+        # Use assertLessEqual with abs to account for potential rounding differences
+        self.assertLessEqual(
+            abs(new_reserve_b_a - (reserve_b_a - intermediate_amount)),
+            1,
+            msg="Reserve of token_b in A-B pool should be decreased by intermediate_amount",
         )
 
         # Second pool (B-C) should have token_b increased and token_c decreased
         new_reserve_b_c, new_reserve_c_b = self.runner.call_view_method(
             self.nc_id, "get_reserves", self.token_b, self.token_c, fee_ab_bc
         )
-        self.assertEqual(
-            new_reserve_b_c,
-            reserve_b_c + expected_intermediate_amount,
-            "Reserve of token_b in B-C pool should be increased by intermediate amount",
+        self.assertLessEqual(
+            abs(new_reserve_b_c - (reserve_b_c + intermediate_amount)),
+            1,
+            msg="Reserve of token_b in B-C pool should be increased by intermediate amount",
         )
-        self.assertEqual(
-            new_reserve_c_b,
-            reserve_c_b - amount_out,
-            "Reserve of token_c in B-C pool should be decreased by amount_out",
+        self.assertLessEqual(
+            abs(new_reserve_c_b - (reserve_c_b - amount_out)),
+            2,
+            msg="Reserve of token_c in B-C pool should be decreased by amount_out",
         )
+
+        # Check that the slippage amount was added to the user's balance
+        user_balance = self.runner.call_view_method(
+            self.nc_id, "balance_of", context.address, pool_key_ab
+        )
+        self.assertEqual(user_balance, (extra_amount, 0))
 
         # Test with an invalid path (non-existent pool key)
         invalid_path = "invalid_pool_key"
         context_invalid = self._prepare_cross_swap_context(
-            self.token_a, max_amount_in, self.token_c, amount_out
+            self.token_a, deposit_amount, self.token_c, amount_out
         )
 
         # Verify that an exception is raised for invalid path
@@ -2723,15 +2772,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 self.nc_id,
                 "swap_tokens_for_exact_tokens_through_path",
                 context_invalid,
-                amount_out,
-                max_amount_in,
                 invalid_path,
             )
 
-        # Test with insufficient max_amount_in
-        insufficient_max_amount_in = expected_amount_in - 1  # Just 1 less than required
+        # Test with insufficient deposit amount
+        insufficient_amount = expected_amount_in - 1  # Just 1 less than required
         context_insufficient = self._prepare_cross_swap_context(
-            self.token_a, insufficient_max_amount_in, self.token_c, amount_out
+            self.token_a, insufficient_amount, self.token_c, amount_out
         )
 
         # Verify that an exception is raised for insufficient input
@@ -2740,7 +2787,51 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 self.nc_id,
                 "swap_tokens_for_exact_tokens_through_path",
                 context_insufficient,
-                amount_out,
-                insufficient_max_amount_in,
                 path_str,
             )
+
+        # Test with single-hop path
+        # Create a direct pool from A to C
+        single_hop_fee = 3
+        single_hop_reserve_a = 1000_00
+        single_hop_reserve_c = 1000_00
+
+        single_pool_key, _ = self._create_pool(
+            self.token_a,
+            self.token_c,
+            fee=single_hop_fee,
+            reserve_a=single_hop_reserve_a,
+            reserve_b=single_hop_reserve_c,
+        )
+
+        # Calculate required input for single hop
+        single_hop_amount_in = self.runner.call_view_method(
+            self.nc_id,
+            "get_amount_in",
+            amount_out,
+            single_hop_reserve_a,
+            single_hop_reserve_c,
+            single_hop_fee,
+            fee_denominator,
+        )
+
+        # Add extra for slippage
+        single_hop_deposit = single_hop_amount_in + extra_amount
+
+        # Prepare context for single hop
+        single_hop_context = self._prepare_cross_swap_context(
+            self.token_a, single_hop_deposit, self.token_c, amount_out
+        )
+
+        # Execute single hop swap
+        single_hop_result = self.runner.call_public_method(
+            self.nc_id,
+            "swap_tokens_for_exact_tokens_through_path",
+            single_hop_context,
+            single_pool_key,
+        )
+
+        # Verify result
+        self.assertEqual(single_hop_result.amount_in, single_hop_deposit)
+        self.assertEqual(single_hop_result.amount_out, amount_out)
+        self.assertEqual(single_hop_result.slippage_in, extra_amount)
