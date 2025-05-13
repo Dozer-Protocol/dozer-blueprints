@@ -1895,15 +1895,15 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self, token_in, amount_in, token_out=None, amount_out=None
     ):
         """Prepare a context for cross-pool swap operations"""
-        # Use the existing _prepare_swap_context method to ensure consistency
-        if token_out is not None and amount_out is not None:
-            return self._prepare_swap_context(
-                token_in, amount_in, token_out, amount_out
-            )
-
-        # If no token_out/amount_out, just create a deposit action
+        # Always create a context with both deposit and withdrawal actions
+        # This is required for both swap methods
         tx = self._get_any_tx()
         actions = [NCAction(NCActionType.DEPOSIT, token_in, amount_in)]
+        
+        # Add withdrawal action if token_out and amount_out are provided
+        if token_out is not None and amount_out is not None:
+            actions.append(NCAction(NCActionType.WITHDRAWAL, token_out, amount_out))
+        
         address_bytes, _ = self._get_any_address()
         context = Context(
             actions, tx, address_bytes, timestamp=self.get_current_timestamp()
@@ -2593,5 +2593,154 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 context_insufficient,
                 amount_in,
                 excessive_min_amount_out,
+                path_str,
+            )
+
+    def test_swap_tokens_for_exact_tokens_through_path(self):
+        """Test swapping tokens through a specific path using swap_tokens_for_exact_tokens_through_path"""
+        # Define pool parameters
+        fee_ab_bc = 3  # Fee for A-B and B-C pools
+        fee_denominator = 1000
+        reserve_a_b = 1000_00  # Reserve of token_a in A-B pool
+        reserve_b_a = 1000_00  # Reserve of token_b in A-B pool
+        reserve_b_c = 1000_00  # Reserve of token_b in B-C pool
+        reserve_c_b = 1000_00  # Reserve of token_c in B-C pool
+        amount_out = 50_00  # Exact output amount we want
+
+        # Create two pools: A-B and B-C for a multi-hop path
+        pool_key_ab, _ = self._create_pool(
+            self.token_a,
+            self.token_b,
+            fee=fee_ab_bc,
+            reserve_a=reserve_a_b,
+            reserve_b=reserve_b_a,
+        )
+        pool_key_bc, _ = self._create_pool(
+            self.token_b,
+            self.token_c,
+            fee=fee_ab_bc,
+            reserve_a=reserve_b_c,
+            reserve_b=reserve_c_b,
+        )
+
+        # Instead of calculating manually, use the blueprint's get_amount_in method directly
+        # This ensures we get exactly the same result as the blueprint
+        
+        # For the second hop (B->C), calculate the required intermediate amount
+        expected_intermediate_amount = self.runner.call_view_method(
+            self.nc_id,
+            "get_amount_in",
+            amount_out,
+            reserve_b_c,
+            reserve_c_b,
+            fee_ab_bc,
+            fee_denominator
+        )
+        
+        # For the first hop (A->B), calculate the required input amount
+        expected_amount_in = self.runner.call_view_method(
+            self.nc_id,
+            "get_amount_in",
+            expected_intermediate_amount,
+            reserve_a_b,
+            reserve_b_a,
+            fee_ab_bc,
+            fee_denominator
+        )
+
+        # The path string is a comma-separated list of pool keys
+        path_str = f"{pool_key_ab},{pool_key_bc}"
+
+        # Use exactly the calculated amount as max_amount_in
+        max_amount_in = expected_amount_in
+
+        # Prepare swap context with deposit action for token_a and withdrawal for token_c
+        context = self._prepare_cross_swap_context(
+            self.token_a, max_amount_in, self.token_c, amount_out
+        )
+
+        # Execute the swap through the specified path
+        result = self.runner.call_public_method(
+            self.nc_id,
+            "swap_tokens_for_exact_tokens_through_path",
+            context,
+            amount_out,
+            max_amount_in,
+            path_str,
+        )
+
+        # Verify the result is the expected input amount
+        self.assertIsInstance(result, int)
+        self.assertEqual(result, expected_amount_in)
+
+        # Verify the input amount matches our calculation
+        self.assertEqual(
+            result,
+            expected_amount_in,
+            "The input amount should match the calculated expected value",
+        )
+
+        # Verify the reserves were updated correctly
+        # First pool (A-B) should have token_a increased and token_b decreased
+        new_reserve_a_b, new_reserve_b_a = self.runner.call_view_method(
+            self.nc_id, "get_reserves", self.token_a, self.token_b, fee_ab_bc
+        )
+        self.assertEqual(
+            new_reserve_a_b,
+            reserve_a_b + expected_amount_in,
+            "Reserve of token_a in A-B pool should be increased by expected_amount_in",
+        )
+        self.assertEqual(
+            new_reserve_b_a,
+            reserve_b_a - expected_intermediate_amount,
+            "Reserve of token_b in A-B pool should be decreased by intermediate amount",
+        )
+
+        # Second pool (B-C) should have token_b increased and token_c decreased
+        new_reserve_b_c, new_reserve_c_b = self.runner.call_view_method(
+            self.nc_id, "get_reserves", self.token_b, self.token_c, fee_ab_bc
+        )
+        self.assertEqual(
+            new_reserve_b_c,
+            reserve_b_c + expected_intermediate_amount,
+            "Reserve of token_b in B-C pool should be increased by intermediate amount",
+        )
+        self.assertEqual(
+            new_reserve_c_b,
+            reserve_c_b - amount_out,
+            "Reserve of token_c in B-C pool should be decreased by amount_out",
+        )
+
+        # Test with an invalid path (non-existent pool key)
+        invalid_path = "invalid_pool_key"
+        context_invalid = self._prepare_cross_swap_context(
+            self.token_a, max_amount_in, self.token_c, amount_out
+        )
+
+        # Verify that an exception is raised for invalid path
+        with self.assertRaises(Exception):
+            self.runner.call_public_method(
+                self.nc_id,
+                "swap_tokens_for_exact_tokens_through_path",
+                context_invalid,
+                amount_out,
+                max_amount_in,
+                invalid_path,
+            )
+
+        # Test with insufficient max_amount_in
+        insufficient_max_amount_in = expected_amount_in - 1  # Just 1 less than required
+        context_insufficient = self._prepare_cross_swap_context(
+            self.token_a, insufficient_max_amount_in, self.token_c, amount_out
+        )
+
+        # Verify that an exception is raised for insufficient input
+        with self.assertRaises(Exception):
+            self.runner.call_public_method(
+                self.nc_id,
+                "swap_tokens_for_exact_tokens_through_path",
+                context_insufficient,
+                amount_out,
+                insufficient_max_amount_in,
                 path_str,
             )
