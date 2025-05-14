@@ -174,9 +174,6 @@ class DozerPoolManager(Blueprint):
     pool_volume_a: dict[str, Amount]  # pool_key -> volume_a
     pool_volume_b: dict[str, Amount]  # pool_key -> volume_b
 
-    # Protocol fee accumulation (all pools)
-    protocol_fee_balance: dict[TokenUid, Amount]  # token -> accumulated protocol fee
-
     @public
     def initialize(self, ctx: Context) -> None:
         """Initialize the DozerPoolManager contract.
@@ -867,10 +864,10 @@ class DozerPoolManager(Blueprint):
         # Calculate protocol fee
         protocol_fee_amount = fee_amount * self.default_protocol_fee // 100
 
-        # Add to protocol fee balance using safe access
-        self.protocol_fee_balance[action_in.token_uid] = (
-            self.protocol_fee_balance.get(action_in.token_uid, 0) + protocol_fee_amount
-        )
+        # # Add to protocol fee balance using safe access
+        # self.protocol_fee_balance[action_in.token_uid] = (
+        #     self.protocol_fee_balance.get(action_in.token_uid, 0) + protocol_fee_amount
+        # )
 
         # Calculate liquidity increase for protocol fee
         liquidity_increase = self._get_protocol_liquidity_increase(
@@ -997,10 +994,10 @@ class DozerPoolManager(Blueprint):
         # Calculate protocol fee
         protocol_fee_amount = fee_amount * self.default_protocol_fee // 100
 
-        # Add to protocol fee balance using safe access
-        self.protocol_fee_balance[action_in.token_uid] = (
-            self.protocol_fee_balance.get(action_in.token_uid, 0) + protocol_fee_amount
-        )
+        # # Add to protocol fee balance using safe access
+        # self.protocol_fee_balance[action_in.token_uid] = (
+        #     self.protocol_fee_balance.get(action_in.token_uid, 0) + protocol_fee_amount
+        # )
 
         # Calculate liquidity increase for protocol fee
         liquidity_increase = self._get_protocol_liquidity_increase(
@@ -1194,7 +1191,7 @@ class DozerPoolManager(Blueprint):
             0,  # No input slippage in exact input swap
             token_in,
             amount_out,
-            token_out
+            token_out,
         )
 
     def _swap(
@@ -1316,7 +1313,7 @@ class DozerPoolManager(Blueprint):
         # Get the output amount and token from the withdrawal action
         amount_out = withdrawal_action.amount
         token_out = withdrawal_action.token_uid
-        
+
         # Get the actual input amount from deposit action
         actual_amount_in = deposit_action.amount
         token_in = deposit_action.token_uid
@@ -1328,9 +1325,15 @@ class DozerPoolManager(Blueprint):
                 raise PoolNotFound()
 
             # Verify the tokens match the pool
-            if (token_out != self.pool_token_a[pool_key] and token_out != self.pool_token_b[pool_key]):
+            if (
+                token_out != self.pool_token_a[pool_key]
+                and token_out != self.pool_token_b[pool_key]
+            ):
                 raise InvalidPath("Pool does not contain output token")
-            if (token_in != self.pool_token_a[pool_key] and token_in != self.pool_token_b[pool_key]):
+            if (
+                token_in != self.pool_token_a[pool_key]
+                and token_in != self.pool_token_b[pool_key]
+            ):
                 raise InvalidPath("Pool does not contain input token")
 
             # Calculate the required input amount
@@ -1367,52 +1370,54 @@ class DozerPoolManager(Blueprint):
             self._swap(ctx, amount_in, token_in, token_out, pool_key)
 
             return SwapResult(
-                actual_amount_in,
-                slippage_in,
-                token_in,
-                amount_out,
-                token_out
+                actual_amount_in, slippage_in, token_in, amount_out, token_out
             )
 
         # For multi-hop paths, we need to calculate backwards
         # This implementation handles 2 or 3 hops
-        
+
         # Get the last pool
         last_pool_key = path[-1]
         if last_pool_key not in self.all_pools:
             raise PoolNotFound()
-        
+
         # Verify the output token is in the last pool
-        if (token_out != self.pool_token_a[last_pool_key] and 
-            token_out != self.pool_token_b[last_pool_key]):
+        if (
+            token_out != self.pool_token_a[last_pool_key]
+            and token_out != self.pool_token_b[last_pool_key]
+        ):
             raise InvalidPath("Last pool does not contain output token")
-        
+
         # For 2-hop path: token_in -> intermediate -> token_out
         if len(path) == 2:
             # Get the second pool (intermediate -> token_out)
             second_pool_key = path[1]
-        
+
             # Determine the intermediate token
             if self.pool_token_a[second_pool_key] == token_out:
                 intermediate_token = self.pool_token_b[second_pool_key]
             else:
                 intermediate_token = self.pool_token_a[second_pool_key]
-            
+
             # Get the first pool (token_in -> intermediate)
             first_pool_key = path[0]
             if first_pool_key not in self.all_pools:
                 raise PoolNotFound()
-            
+
             # Verify the input token is in the first pool
-            if (token_in != self.pool_token_a[first_pool_key] and 
-                token_in != self.pool_token_b[first_pool_key]):
+            if (
+                token_in != self.pool_token_a[first_pool_key]
+                and token_in != self.pool_token_b[first_pool_key]
+            ):
                 raise InvalidPath("First pool does not contain input token")
-            
+
             # Verify the intermediate token connects the pools
-            if (intermediate_token != self.pool_token_a[first_pool_key] and 
-                intermediate_token != self.pool_token_b[first_pool_key]):
+            if (
+                intermediate_token != self.pool_token_a[first_pool_key]
+                and intermediate_token != self.pool_token_b[first_pool_key]
+            ):
                 raise InvalidPath("First pool does not contain intermediate token")
-            
+
             # Calculate backwards from the output
             # First, calculate how much intermediate token we need
             second_reserve_in = 0
@@ -1423,14 +1428,18 @@ class DozerPoolManager(Blueprint):
             else:
                 second_reserve_in = self.pool_reserve_b[second_pool_key]
                 second_reserve_out = self.pool_reserve_a[second_pool_key]
-                
+
             second_fee = self.pool_fee_numerator[second_pool_key]
             second_fee_denominator = self.pool_fee_denominator[second_pool_key]
-            
+
             intermediate_amount = self.get_amount_in(
-                amount_out, second_reserve_in, second_reserve_out, second_fee, second_fee_denominator
+                amount_out,
+                second_reserve_in,
+                second_reserve_out,
+                second_fee,
+                second_fee_denominator,
             )
-            
+
             # Then, calculate how much input token we need
             first_reserve_in = 0
             first_reserve_out = 0
@@ -1440,51 +1449,51 @@ class DozerPoolManager(Blueprint):
             else:
                 first_reserve_in = self.pool_reserve_b[first_pool_key]
                 first_reserve_out = self.pool_reserve_a[first_pool_key]
-                
+
             first_fee = self.pool_fee_numerator[first_pool_key]
             first_fee_denominator = self.pool_fee_denominator[first_pool_key]
-            
+
             amount_in = self.get_amount_in(
-                intermediate_amount, first_reserve_in, first_reserve_out, first_fee, first_fee_denominator
+                intermediate_amount,
+                first_reserve_in,
+                first_reserve_out,
+                first_fee,
+                first_fee_denominator,
             )
-            
+
             # Check if the provided amount is sufficient
             if actual_amount_in < amount_in:
                 raise InvalidAction("Amount in is too low")
-                
+
             # Calculate slippage
             slippage_in = actual_amount_in - amount_in
-            
+
             # Update user balance for slippage
             if slippage_in > 0:
                 self._update_balance(ctx.address, slippage_in, token_in, first_pool_key)
-                
+
             # Execute the swaps
             # First swap: token_in -> intermediate
             first_amount_out = self._swap(
                 ctx, amount_in, token_in, intermediate_token, first_pool_key
             )
-            
+
             # Second swap: intermediate -> token_out
             self._swap(
                 ctx, first_amount_out, intermediate_token, token_out, second_pool_key
             )
-            
+
             return SwapResult(
-                actual_amount_in,
-                slippage_in,
-                token_in,
-                amount_out,
-                token_out
+                actual_amount_in, slippage_in, token_in, amount_out, token_out
             )
-            
+
         # For 3-hop path: token_in -> first_intermediate -> second_intermediate -> token_out
         if len(path) == 3:
             # This would be a more complex implementation following the same pattern as the 2-hop path
             # For brevity, I'll implement a placeholder that raises an error
             # In a real implementation, this would calculate through all three hops
             raise NotImplementedError("3-hop paths are not yet implemented")
-            
+
         # This should never happen due to the path length validation above
         raise InvalidPath("Invalid path length")
 
@@ -1545,47 +1554,6 @@ class DozerPoolManager(Blueprint):
         if pool_key not in self.pool_total_balance_b:
             self.pool_total_balance_b[pool_key] = 0
         self.pool_total_balance_b[pool_key] -= action_b.amount
-
-    @public
-    def withdraw_protocol_fees(self, ctx: Context, token: TokenUid) -> Amount:
-        """Withdraw accumulated protocol fees for a specific token.
-
-        Args:
-            ctx: The transaction context
-            token: The token to withdraw fees for
-
-        Returns:
-            The amount withdrawn
-
-        Raises:
-            Unauthorized: If the caller is not the owner
-            InvalidAction: If there are no fees to withdraw
-        """
-        if ctx.address != self.owner:
-            raise Unauthorized("Only owner can withdraw protocol fees")
-
-        if token not in ctx.actions:
-            raise InvalidAction("Token action required")
-
-        action = ctx.actions[token]
-        if action.type != NCActionType.WITHDRAWAL:
-            raise InvalidAction("Only withdrawals allowed")
-
-        # Check if there are fees to withdraw
-        if (
-            token not in self.protocol_fee_balance
-            or self.protocol_fee_balance[token] == 0
-        ):
-            raise InvalidAction("No protocol fees to withdraw")
-
-        # Check if the requested amount is valid
-        if action.amount > self.protocol_fee_balance[token]:
-            raise InvalidAction("Not enough protocol fees")
-
-        # Update protocol fee balance
-        self.protocol_fee_balance[token] -= action.amount
-
-        return action.amount
 
     @public
     def change_default_fee(self, ctx: Context, new_fee: Amount) -> None:

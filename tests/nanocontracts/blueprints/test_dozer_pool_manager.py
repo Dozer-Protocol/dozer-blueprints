@@ -22,6 +22,7 @@ from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.storage import NCStorage
 from hathor.nanocontracts.types import Amount, NCAction, NCActionType
+from hathor.types import TokenUid
 from hathor.util import not_none
 from hathor.wallet import KeyPair
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
@@ -80,6 +81,33 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         self.nc_storage = self.runner.get_storage(self.nc_id)
         self.owner_address = context.address
+
+    def _check_balance(self):
+        """Check the balance of the contract"""
+        token_balances = {}
+        for token, contract_balance in self.nc_storage.get_all_balances().items():
+            token_uid = token.token_uid
+            token_to_pools = self.runner.call_view_method(
+                self.nc_id, "get_pools_for_token", token_uid
+            )
+            for pool in token_to_pools:
+                token_a_hex, token_b_hex, fee = pool.split("/")
+                token_a = bytes.fromhex(token_a_hex)
+                token_b = bytes.fromhex(token_b_hex)
+                if token_uid == token_a:
+                    token_balances[token_uid] = (
+                        token_balances.get(token_uid, 0)
+                        + self.nc_storage.get(f"pool_reserve_a:{pool}", default=0)
+                        + self.nc_storage.get(f"pool_total_balance_a:{pool}", default=0)
+                    )
+                else:
+                    token_balances[token_uid] = (
+                        token_balances.get(token_uid, 0)
+                        + self.nc_storage.get(f"pool_reserve_b:{pool}", default=0)
+                        + self.nc_storage.get(f"pool_total_balance_b:{pool}", default=0)
+                    )
+            state_balance = token_balances[token_uid]
+            self.assertEqual(state_balance, contract_balance)
 
     def _create_pool(
         self, token_a, token_b, fee=3, reserve_a=1000_00, reserve_b=1000_00
@@ -259,6 +287,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.runner.call_public_method(
                 self.nc_id, "create_pool", context, self.token_a, self.token_b, 3
             )
+        self._check_balance()
 
     def test_create_multiple_pools(self):
         """Test creating multiple pools with different tokens and fees"""
@@ -305,6 +334,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
         self.assertIn(pool_key2, token_to_pools)
         self.assertIn(pool_key3, token_to_pools)
+
+        self._check_balance()
 
     def test_add_liquidity(self):
         """Test adding liquidity to a pool"""
@@ -358,6 +389,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             ),
             liquidity_increase,
         )
+
+        self._check_balance()
 
     def test_remove_liquidity(self):
         """Test removing liquidity from a pool"""
@@ -430,6 +463,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             initial_user_liquidity - liquidity_decrease,
         )
 
+        self._check_balance()
+
     def test_swap_exact_tokens_for_tokens(self):
         """Test swapping an exact amount of input tokens for output tokens"""
         # Create a pool with substantial liquidity
@@ -471,6 +506,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(result.amount_in, swap_amount_in)
         self.assertEqual(result.token_in, self.token_a)
         self.assertEqual(result.token_out, self.token_b)
+
+        self._check_balance()
 
     def test_swap_tokens_for_exact_tokens(self):
         """Test swapping tokens for an exact amount of output tokens"""
@@ -604,6 +641,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             "User balance should have been updated with slippage amount",
         )
 
+        self._check_balance()
+
     def test_change_protocol_fee(self):
         """Test changing the protocol fee"""
         # Create context with owner address
@@ -630,148 +669,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         with self.assertRaises(Unauthorized):
             self.runner.call_public_method(
                 self.nc_id, "change_protocol_fee", non_owner_context, 15
-            )
-
-    def test_withdraw_protocol_fees(self):
-        """Test withdrawing protocol fees"""
-        # Create a pool
-        pool_key, _ = self._create_pool(self.token_a, self.token_b)
-
-        # Calculate expected protocol fees per swap
-        fee_numerator = self.nc_storage.get(f"pool_fee_numerator:{pool_key}")
-        fee_denominator = self.nc_storage.get(f"pool_fee_denominator:{pool_key}")
-        protocol_fee_percent = self.nc_storage.get("default_protocol_fee")
-
-        # For a swap of 100_00 tokens with a fee of 3/1000, the fee would be:
-        swap_amount = 100_00
-        fee_amount = swap_amount * fee_numerator // fee_denominator
-        expected_protocol_fee_per_swap = fee_amount * protocol_fee_percent // 100
-
-        # Track initial protocol fee balances
-        initial_protocol_fee_balance_a = self.nc_storage.get(
-            f"protocol_fee_balance:{self.token_a}", default=0
-        )
-        initial_protocol_fee_balance_b = self.nc_storage.get(
-            f"protocol_fee_balance:{self.token_b}", default=0
-        )
-
-        # Execute several swaps to accumulate protocol fees
-        num_swaps = 5
-        for _ in range(num_swaps):
-            self._swap_exact_tokens_for_tokens(
-                self.token_a, self.token_b, 3, 100_00, 90_00
-            )
-            self._swap_exact_tokens_for_tokens(
-                self.token_b, self.token_a, 3, 100_00, 90_00
-            )
-
-        # Check accumulated protocol fees
-        protocol_fee_balance_a = self.nc_storage.get(
-            f"protocol_fee_balance:{self.token_a}"
-        )
-        protocol_fee_balance_b = self.nc_storage.get(
-            f"protocol_fee_balance:{self.token_b}"
-        )
-
-        # Verify that protocol fees were collected correctly
-        self.assertEqual(
-            protocol_fee_balance_a,
-            initial_protocol_fee_balance_a
-            + (expected_protocol_fee_per_swap * num_swaps),
-            "Protocol fee balance for token A doesn't match expected value",
-        )
-        self.assertEqual(
-            protocol_fee_balance_b,
-            initial_protocol_fee_balance_b
-            + (expected_protocol_fee_per_swap * num_swaps),
-            "Protocol fee balance for token B doesn't match expected value",
-        )
-
-        # Test withdrawing partial protocol fees for token_a
-        partial_withdrawal = protocol_fee_balance_a // 2
-        tx = self._get_any_tx()
-        actions = [
-            NCAction(NCActionType.WITHDRAWAL, self.token_a, partial_withdrawal),
-        ]
-        context = Context(
-            actions, tx, self.owner_address, timestamp=self.get_current_timestamp()
-        )
-
-        withdrawn_amount = self.runner.call_public_method(
-            self.nc_id, "withdraw_protocol_fees", context, self.token_a
-        )
-
-        # Verify protocol fee balance for token_a was reduced correctly
-        self.assertEqual(
-            self.nc_storage.get(f"protocol_fee_balance:{self.token_a}"),
-            protocol_fee_balance_a - partial_withdrawal,
-            "Protocol fee balance for token A wasn't reduced correctly after partial withdrawal",
-        )
-
-        # Verify withdrawn amount matches requested amount
-        self.assertEqual(
-            withdrawn_amount,
-            partial_withdrawal,
-            "Withdrawn amount doesn't match requested amount",
-        )
-
-        # Now withdraw the remaining protocol fees for token_a
-        remaining_balance = self.nc_storage.get(f"protocol_fee_balance:{self.token_a}")
-        tx = self._get_any_tx()
-        actions = [
-            NCAction(NCActionType.WITHDRAWAL, self.token_a, remaining_balance),
-        ]
-        context = Context(
-            actions, tx, self.owner_address, timestamp=self.get_current_timestamp()
-        )
-
-        withdrawn_amount = self.runner.call_public_method(
-            self.nc_id, "withdraw_protocol_fees", context, self.token_a
-        )
-
-        # Verify protocol fee balance for token_a is now 0
-        self.assertEqual(
-            self.nc_storage.get(f"protocol_fee_balance:{self.token_a}"),
-            0,
-            "Protocol fee balance for token A should be 0 after full withdrawal",
-        )
-
-        # Verify withdrawn amount matches remaining balance
-        self.assertEqual(
-            withdrawn_amount,
-            remaining_balance,
-            "Withdrawn amount doesn't match remaining balance",
-        )
-
-        # Test attempting to withdraw more than available
-        tx = self._get_any_tx()
-        actions = [
-            NCAction(NCActionType.WITHDRAWAL, self.token_a, 1),  # Any amount > 0
-        ]
-        context = Context(
-            actions, tx, self.owner_address, timestamp=self.get_current_timestamp()
-        )
-
-        # Should fail with InvalidAction
-        with self.assertRaises(InvalidAction):
-            self.runner.call_public_method(
-                self.nc_id, "withdraw_protocol_fees", context, self.token_a
-            )
-
-        # Test unauthorized withdrawal attempt
-        non_owner_address, _ = self._get_any_address()
-        tx = self._get_any_tx()
-        actions = [
-            NCAction(NCActionType.WITHDRAWAL, self.token_b, protocol_fee_balance_b),
-        ]
-        context = Context(
-            actions, tx, non_owner_address, timestamp=self.get_current_timestamp()
-        )
-
-        # Should fail with Unauthorized
-        with self.assertRaises(Unauthorized):
-            self.runner.call_public_method(
-                self.nc_id, "withdraw_protocol_fees", context, self.token_b
             )
 
     def test_get_pools_for_token(self):
@@ -2460,6 +2357,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Protocol fees increase total_liquidity but don't belong to any user
         self.assertLessEqual(total_user_liquidity, final_total_liquidity)
 
+        self._check_balance()
+
     def test_swap_exact_tokens_for_tokens_through_path(self):
         """Test swapping tokens through a specific path using swap_exact_tokens_for_tokens_through_path"""
         # Define pool parameters
@@ -2640,6 +2539,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 context_mismatch,
                 path_str,
             )
+
+        self._check_balance()
 
     def test_swap_tokens_for_exact_tokens_through_path(self):
         """Test swapping tokens through a specific path using swap_tokens_for_exact_tokens_through_path"""
@@ -2835,3 +2736,5 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(single_hop_result.amount_in, single_hop_deposit)
         self.assertEqual(single_hop_result.amount_out, amount_out)
         self.assertEqual(single_hop_result.slippage_in, extra_amount)
+
+        self._check_balance()
