@@ -2734,4 +2734,114 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(single_hop_result.amount_out, amount_out)
         self.assertEqual(single_hop_result.slippage_in, extra_amount)
 
+        # Test with 3-hop path
+        # Create a token D and pools B-D and D-C
+        self.token_d = bytes.fromhex("04" * 32)  # Create a new token UID
+
+        # Create pool B-D
+        pool_bd_fee = 3
+        pool_bd_reserve_b = 100000_00
+        pool_bd_reserve_d = 100000_00
+
+        pool_key_bd, _ = self._create_pool(
+            self.token_b,
+            self.token_d,
+            fee=pool_bd_fee,
+            reserve_a=pool_bd_reserve_b,
+            reserve_b=pool_bd_reserve_d,
+        )
+
+        # Create pool D-C
+        pool_dc_fee = 3
+        pool_dc_reserve_d = 100000_00
+        pool_dc_reserve_c = 100000_00
+
+        pool_key_dc, _ = self._create_pool(
+            self.token_d,
+            self.token_c,
+            fee=pool_dc_fee,
+            reserve_a=pool_dc_reserve_d,
+            reserve_b=pool_dc_reserve_c,
+        )
+
+        # Create 3-hop path: A -> B -> D -> C
+        three_hop_path = f"{pool_key_ab},{pool_key_bd},{pool_key_dc}"
+
+        # Calculate required amounts for each hop (working backwards)
+        # Third hop: D -> C
+        third_hop_amount_in = self.runner.call_view_method(
+            self.nc_id,
+            "get_amount_in",
+            amount_out,
+            pool_dc_reserve_d,
+            pool_dc_reserve_c,
+            pool_dc_fee,
+            fee_denominator,
+        )
+
+        # Second hop: B -> D
+        second_hop_amount_in = self.runner.call_view_method(
+            self.nc_id,
+            "get_amount_in",
+            third_hop_amount_in,
+            pool_bd_reserve_b,
+            pool_bd_reserve_d,
+            pool_bd_fee,
+            fee_denominator,
+        )
+
+        # First hop: A -> B
+        first_hop_amount_in = self.runner.call_view_method(
+            self.nc_id,
+            "get_amount_in",
+            second_hop_amount_in,
+            new_reserve_a_b,  # Using the existing reserve_a_b from earlier in the test
+            new_reserve_b_a,  # Using the existing reserve_b_a from earlier in the test
+            fee_ab_bc,  # Using the existing fee_ab_bc from earlier in the test
+            fee_denominator,
+        )
+
+        # Total amount needed plus extra for slippage
+        three_hop_deposit = first_hop_amount_in + extra_amount
+        logger.error(f"Three hop deposit: {three_hop_deposit}")
+
+        # Prepare context for 3-hop swap
+        three_hop_context = self._prepare_cross_swap_context(
+            self.token_a, three_hop_deposit, self.token_c, amount_out
+        )
+
+        # Execute 3-hop swap
+        three_hop_result = self.runner.call_public_method(
+            self.nc_id,
+            "swap_tokens_for_exact_tokens_through_path",
+            three_hop_context,
+            three_hop_path,
+        )
+
+        # Verify result
+        self.assertEqual(three_hop_result.amount_in, three_hop_deposit)
+        self.assertEqual(three_hop_result.amount_out, amount_out)
+        self.assertEqual(three_hop_result.slippage_in, extra_amount)
+
+        # Check reserves in all pools
+        # First pool (A-B)
+        new_reserve_a = self.runner.call_view_method(
+            self.nc_id, "get_reserves", self.token_a, self.token_b, fee_ab_bc
+        )[0]
+        self.assertGreater(
+            new_reserve_a,
+            reserve_a_b,
+            msg="Reserve of token_a in A-B pool should be increased",
+        )
+
+        # Last pool (D-C)
+        new_reserve_c = self.runner.call_view_method(
+            self.nc_id, "get_reserves", self.token_d, self.token_c, pool_dc_fee
+        )[0]
+        self.assertLess(
+            new_reserve_c,
+            pool_dc_reserve_c,
+            msg="Reserve of token_c in D-C pool should be decreased",
+        )
+
         self._check_balance()

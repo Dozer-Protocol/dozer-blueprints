@@ -1485,7 +1485,9 @@ class DozerPoolManager(Blueprint):
                 self._update_balance(ctx.address, slippage_in, token_in, pool_key)
 
             # Execute the swap (updates reserves and statistics)
-            self._swap_exact_out(ctx, amount_in, token_in, amount_out, token_out, pool_key)
+            self._swap_exact_out(
+                ctx, amount_in, token_in, amount_out, token_out, pool_key
+            )
 
             return SwapResult(
                 actual_amount_in, slippage_in, token_in, amount_out, token_out
@@ -1594,12 +1596,22 @@ class DozerPoolManager(Blueprint):
             # First swap: token_in -> intermediate
             # For the first swap, we need the exact intermediate amount that will be needed for the second swap
             self._swap_exact_out(
-                ctx, amount_in, token_in, intermediate_amount, intermediate_token, first_pool_key
+                ctx,
+                amount_in,
+                token_in,
+                intermediate_amount,
+                intermediate_token,
+                first_pool_key,
             )
 
             # Second swap: intermediate -> token_out
             self._swap_exact_out(
-                ctx, intermediate_amount, intermediate_token, amount_out, token_out, second_pool_key
+                ctx,
+                intermediate_amount,
+                intermediate_token,
+                amount_out,
+                token_out,
+                second_pool_key,
             )
 
             return SwapResult(
@@ -1608,10 +1620,164 @@ class DozerPoolManager(Blueprint):
 
         # For 3-hop path: token_in -> first_intermediate -> second_intermediate -> token_out
         if len(path) == 3:
-            # This would be a more complex implementation following the same pattern as the 2-hop path
-            # For brevity, I'll implement a placeholder that raises an error
-            # In a real implementation, this would calculate through all three hops
-            raise NotImplementedError("3-hop paths are not yet implemented")
+            # Get the third pool (last in the path)
+            third_pool_key = path[2]
+            if third_pool_key not in self.all_pools:
+                raise PoolNotFound()
+
+            # Determine the output token and the second intermediate token
+            if self.pool_token_a[third_pool_key] == token_out:
+                second_intermediate_token = self.pool_token_b[third_pool_key]
+            elif self.pool_token_b[third_pool_key] == token_out:
+                second_intermediate_token = self.pool_token_a[third_pool_key]
+            else:
+                raise InvalidPath("Third pool does not contain output token")
+
+            # Get the second pool (middle of the path)
+            second_pool_key = path[1]
+            if second_pool_key not in self.all_pools:
+                raise PoolNotFound()
+
+            # Determine the first intermediate token
+            if self.pool_token_a[second_pool_key] == second_intermediate_token:
+                first_intermediate_token = self.pool_token_b[second_pool_key]
+            elif self.pool_token_b[second_pool_key] == second_intermediate_token:
+                first_intermediate_token = self.pool_token_a[second_pool_key]
+            else:
+                raise InvalidPath("Second pool does not connect to third pool")
+
+            # Get the first pool (first in the path)
+            first_pool_key = path[0]
+            if first_pool_key not in self.all_pools:
+                raise PoolNotFound()
+
+            # Verify the input token is in the first pool
+            if (
+                token_in != self.pool_token_a[first_pool_key]
+                and token_in != self.pool_token_b[first_pool_key]
+            ):
+                raise InvalidPath("First pool does not contain input token")
+
+            # Verify the first intermediate token connects the first and second pools
+            if (
+                first_intermediate_token != self.pool_token_a[first_pool_key]
+                and first_intermediate_token != self.pool_token_b[first_pool_key]
+            ):
+                raise InvalidPath("First pool does not connect to second pool")
+
+            # Calculate backwards from the output
+            # First, calculate how much second_intermediate_token we need
+            third_reserve_in = 0
+            third_reserve_out = 0
+            if self.pool_token_a[third_pool_key] == second_intermediate_token:
+                third_reserve_in = self.pool_reserve_a[third_pool_key]
+                third_reserve_out = self.pool_reserve_b[third_pool_key]
+            else:
+                third_reserve_in = self.pool_reserve_b[third_pool_key]
+                third_reserve_out = self.pool_reserve_a[third_pool_key]
+
+            third_fee = self.pool_fee_numerator[third_pool_key]
+            third_fee_denominator = self.pool_fee_denominator[third_pool_key]
+
+            second_intermediate_amount = self.get_amount_in(
+                amount_out,
+                third_reserve_in,
+                third_reserve_out,
+                third_fee,
+                third_fee_denominator,
+            )
+
+            # Then, calculate how much first_intermediate_token we need
+            second_reserve_in = 0
+            second_reserve_out = 0
+            if self.pool_token_a[second_pool_key] == first_intermediate_token:
+                second_reserve_in = self.pool_reserve_a[second_pool_key]
+                second_reserve_out = self.pool_reserve_b[second_pool_key]
+            else:
+                second_reserve_in = self.pool_reserve_b[second_pool_key]
+                second_reserve_out = self.pool_reserve_a[second_pool_key]
+
+            second_fee = self.pool_fee_numerator[second_pool_key]
+            second_fee_denominator = self.pool_fee_denominator[second_pool_key]
+
+            first_intermediate_amount = self.get_amount_in(
+                second_intermediate_amount,
+                second_reserve_in,
+                second_reserve_out,
+                second_fee,
+                second_fee_denominator,
+            )
+
+            # Finally, calculate how much input token we need
+            first_reserve_in = 0
+            first_reserve_out = 0
+            if self.pool_token_a[first_pool_key] == token_in:
+                first_reserve_in = self.pool_reserve_a[first_pool_key]
+                first_reserve_out = self.pool_reserve_b[first_pool_key]
+            else:
+                first_reserve_in = self.pool_reserve_b[first_pool_key]
+                first_reserve_out = self.pool_reserve_a[first_pool_key]
+
+            first_fee = self.pool_fee_numerator[first_pool_key]
+            first_fee_denominator = self.pool_fee_denominator[first_pool_key]
+
+            amount_in = self.get_amount_in(
+                first_intermediate_amount,
+                first_reserve_in,
+                first_reserve_out,
+                first_fee,
+                first_fee_denominator,
+            )
+
+            logger.error(f"Amount in: {amount_in}")
+            logger.error(f"first_intermediate_amount: {first_intermediate_amount}")
+            logger.error(f"second_intermediate_amount: {second_intermediate_amount}")
+
+            # Check if the provided amount is sufficient
+            if actual_amount_in < amount_in:
+                raise InvalidAction("Amount in is too low")
+
+            # Calculate slippage
+            slippage_in = actual_amount_in - amount_in
+
+            # Update user balance for slippage
+            if slippage_in > 0:
+                self._update_balance(ctx.address, slippage_in, token_in, first_pool_key)
+
+            # Execute the swaps
+            # First swap: token_in -> first_intermediate_token
+            self._swap_exact_out(
+                ctx,
+                amount_in,
+                token_in,
+                first_intermediate_amount,
+                first_intermediate_token,
+                first_pool_key,
+            )
+
+            # Second swap: first_intermediate_token -> second_intermediate_token
+            self._swap_exact_out(
+                ctx,
+                first_intermediate_amount,
+                first_intermediate_token,
+                second_intermediate_amount,
+                second_intermediate_token,
+                second_pool_key,
+            )
+
+            # Third swap: second_intermediate_token -> token_out
+            self._swap_exact_out(
+                ctx,
+                second_intermediate_amount,
+                second_intermediate_token,
+                amount_out,
+                token_out,
+                third_pool_key,
+            )
+
+            return SwapResult(
+                actual_amount_in, slippage_in, token_in, amount_out, token_out
+            )
 
         # This should never happen due to the path length validation above
         raise InvalidPath("Invalid path length")
