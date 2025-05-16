@@ -2769,7 +2769,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Calculate required amounts for each hop (working backwards)
         # Third hop: D -> C
-        third_hop_amount_in = self.runner.call_view_method(
+        # This is the amount of token D needed to get the exact amount_out of token C
+        second_intermediate_amount = self.runner.call_view_method(
             self.nc_id,
             "get_amount_in",
             amount_out,
@@ -2780,10 +2781,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
 
         # Second hop: B -> D
-        second_hop_amount_in = self.runner.call_view_method(
+        # This is the amount of token B needed to get the exact second_intermediate_amount of token D
+        first_intermediate_amount = self.runner.call_view_method(
             self.nc_id,
             "get_amount_in",
-            third_hop_amount_in,
+            second_intermediate_amount,
             pool_bd_reserve_b,
             pool_bd_reserve_d,
             pool_bd_fee,
@@ -2791,12 +2793,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
 
         # First hop: A -> B
+        # This is the amount of token A needed to get the exact first_intermediate_amount of token B
         first_hop_amount_in = self.runner.call_view_method(
             self.nc_id,
             "get_amount_in",
-            second_hop_amount_in,
-            new_reserve_a_b,  # Using the existing reserve_a_b from earlier in the test
-            new_reserve_b_a,  # Using the existing reserve_b_a from earlier in the test
+            first_intermediate_amount,
+            new_reserve_a_b,  # Using the updated reserve_a_b from earlier in the test
+            new_reserve_b_a,  # Using the updated reserve_b_a from earlier in the test
             fee_ab_bc,  # Using the existing fee_ab_bc from earlier in the test
             fee_denominator,
         )
@@ -2824,24 +2827,50 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(three_hop_result.slippage_in, extra_amount)
 
         # Check reserves in all pools
-        # First pool (A-B)
-        new_reserve_a = self.runner.call_view_method(
+        # First pool (A-B) - should have token_a increased by first_hop_amount_in
+        final_reserve_a_b, final_reserve_b_a = self.runner.call_view_method(
             self.nc_id, "get_reserves", self.token_a, self.token_b, fee_ab_bc
-        )[0]
-        self.assertGreater(
-            new_reserve_a,
-            reserve_a_b,
-            msg="Reserve of token_a in A-B pool should be increased",
+        )
+        # Use assertLessEqual with abs to account for potential rounding differences
+        self.assertLessEqual(
+            abs(final_reserve_a_b - (new_reserve_a_b + first_hop_amount_in)),
+            1,
+            msg="Reserve of token_a in A-B pool should be increased by first_hop_amount_in",
+        )
+        self.assertLessEqual(
+            abs(final_reserve_b_a - (new_reserve_b_a - first_intermediate_amount)),
+            1,
+            msg="Reserve of token_b in A-B pool should be decreased by first_intermediate_amount",
         )
 
-        # Last pool (D-C)
-        new_reserve_c = self.runner.call_view_method(
+        # Second pool (B-D) - should have token_b increased by first_intermediate_amount and token_d decreased by second_intermediate_amount
+        final_reserve_b_d, final_reserve_d_b = self.runner.call_view_method(
+            self.nc_id, "get_reserves", self.token_b, self.token_d, pool_bd_fee
+        )
+        self.assertLessEqual(
+            abs(final_reserve_b_d - (pool_bd_reserve_b + first_intermediate_amount)),
+            1,
+            msg="Reserve of token_b in B-D pool should be increased by first_intermediate_amount",
+        )
+        self.assertLessEqual(
+            abs(final_reserve_d_b - (pool_bd_reserve_d - second_intermediate_amount)),
+            1,
+            msg="Reserve of token_d in B-D pool should be decreased by second_intermediate_amount",
+        )
+
+        # Last pool (D-C) - should have token_d increased by second_intermediate_amount and token_c decreased by amount_out
+        final_reserve_c_d, final_reserve_d_c = self.runner.call_view_method(
             self.nc_id, "get_reserves", self.token_d, self.token_c, pool_dc_fee
-        )[0]
-        self.assertLess(
-            new_reserve_c,
-            pool_dc_reserve_c,
-            msg="Reserve of token_c in D-C pool should be decreased",
+        )
+        self.assertLessEqual(
+            abs(final_reserve_d_c - (pool_dc_reserve_d + second_intermediate_amount)),
+            1,
+            msg="Reserve of token_d in D-C pool should be increased by second_intermediate_amount",
+        )
+        self.assertLessEqual(
+            abs(final_reserve_c_d - (pool_dc_reserve_c - amount_out)),
+            1,
+            msg="Reserve of token_c in D-C pool should be decreased by amount_out",
         )
 
         self._check_balance()
