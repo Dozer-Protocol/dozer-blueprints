@@ -91,22 +91,41 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 self.nc_id, "get_pools_for_token", token_uid
             )
             for pool in token_to_pools:
+                logger.error(
+                    f"Token: {token_uid.hex()[-1]}, Pool: {pool.split('/')[0][-1]}/{pool.split('/')[1][-1]}"
+                )
                 token_a_hex, token_b_hex, fee = pool.split("/")
                 token_a = bytes.fromhex(token_a_hex)
                 token_b = bytes.fromhex(token_b_hex)
                 if token_uid == token_a:
+                    logger.error(
+                        f"Reserve A: {self.nc_storage.get(f'pool_reserve_a:{pool}', default=0)}"
+                    )
+                    logger.error(
+                        f"Total Balance A: {self.nc_storage.get(f'pool_total_balance_a:{pool}', default=0)}"
+                    )
                     token_balances[token_uid] = (
                         token_balances.get(token_uid, 0)
                         + self.nc_storage.get(f"pool_reserve_a:{pool}", default=0)
                         + self.nc_storage.get(f"pool_total_balance_a:{pool}", default=0)
                     )
                 else:
+                    logger.error(
+                        f"Reserve B: {self.nc_storage.get(f'pool_reserve_b:{pool}', default=0)}"
+                    )
+                    logger.error(
+                        f"Total Balance B: {self.nc_storage.get(f'pool_total_balance_b:{pool}', default=0)}"
+                    )
                     token_balances[token_uid] = (
                         token_balances.get(token_uid, 0)
                         + self.nc_storage.get(f"pool_reserve_b:{pool}", default=0)
                         + self.nc_storage.get(f"pool_total_balance_b:{pool}", default=0)
                     )
             state_balance = token_balances[token_uid]
+            logger.error(
+                f"Token: {token_uid.hex()[-1]}, State balance: {state_balance}, Contract balance: {contract_balance}"
+            )
+            logger.error("########")
             self.assertEqual(state_balance, contract_balance)
 
     def _create_pool(
@@ -125,7 +144,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             timestamp=self.get_current_timestamp(),
         )
         pool_key = self.runner.call_public_method(
-            self.nc_id, "create_pool", context, token_a, token_b, fee
+            self.nc_id, "create_pool", context, fee
         )
         return pool_key, context.address
 
@@ -148,7 +167,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             actions, tx, address_bytes, timestamp=self.get_current_timestamp()
         )
         result = self.runner.call_public_method(
-            self.nc_id, "add_liquidity", context, token_a, token_b, fee
+            self.nc_id, "add_liquidity", context, fee
         )
         return result, context
 
@@ -205,7 +224,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             actions, tx, address_bytes, timestamp=self.get_current_timestamp()
         )
         result = self.runner.call_public_method(
-            self.nc_id, "remove_liquidity", context, token_a, token_b, fee
+            self.nc_id, "remove_liquidity", context, fee
         )
         return context, result
 
@@ -227,7 +246,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         """Execute a swap_exact_tokens_for_tokens operation"""
         context = self._prepare_swap_context(token_a, amount_in, token_b, amount_out)
         result = self.runner.call_public_method(
-            self.nc_id, "swap_exact_tokens_for_tokens", context, token_a, token_b, fee
+            self.nc_id, "swap_exact_tokens_for_tokens", context, fee
         )
         return result, context
 
@@ -237,7 +256,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         """Execute a swap_tokens_for_exact_tokens operation"""
         context = self._prepare_swap_context(token_a, amount_in, token_b, amount_out)
         result = self.runner.call_public_method(
-            self.nc_id, "swap_tokens_for_exact_tokens", context, token_a, token_b, fee
+            self.nc_id, "swap_tokens_for_exact_tokens", context, fee
         )
         return result, context
 
@@ -284,9 +303,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             timestamp=self.get_current_timestamp(),
         )
         with self.assertRaises(PoolExists):
-            self.runner.call_public_method(
-                self.nc_id, "create_pool", context, self.token_a, self.token_b, 3
-            )
+            self.runner.call_public_method(self.nc_id, "create_pool", context, 3)
         self._check_balance()
 
     def test_create_multiple_pools(self):
@@ -1824,8 +1841,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 self.nc_id,
                 "swap_exact_tokens_for_tokens",
                 context_insufficient,
-                self.token_a,
-                self.token_b,
                 3,
             )
 
@@ -1838,8 +1853,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 self.nc_id,
                 "swap_exact_tokens_for_tokens",
                 context_normal,
-                self.token_a,
-                self.token_c,
                 3,
             )
 
@@ -1852,8 +1865,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 self.nc_id,
                 "swap_exact_tokens_for_tokens",
                 context_wrong_token,
-                self.token_a,
-                self.token_b,
                 3,
             )
 
@@ -1883,9 +1894,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             user_address,
             timestamp=self.get_current_timestamp(),
         )
-        self.runner.call_public_method(
-            self.nc_id, "add_liquidity", context, self.token_a, self.token_b, 3
-        )
+        self.runner.call_public_method(self.nc_id, "add_liquidity", context, 3)
 
         # Now user should have one pool
         user_pools = self.runner.call_view_method(
@@ -1904,9 +1913,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             user_address,
             timestamp=self.get_current_timestamp(),
         )
-        self.runner.call_public_method(
-            self.nc_id, "add_liquidity", context, self.token_b, self.token_c, 10
-        )
+        self.runner.call_public_method(self.nc_id, "add_liquidity", context, 10)
 
         # Now user should have two pools
         user_pools = self.runner.call_view_method(
@@ -1945,9 +1952,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             user_address,
             timestamp=self.get_current_timestamp(),
         )
-        self.runner.call_public_method(
-            self.nc_id, "add_liquidity", context, self.token_a, self.token_b, 3
-        )
+        self.runner.call_public_method(self.nc_id, "add_liquidity", context, 3)
 
         # Now user should have one position
         positions = self.runner.call_view_method(
@@ -1976,9 +1981,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             user_address,
             timestamp=self.get_current_timestamp(),
         )
-        self.runner.call_public_method(
-            self.nc_id, "add_liquidity", context, self.token_a, self.token_c, 5
-        )
+        self.runner.call_public_method(self.nc_id, "add_liquidity", context, 5)
 
         # Now user should have two positions
         positions = self.runner.call_view_method(
@@ -2101,8 +2104,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                     self.nc_id,
                     "add_liquidity",
                     context,
-                    self.token_a,
-                    self.token_b,
                     fee,
                 )
 
@@ -2217,8 +2218,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                         self.nc_id,
                         "swap_exact_tokens_for_tokens",
                         context,
-                        self.token_a,
-                        self.token_b,
                         fee,
                     )
                     transactions += 1
@@ -2270,8 +2269,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                         self.nc_id,
                         "swap_exact_tokens_for_tokens",
                         context,
-                        self.token_b,
-                        self.token_a,
                         fee,
                     )
                     transactions += 1
@@ -2547,11 +2544,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Define pool parameters
         fee_ab_bc = 3  # Fee for A-B and B-C pools
         fee_denominator = 1000
-        reserve_a_b = 1000_00  # Reserve of token_a in A-B pool
-        reserve_b_a = 1000_00  # Reserve of token_b in A-B pool
-        reserve_b_c = 1000_00  # Reserve of token_b in B-C pool
-        reserve_c_b = 1000_00  # Reserve of token_c in B-C pool
-        amount_out = 50_00  # Exact output amount we want
+        reserve_a_b = 100000_00  # Reserve of token_a in A-B pool
+        reserve_b_a = 100000_00  # Reserve of token_b in A-B pool
+        reserve_b_c = 100000_00  # Reserve of token_b in B-C pool
+        reserve_c_b = 100000_00  # Reserve of token_c in B-C pool
+        amount_out = 500_00  # Exact output amount we want
 
         # Create two pools: A-B and B-C for a multi-hop path
         pool_key_ab, _ = self._create_pool(
@@ -2651,7 +2648,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
         self.assertLessEqual(
             abs(new_reserve_c_b - (reserve_c_b - amount_out)),
-            2,
+            1,
             msg="Reserve of token_c in B-C pool should be decreased by amount_out",
         )
 
