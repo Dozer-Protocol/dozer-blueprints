@@ -71,9 +71,9 @@ SETTINGS = HathorSettings(
         bytes.fromhex(
             "42e7f272b6b966f26576a5c1d0c9637f456168c85e18a3e86c0c60e909a93275"
         ): "Vesting",
-        # bytes.fromhex(
-        #     "d6c09caa2f1f7ef6a6f416301c2b665e041fa819a792e53b8409c9c1aed2c89a"
-        # ): "Dozer_Pool_Manager",
+        bytes.fromhex(
+            "d6c09caa2f1f7ef6a6f416301c2b665e041fa819a792e53b8409c9c1aed2c89a"
+        ): "DozerPoolManager",
     },
     SOFT_VOIDED_TX_IDS=list(
         map(
