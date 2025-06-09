@@ -500,7 +500,7 @@ class Dozer_Pool_v1_1(Blueprint):
             return (self.token_a, change)
 
     @public
-    def remove_liquidity(self, ctx: Context):
+    def remove_liquidity(self, ctx: Context) -> None:
         """Remove liquidity from the pool."""
         action_a, action_b = self._get_actions_out_out(ctx)
         if self.user_liquidity[ctx.address] == 0:

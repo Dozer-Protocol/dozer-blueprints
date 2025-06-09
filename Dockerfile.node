@@ -1,5 +1,5 @@
 # Use the official Python image as the base image
-FROM python:3.11-slim-bullseye
+FROM python:3.12-slim-bullseye
 RUN apt-get -qy update
 RUN apt-get -qy install libssl1.1 graphviz librocksdb6.11
 # dev deps for this build start here
