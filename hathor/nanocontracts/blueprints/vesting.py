@@ -128,7 +128,7 @@ class Vesting(Blueprint):
 
         return Amount(min(vested_amount, total_amount))
 
-    @public
+    @public(allow_deposit=True)
     def initialize(self, ctx: Context, token_uid: bytes) -> None:
         """Initialize contract with token deposit."""
         self.token_uid = token_uid

@@ -19,5 +19,5 @@ services:
         "--disable-warnings",
         "-qq", # quiet mode
         "--tb=short", # shorter traceback
-        "tests/nanocontracts/blueprints/test_dozer_pool_manager.py",
+        "tests/nanocontracts/blueprints/test_token_manager.py",
       ]

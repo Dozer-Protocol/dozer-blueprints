@@ -347,7 +347,7 @@ class DozerPoolManager(Blueprint):
         if token == token_a:
             # Update balance_a using the partial approach
             partial_balance_a = self.pool_balance_a.get(pool_key, {})
-            partial_balance_a[address] = Amount(partial_balance_a.get(address, Amount(0)) + amount)
+            partial_balance_a.update({address: Amount(partial_balance_a.get(address, Amount(0)) + amount)})
             self.pool_balance_a[pool_key] = partial_balance_a
 
             # Update total balance
@@ -357,7 +357,7 @@ class DozerPoolManager(Blueprint):
         else:
             # Update balance_b using the partial approach
             partial_balance_b = self.pool_balance_b.get(pool_key, {})
-            partial_balance_b[address] = Amount(partial_balance_b.get(address, 0) + amount)
+            partial_balance_b.update({address: Amount(partial_balance_b.get(address, 0) + amount)})
             self.pool_balance_b[pool_key] = partial_balance_b
 
             # Update total balance
@@ -605,9 +605,6 @@ class DozerPoolManager(Blueprint):
         self.pool_total_balance_b[pool_key] = Amount(0)
         self.pool_last_activity[pool_key] = Timestamp(ctx.timestamp)
 
-        # Initialize balance dictionaries
-        # self.pool_balance_a[pool_key] = {}
-        # self.pool_balance_b[pool_key] = {}
 
         # Update registry
         # all_pools should already be initialized by the Blueprint system

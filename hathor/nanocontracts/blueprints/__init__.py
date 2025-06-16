@@ -24,6 +24,7 @@ from hathor.nanocontracts.blueprints.dozer_pool_v1_1 import Dozer_Pool_v1_1
 from hathor.nanocontracts.blueprints.khensu import Khensu
 from hathor.nanocontracts.blueprints.oasis import Oasis
 from hathor.nanocontracts.blueprints.stake import Stake
+from hathor.nanocontracts.blueprints.token_manager import TokenManager
 from hathor.nanocontracts.blueprints.vesting import Vesting
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ _blueprints_mapper: dict[str, Type["Blueprint"]] = {
     "Dao": DAO,
     "Khensu": Khensu,
     "Stake": Stake,
+    "TokenManager": TokenManager,
     "Vesting": Vesting,
     "DozerPoolManager": DozerPoolManager,
 }
@@ -53,5 +55,6 @@ __all__ = [
     "DAO",
     "Khensu",
     "Stake",
+    "TokenManager",
     "Vesting",
 ]
