@@ -77,6 +77,9 @@ SETTINGS = HathorSettings(
         bytes.fromhex(
             "a1a655a7ae9a74a000b11ecc570a8a026a7804827d26dd0e30bc00dd3659f6cf"
         ): "TokenManager",
+        bytes.fromhex(
+            "698fdf724332cc10ec6cd97f36963794a9da515b2114864cad2898a18e917b68"
+        ): "DozerTools",
     },
     SOFT_VOIDED_TX_IDS=list(
         map(

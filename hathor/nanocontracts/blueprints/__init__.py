@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Type
 # from hathor.nanocontracts.blueprints.bet import Bet
 from hathor.nanocontracts.blueprints.crowdsale import Crowdsale
 from hathor.nanocontracts.blueprints.dao import DAO
-
+from hathor.nanocontracts.blueprints.dozer_tools import DozerTools
 from hathor.nanocontracts.blueprints.dozer_pool_manager import DozerPoolManager
 from hathor.nanocontracts.blueprints.dozer_pool_v1 import Dozer_Pool_v1
 from hathor.nanocontracts.blueprints.dozer_pool_v1_1 import Dozer_Pool_v1_1
@@ -43,6 +43,7 @@ _blueprints_mapper: dict[str, Type["Blueprint"]] = {
     "TokenManager": TokenManager,
     "Vesting": Vesting,
     "DozerPoolManager": DozerPoolManager,
+    "DozerTools": DozerTools,
 }
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "Dozer_Pool_v1",
     "Dozer_Pool_v1_1",
     "DozerPoolManager",
+    "DozerTools",
     "Oasis",
     "Crowdsale",
     "DAO",
