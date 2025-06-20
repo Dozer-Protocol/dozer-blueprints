@@ -35,7 +35,7 @@ class Stake(Blueprint):
 
     # Owner
     owner_balance: Amount
-    owner_address: Address
+    owner_address: bytes
 
     # User
     user_deposits: dict[Address, Amount]
@@ -132,7 +132,7 @@ class Stake(Blueprint):
         self.token_uid = token_uid
         action = self._get_single_deposit_action(ctx)
         self.earnings_per_second = (earnings_per_day * PRECISION) // DAY_IN_SECONDS
-        self.owner_address = Address(ctx.address)
+        self.owner_address = ctx.address
         amount = action.amount
         self._amount_check(amount, earnings_per_day)
         self.owner_balance = Amount(amount)

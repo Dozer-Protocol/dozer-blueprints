@@ -63,6 +63,12 @@ CROWDSALE_BLUEPRINT_ID = BlueprintId(
     )
 )
 
+# Special allocation indices for vesting contract
+STAKING_ALLOCATION_INDEX = 0  # "Staking" - for staking contract
+PUBLIC_SALE_ALLOCATION_INDEX = 1  # "Public Sale" - for crowdsale contract
+DOZER_POOL_ALLOCATION_INDEX = 2  # "Dozer Pool" - for liquidity pool
+# Indices 3-9 available for regular time-locked vesting schedules
+
 # HTR token UID
 HTR_UID = settings.HATHOR_TOKEN_UID
 
@@ -111,6 +117,18 @@ class TokenBlacklisted(DozerToolsError):
 
 class ContractAlreadyExists(DozerToolsError):
     """Raised when trying to create a contract that already exists."""
+
+    pass
+
+
+class VestingNotConfigured(DozerToolsError):
+    """Raised when trying to access vesting that is not configured."""
+
+    pass
+
+
+class InvalidAllocation(DozerToolsError):
+    """Raised when allocation percentages are invalid."""
 
     pass
 
@@ -178,6 +196,14 @@ class DozerTools(Blueprint):
 
     # TODO: Change project_pools to support multiple pools (list[str]) later
     project_pools: dict[TokenUid, str]  # token_uid -> pool_key (single pool for now)
+
+    # Special allocation percentages (0 means not configured)
+    project_staking_percentage: dict[TokenUid, int]  # token_uid -> staking %
+    project_public_sale_percentage: dict[TokenUid, int]  # token_uid -> public sale %
+    project_dozer_pool_percentage: dict[TokenUid, int]  # token_uid -> dozer pool %
+
+    # Vesting configuration status
+    project_vesting_configured: dict[TokenUid, bool]  # token_uid -> is_configured
 
     def _only_owner(self, ctx: Context) -> None:
         """Ensure only the contract owner can call this method."""
@@ -369,12 +395,33 @@ class DozerTools(Blueprint):
         if whitepaper_url != "":
             self.project_whitepaper_url[token_uid] = whitepaper_url
 
-        # Initialize contract references to null
-        self.project_vesting_contract[token_uid] = NULL_CONTRACT_ID
+        # Create vesting contract and deposit ALL tokens
+        vesting_salt = self._generate_salt(ctx, token_uid, "vesting")
+        vesting_actions: list[NCAction] = [
+            NCDepositAction(token_uid=token_uid, amount=total_supply)
+        ]
+
+        vesting_id, _ = self.syscall.create_contract(
+            VESTING_BLUEPRINT_ID,
+            vesting_salt,
+            vesting_actions,
+            token_uid,  # Initialize vesting with the token
+        )
+
+        # Initialize contract references
+        self.project_vesting_contract[token_uid] = vesting_id
         self.project_staking_contract[token_uid] = NULL_CONTRACT_ID
         self.project_dao_contract[token_uid] = NULL_CONTRACT_ID
         self.project_crowdsale_contract[token_uid] = NULL_CONTRACT_ID
         self.project_pools[token_uid] = ""
+
+        # Initialize special allocation percentages (0 means not configured)
+        self.project_staking_percentage[token_uid] = 0
+        self.project_public_sale_percentage[token_uid] = 0
+        self.project_dozer_pool_percentage[token_uid] = 0
+
+        # Initialize vesting configuration status
+        self.project_vesting_configured[token_uid] = False
 
         # Initialize credit balances
         self.project_htr_balance[token_uid] = Amount(0)
@@ -427,54 +474,11 @@ class DozerTools(Blueprint):
         else:
             raise InsufficientCredits("Only HTR and DZR deposits accepted")
 
-    @public(allow_deposit=True)
-    def create_vesting_contract(
-        self,
-        ctx: Context,
-        token_uid: TokenUid,
-    ) -> ContractId:
-        """Create vesting contract and transfer all tokens/authorities to it.
-
-        Args:
-            ctx: Transaction context
-            token_uid: Project token UID
-
-        Returns:
-            ContractId of the created vesting contract
-        """
-        self._only_project_dev(ctx, token_uid)
-        self._charge_fee(ctx, token_uid, "create_vesting_contract")
-
-        if (
-            self.project_vesting_contract.get(token_uid, NULL_CONTRACT_ID)
-            != NULL_CONTRACT_ID
-        ):
-            raise ContractAlreadyExists("Vesting contract already exists")
-
-        # Get all tokens from contract balance
-        token_balance = self.syscall.get_current_balance(token_uid)
-
-        # Generate salt and create vesting contract
-        salt = self._generate_salt(ctx, token_uid, "vesting")
-        actions: list[NCAction] = [
-            NCDepositAction(token_uid=token_uid, amount=token_balance)
-        ]
-
-        vesting_id, _ = self.syscall.create_contract(
-            VESTING_BLUEPRINT_ID, salt, actions, token_uid
-        )
-
-        # TODO: Configure allocations and transfer authorities to vesting contract
-
-        self.project_vesting_contract[token_uid] = vesting_id
-        return vesting_id
-
-    @public(allow_deposit=True)
+    @public
     def create_staking_contract(
         self,
         ctx: Context,
         token_uid: TokenUid,
-        token_amount: Amount,
         earnings_per_day: int,
     ) -> ContractId:
         """Create staking contract with tokens from vesting contract.
@@ -482,7 +486,6 @@ class DozerTools(Blueprint):
         Args:
             ctx: Transaction context
             token_uid: Project token UID
-            token_amount: Amount of tokens to transfer to staking contract
             earnings_per_day: Daily earnings rate for staking rewards
 
         Returns:
@@ -497,21 +500,46 @@ class DozerTools(Blueprint):
         ):
             raise ContractAlreadyExists("Staking contract already exists")
 
-        vesting_contract = self.project_vesting_contract.get(
-            token_uid, NULL_CONTRACT_ID
-        )
-        if vesting_contract == NULL_CONTRACT_ID:
-            raise ProjectNotFound("Vesting contract must be created first")
+        if not self.project_vesting_configured.get(token_uid, False):
+            raise VestingNotConfigured("Vesting must be configured first")
 
-        # TODO: Get tokens from vesting contract
-        # For now, create staking contract with deposited tokens
+        staking_percentage = self.project_staking_percentage.get(token_uid, 0)
+        if staking_percentage == 0:
+            raise InvalidAllocation("No staking allocation configured")
+
+        return self._create_staking(ctx, token_uid, earnings_per_day)
+
+    def _create_staking(
+        self, ctx: Context, token_uid: TokenUid, earnings_per_day: int
+    ) -> ContractId:
+        """Helper method to create staking contract with tokens from vesting."""
+        vesting_contract = self.project_vesting_contract[token_uid]
+        total_supply = self.project_total_supply[token_uid]
+        staking_percentage = self.project_staking_percentage[token_uid]
+
+        # Calculate staking allocation amount
+        staking_amount = Amount((total_supply * staking_percentage) // 100)
+
+        # Withdraw tokens from vesting contract (staking allocation)
+        withdraw_actions: list[NCAction] = [
+            NCWithdrawalAction(token_uid=token_uid, amount=staking_amount)
+        ]
+
+        self.syscall.call_public_method(
+            vesting_contract,
+            "claim_allocation",
+            withdraw_actions,
+            STAKING_ALLOCATION_INDEX,
+        )
+
+        # Create staking contract with withdrawn tokens
         salt = self._generate_salt(ctx, token_uid, "staking")
-        actions: list[NCAction] = [
-            NCDepositAction(token_uid=token_uid, amount=token_amount)
+        staking_actions: list[NCAction] = [
+            NCDepositAction(token_uid=token_uid, amount=staking_amount)
         ]
 
         staking_id, _ = self.syscall.create_contract(
-            STAKING_BLUEPRINT_ID, salt, actions, earnings_per_day, token_uid
+            STAKING_BLUEPRINT_ID, salt, staking_actions, earnings_per_day, token_uid
         )
 
         self.project_staking_contract[token_uid] = staking_id
@@ -576,12 +604,11 @@ class DozerTools(Blueprint):
         self.project_dao_contract[token_uid] = dao_id
         return dao_id
 
-    @public(allow_deposit=True)
+    @public
     def create_crowdsale_contract(
         self,
         ctx: Context,
         token_uid: TokenUid,
-        token_amount: Amount,
         rate: Amount,
         soft_cap: Amount,
         hard_cap: Amount,
@@ -595,7 +622,6 @@ class DozerTools(Blueprint):
         Args:
             ctx: Transaction context
             token_uid: Project token UID
-            token_amount: Amount of tokens to transfer to crowdsale contract
             rate: Tokens per HTR
             soft_cap: Minimum goal in HTR
             hard_cap: Maximum cap in HTR
@@ -616,16 +642,67 @@ class DozerTools(Blueprint):
         ):
             raise ContractAlreadyExists("Crowdsale contract already exists")
 
+        if not self.project_vesting_configured.get(token_uid, False):
+            raise VestingNotConfigured("Vesting must be configured first")
+
+        public_sale_percentage = self.project_public_sale_percentage.get(token_uid, 0)
+        if public_sale_percentage == 0:
+            raise InvalidAllocation("No public sale allocation configured")
+
+        return self._create_crowdsale(
+            ctx,
+            token_uid,
+            rate,
+            soft_cap,
+            hard_cap,
+            min_deposit,
+            start_time,
+            end_time,
+            platform_fee,
+        )
+
+    def _create_crowdsale(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        rate: Amount,
+        soft_cap: Amount,
+        hard_cap: Amount,
+        min_deposit: Amount,
+        start_time: Timestamp,
+        end_time: Timestamp,
+        platform_fee: Amount,
+    ) -> ContractId:
+        """Helper method to create crowdsale contract with tokens from vesting."""
+        vesting_contract = self.project_vesting_contract[token_uid]
+        total_supply = self.project_total_supply[token_uid]
+        public_sale_percentage = self.project_public_sale_percentage[token_uid]
+
+        # Calculate public sale allocation amount
+        public_sale_amount = Amount((total_supply * public_sale_percentage) // 100)
+
+        # Withdraw tokens from vesting contract (public sale allocation)
+        withdraw_actions: list[NCAction] = [
+            NCWithdrawalAction(token_uid=token_uid, amount=public_sale_amount)
+        ]
+
+        self.syscall.call_public_method(
+            vesting_contract,
+            "claim_allocation",
+            withdraw_actions,
+            PUBLIC_SALE_ALLOCATION_INDEX,
+        )
+
         # Generate salt and create crowdsale contract
         salt = self._generate_salt(ctx, token_uid, "crowdsale")
-        actions: list[NCAction] = [
-            NCDepositAction(token_uid=token_uid, amount=token_amount)
+        crowdsale_actions: list[NCAction] = [
+            NCDepositAction(token_uid=token_uid, amount=public_sale_amount)
         ]
 
         crowdsale_id, _ = self.syscall.create_contract(
             CROWDSALE_BLUEPRINT_ID,
             salt,
-            actions,
+            crowdsale_actions,
             token_uid,
             rate,
             soft_cap,
@@ -644,7 +721,6 @@ class DozerTools(Blueprint):
         self,
         ctx: Context,
         token_uid: TokenUid,
-        token_amount: Amount,
         htr_amount: Amount,
         fee: Amount,
     ) -> str:
@@ -653,8 +729,7 @@ class DozerTools(Blueprint):
         Args:
             ctx: Transaction context
             token_uid: Project token UID
-            token_amount: Amount of project tokens to add to pool
-            htr_amount: Amount of HTR to add to pool
+            htr_amount: Amount of HTR to add to pool (user must deposit)
             fee: Pool fee (e.g., 3 for 0.3%)
 
         Returns:
@@ -666,15 +741,47 @@ class DozerTools(Blueprint):
         if self.project_pools.get(token_uid, "") != "":
             raise ContractAlreadyExists("Liquidity pool already exists")
 
-        # Prepare actions for pool creation
-        actions: list[NCAction] = [
-            NCDepositAction(token_uid=token_uid, amount=token_amount),
+        if not self.project_vesting_configured.get(token_uid, False):
+            raise VestingNotConfigured("Vesting must be configured first")
+
+        dozer_pool_percentage = self.project_dozer_pool_percentage.get(token_uid, 0)
+        if dozer_pool_percentage == 0:
+            raise InvalidAllocation("No dozer pool allocation configured")
+
+        return self._create_liquidity_pool(ctx, token_uid, htr_amount, fee)
+
+    def _create_liquidity_pool(
+        self, ctx: Context, token_uid: TokenUid, htr_amount: Amount, fee: Amount
+    ) -> str:
+        """Helper method to create liquidity pool with tokens from vesting."""
+        vesting_contract = self.project_vesting_contract[token_uid]
+        total_supply = self.project_total_supply[token_uid]
+        dozer_pool_percentage = self.project_dozer_pool_percentage[token_uid]
+
+        # Calculate dozer pool allocation amount
+        dozer_pool_amount = Amount((total_supply * dozer_pool_percentage) // 100)
+
+        # Withdraw tokens from vesting contract (dozer pool allocation)
+        withdraw_actions: list[NCAction] = [
+            NCWithdrawalAction(token_uid=token_uid, amount=dozer_pool_amount)
+        ]
+
+        self.syscall.call_public_method(
+            vesting_contract,
+            "claim_allocation",
+            withdraw_actions,
+            DOZER_POOL_ALLOCATION_INDEX,
+        )
+
+        # Prepare actions for pool creation (tokens from vesting + HTR from user)
+        pool_actions: list[NCAction] = [
+            NCDepositAction(token_uid=token_uid, amount=dozer_pool_amount),
             NCDepositAction(token_uid=TokenUid(HTR_UID), amount=htr_amount),
         ]
 
         # Call DozerPoolManager to create pool
         pool_key = self.syscall.call_public_method(
-            self.dozer_pool_manager_id, "create_pool", actions, fee
+            self.dozer_pool_manager_id, "create_pool", pool_actions, fee
         )
 
         self.project_pools[token_uid] = pool_key
@@ -966,3 +1073,366 @@ class DozerTools(Blueprint):
             "minimum_deposit": str(self.minimum_deposit),
             "total_projects": str(self.total_projects_count),
         }
+
+    @view
+    def get_project_vesting_overview(self, token_uid: TokenUid) -> dict[str, str]:
+        """Get comprehensive vesting information with special allocation rules.
+
+        Args:
+            token_uid: Project token UID
+
+        Returns:
+            Dictionary with combined vesting information
+        """
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+
+        if not self.project_vesting_configured.get(token_uid, False):
+            return {
+                "vesting_configured": "false",
+                "vesting_contract": self.project_vesting_contract.get(
+                    token_uid, NULL_CONTRACT_ID
+                ).hex(),
+                "message": "Vesting not configured yet",
+            }
+
+        vesting_contract = self.project_vesting_contract[token_uid]
+        current_timestamp = 0  # In real usage, this would be ctx.timestamp
+
+        # Get base vesting information for special allocations
+        overview = {
+            "vesting_configured": "true",
+            "vesting_contract": vesting_contract.hex(),
+        }
+
+        # Special allocation information with custom rules
+        staking_percentage = self.project_staking_percentage.get(token_uid, 0)
+        if staking_percentage > 0:
+            staking_contract = self.project_staking_contract.get(
+                token_uid, NULL_CONTRACT_ID
+            )
+            if staking_contract != NULL_CONTRACT_ID:
+                # Staking tokens are distributed via emissions, show as active
+                overview["staking_status"] = "active"
+                overview["staking_percentage"] = str(staking_percentage)
+                overview["staking_contract"] = staking_contract.hex()
+            else:
+                # Staking allocation exists but contract not created
+                overview["staking_status"] = "allocated_not_deployed"
+                overview["staking_percentage"] = str(staking_percentage)
+
+        public_sale_percentage = self.project_public_sale_percentage.get(token_uid, 0)
+        if public_sale_percentage > 0:
+            crowdsale_contract = self.project_crowdsale_contract.get(
+                token_uid, NULL_CONTRACT_ID
+            )
+            if crowdsale_contract != NULL_CONTRACT_ID:
+                # Get crowdsale status to determine unlock status
+                # In reality, we'd call crowdsale contract view methods
+                overview["public_sale_status"] = "deployed"
+                overview["public_sale_percentage"] = str(public_sale_percentage)
+                overview["crowdsale_contract"] = crowdsale_contract.hex()
+            else:
+                overview["public_sale_status"] = "allocated_not_deployed"
+                overview["public_sale_percentage"] = str(public_sale_percentage)
+
+        dozer_pool_percentage = self.project_dozer_pool_percentage.get(token_uid, 0)
+        if dozer_pool_percentage > 0:
+            pool_key = self.project_pools.get(token_uid, "")
+            if pool_key != "":
+                # Pool created, tokens are 100% liquid
+                overview["dozer_pool_status"] = "deployed"
+                overview["dozer_pool_percentage"] = str(dozer_pool_percentage)
+                overview["pool_key"] = pool_key
+            else:
+                overview["dozer_pool_status"] = "allocated_not_deployed"
+                overview["dozer_pool_percentage"] = str(dozer_pool_percentage)
+
+        return overview
+
+    @view
+    def get_project_token_distribution(self, token_uid: TokenUid) -> dict[str, str]:
+        """Show how tokens are distributed across contracts and vesting.
+
+        Args:
+            token_uid: Project token UID
+
+        Returns:
+            Dictionary with token distribution information
+        """
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+
+        total_supply = self.project_total_supply[token_uid]
+        distribution = {
+            "total_supply": str(total_supply),
+            "vesting_contract": self.project_vesting_contract.get(
+                token_uid, NULL_CONTRACT_ID
+            ).hex(),
+        }
+
+        if not self.project_vesting_configured.get(token_uid, False):
+            distribution["status"] = "all_tokens_in_vesting_unconfigured"
+            return distribution
+
+        # Calculate token distribution
+        staking_percentage = self.project_staking_percentage.get(token_uid, 0)
+        public_sale_percentage = self.project_public_sale_percentage.get(token_uid, 0)
+        dozer_pool_percentage = self.project_dozer_pool_percentage.get(token_uid, 0)
+
+        regular_percentage = (
+            100 - staking_percentage - public_sale_percentage - dozer_pool_percentage
+        )
+
+        distribution["staking_allocation_percentage"] = str(staking_percentage)
+        distribution["public_sale_allocation_percentage"] = str(public_sale_percentage)
+        distribution["dozer_pool_allocation_percentage"] = str(dozer_pool_percentage)
+        distribution["regular_vesting_percentage"] = str(regular_percentage)
+
+        # Contract deployment status
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        pool_key = self.project_pools.get(token_uid, "")
+
+        distribution["staking_deployed"] = (
+            "true" if staking_contract != NULL_CONTRACT_ID else "false"
+        )
+        distribution["crowdsale_deployed"] = (
+            "true" if crowdsale_contract != NULL_CONTRACT_ID else "false"
+        )
+        distribution["pool_deployed"] = "true" if pool_key != "" else "false"
+
+        if staking_contract != NULL_CONTRACT_ID:
+            distribution["staking_contract"] = staking_contract.hex()
+        if crowdsale_contract != NULL_CONTRACT_ID:
+            distribution["crowdsale_contract"] = crowdsale_contract.hex()
+        if pool_key != "":
+            distribution["pool_key"] = pool_key
+
+        return distribution
+
+    @view
+    def get_vesting_allocation_info(
+        self, token_uid: TokenUid, allocation_index: int
+    ) -> dict[str, str]:
+        """Get information about a specific vesting allocation.
+
+        Args:
+            token_uid: Project token UID
+            allocation_index: Allocation index (0-9)
+
+        Returns:
+            Dictionary with allocation information
+        """
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+
+        if not self.project_vesting_configured.get(token_uid, False):
+            raise VestingNotConfigured("Vesting not configured")
+
+        vesting_contract = self.project_vesting_contract[token_uid]
+        current_timestamp = 0  # In real usage, this would be ctx.timestamp
+
+        # Call vesting contract to get allocation info
+        try:
+            vesting_info = self.syscall.call_view_method(
+                vesting_contract,
+                "get_vesting_info",
+                allocation_index,
+                current_timestamp,
+            )
+
+            # Convert to string dict for consistency
+            return {
+                "name": str(vesting_info.get("name", "")),
+                "beneficiary": str(vesting_info.get("beneficiary", "")),
+                "amount": str(vesting_info.get("amount", 0)),
+                "cliff_months": str(vesting_info.get("cliff_months", 0)),
+                "vesting_months": str(vesting_info.get("vesting_months", 0)),
+                "withdrawn": str(vesting_info.get("withdrawn", 0)),
+                "vested": str(vesting_info.get("vested", 0)),
+                "claimable": str(vesting_info.get("claimable", 0)),
+            }
+        except Exception:
+            raise InvalidAllocation("Allocation not configured")
+
+    @public
+    def configure_project_vesting(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        # Special allocation percentages (0-100, 0 means not used)
+        staking_percentage: int,
+        public_sale_percentage: int,
+        dozer_pool_percentage: int,
+        # Staking configuration (required if staking_percentage > 0)
+        earnings_per_day: int,
+        # Regular vesting schedules (separate lists)
+        allocation_names: list[str],
+        allocation_percentages: list[int],
+        allocation_beneficiaries: list[Address],
+        allocation_cliff_months: list[int],
+        allocation_vesting_months: list[int],
+    ) -> None:
+        """Configure project vesting with special allocations and regular schedules.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            staking_percentage: Percentage for staking (0-100, 0 = not used)
+            public_sale_percentage: Percentage for public sale (0-100, 0 = not used)
+            dozer_pool_percentage: Percentage for dozer pool (0-100, 0 = not used)
+            earnings_per_day: Daily earnings for staking (required if staking_percentage > 0)
+            allocation_names: Names for regular allocations
+            allocation_percentages: Percentages for regular allocations
+            allocation_beneficiaries: Beneficiary addresses for regular allocations
+            allocation_cliff_months: Cliff periods in months for regular allocations
+            allocation_vesting_months: Vesting durations in months for regular allocations
+        """
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "configure_project_vesting")
+
+        if self.project_vesting_configured.get(token_uid, False):
+            raise InvalidAllocation("Vesting already configured")
+
+        # Validate percentage totals
+        total_percentage = (
+            staking_percentage + public_sale_percentage + dozer_pool_percentage
+        )
+        for percentage in allocation_percentages:
+            total_percentage += percentage
+
+        if total_percentage > 100:
+            raise InvalidAllocation("Total allocation exceeds 100%")
+
+        # Validate regular allocation lists have same length
+        if not (
+            len(allocation_names)
+            == len(allocation_percentages)
+            == len(allocation_beneficiaries)
+            == len(allocation_cliff_months)
+            == len(allocation_vesting_months)
+        ):
+            raise InvalidAllocation("All allocation lists must have same length")
+
+        # Configure vesting and start it
+        self._configure_vesting(
+            ctx,
+            token_uid,
+            staking_percentage,
+            public_sale_percentage,
+            dozer_pool_percentage,
+            allocation_names,
+            allocation_percentages,
+            allocation_beneficiaries,
+            allocation_cliff_months,
+            allocation_vesting_months,
+        )
+        self._start_vesting(ctx, token_uid)
+
+        # Mark as configured
+        self.project_vesting_configured[token_uid] = True
+
+        # Auto-create staking contract if staking allocation exists
+        if staking_percentage > 0:
+            self._create_staking(ctx, token_uid, earnings_per_day)
+
+    def _configure_vesting(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        staking_percentage: int,
+        public_sale_percentage: int,
+        dozer_pool_percentage: int,
+        allocation_names: list[str],
+        allocation_percentages: list[int],
+        allocation_beneficiaries: list[Address],
+        allocation_cliff_months: list[int],
+        allocation_vesting_months: list[int],
+    ) -> None:
+        """Configure all vesting allocations (special + regular)."""
+        vesting_contract = self.project_vesting_contract[token_uid]
+        total_supply = self.project_total_supply[token_uid]
+
+        # Store special allocation percentages
+        self.project_staking_percentage[token_uid] = staking_percentage
+        self.project_public_sale_percentage[token_uid] = public_sale_percentage
+        self.project_dozer_pool_percentage[token_uid] = dozer_pool_percentage
+
+        # Configure special allocations (unlocked: cliff=0, vesting=0)
+        if staking_percentage > 0:
+            staking_amount = Amount((total_supply * staking_percentage) // 100)
+            self.syscall.call_public_method(
+                vesting_contract,
+                "configure_vesting",
+                [],
+                STAKING_ALLOCATION_INDEX,
+                staking_amount,
+                Address(
+                    ctx.address
+                ),  # DozerTools is beneficiary for special allocations
+                0,  # cliff_months = 0 (unlocked)
+                0,  # vesting_months = 0 (immediately available)
+                "Staking",
+            )
+
+        if public_sale_percentage > 0:
+            public_sale_amount = Amount((total_supply * public_sale_percentage) // 100)
+            self.syscall.call_public_method(
+                vesting_contract,
+                "configure_vesting",
+                [],
+                PUBLIC_SALE_ALLOCATION_INDEX,
+                public_sale_amount,
+                Address(
+                    ctx.address
+                ),  # DozerTools is beneficiary for special allocations
+                0,  # cliff_months = 0 (unlocked)
+                0,  # vesting_months = 0 (immediately available)
+                "Public Sale",
+            )
+
+        if dozer_pool_percentage > 0:
+            dozer_pool_amount = Amount((total_supply * dozer_pool_percentage) // 100)
+            self.syscall.call_public_method(
+                vesting_contract,
+                "configure_vesting",
+                [],
+                DOZER_POOL_ALLOCATION_INDEX,
+                dozer_pool_amount,
+                Address(
+                    ctx.address
+                ),  # DozerTools is beneficiary for special allocations
+                0,  # cliff_months = 0 (unlocked)
+                0,  # vesting_months = 0 (immediately available)
+                "Dozer Pool",
+            )
+
+        # Configure regular allocations (starting from index 3)
+        for i in range(len(allocation_names)):
+            if allocation_percentages[i] > 0:
+                allocation_amount = Amount(
+                    (total_supply * allocation_percentages[i]) // 100
+                )
+                allocation_index = 3 + i  # Start from index 3
+
+                self.syscall.call_public_method(
+                    vesting_contract,
+                    "configure_vesting",
+                    [],
+                    allocation_index,
+                    allocation_amount,
+                    allocation_beneficiaries[i],
+                    allocation_cliff_months[i],
+                    allocation_vesting_months[i],
+                    allocation_names[i],
+                )
+
+    def _start_vesting(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Start the vesting schedule."""
+        vesting_contract = self.project_vesting_contract[token_uid]
+        self.syscall.call_public_method(vesting_contract, "start_vesting", [])

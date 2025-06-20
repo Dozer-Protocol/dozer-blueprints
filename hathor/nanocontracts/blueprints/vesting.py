@@ -73,7 +73,7 @@ class Vesting(Blueprint):
     """
 
     # Contract state
-    admin: Address
+    admin: bytes
     token_uid: TokenUid
     vesting_start: Timestamp
     is_started: bool
@@ -130,10 +130,15 @@ class Vesting(Blueprint):
             return Amount(0)
 
         vesting_months = self.allocation_durations[index]
+        total_amount = self.allocation_amounts[index]
+
+        # Special case: vesting_months = 0 means immediately available after cliff
+        if vesting_months == 0:
+            return total_amount
+
         months_after_cliff = months_passed - cliff_months
         vesting_months_completed = min(months_after_cliff, vesting_months)
 
-        total_amount = self.allocation_amounts[index]
         vested_amount = (total_amount * vesting_months_completed) // vesting_months
 
         return Amount(min(vested_amount, total_amount))
@@ -144,11 +149,7 @@ class Vesting(Blueprint):
         self.token_uid = token_uid
         action = self._get_single_deposit_action(ctx, token_uid)
 
-        # Ensure ctx.address is an Address (not ContractId)
-        if not hasattr(ctx.address, "__len__") or len(ctx.address) != 25:
-            raise NCFail("Invalid address")
-
-        self.admin = Address(ctx.address)
+        self.admin = ctx.address
         self.available_balance = Amount(action.amount)
         self.total_allocated = Amount(0)
         self.is_started = False
@@ -174,7 +175,7 @@ class Vesting(Blueprint):
         if amount > self.available_balance:
             raise InsufficientAvailableBalance
 
-        if amount <= 0 or cliff_months < 0 or vesting_months <= 0:
+        if amount <= 0 or cliff_months < 0 or vesting_months < 0:
             raise InvalidTimelock("Invalid parameters")
 
         self.allocation_names[index] = name
@@ -263,35 +264,35 @@ class Vesting(Blueprint):
 
         self.available_balance = Amount(self.available_balance - action.amount)
 
-    @public(allow_withdrawal=True)
-    def admin_claim_allocation(self, ctx: Context, index: int) -> None:
-        """Claim vested tokens for an allocation as admin on behalf of the beneficiary.
+    # @public(allow_withdrawal=True)
+    # def admin_claim_allocation(self, ctx: Context, index: int) -> None:
+    #     """Claim vested tokens for an allocation as admin on behalf of the beneficiary.
 
-        This function allows the admin to withdraw tokens and send them to the
-        beneficiary address registered in the allocation. The withdrawal action
-        will be processed to transfer funds directly to the beneficiary.
-        """
-        self._only_admin(ctx)
-        self._validate_index(index)
+    #     This function allows the admin to withdraw tokens and send them to the
+    #     beneficiary address registered in the allocation. The withdrawal action
+    #     will be processed to transfer funds directly to the beneficiary.
+    #     """
+    #     self._only_admin(ctx)
+    #     self._validate_index(index)
 
-        if not self.is_configured.get(index, False):
-            raise AllocationNotConfigured
+    #     if not self.is_configured.get(index, False):
+    #         raise AllocationNotConfigured
 
-        if not self.is_started:
-            raise NCFail("Vesting not started")
+    #     if not self.is_started:
+    #         raise NCFail("Vesting not started")
 
-        action = self._get_single_withdrawal_action(ctx, self.token_uid)
+    #     action = self._get_single_withdrawal_action(ctx, self.token_uid)
 
-        vested = self._calculate_vested_amount(index, Timestamp(ctx.timestamp))
-        withdrawn = self.allocation_withdrawn[index]
-        claimable = vested - withdrawn
+    #     vested = self._calculate_vested_amount(index, Timestamp(ctx.timestamp))
+    #     withdrawn = self.allocation_withdrawn[index]
+    #     claimable = vested - withdrawn
 
-        if action.amount > claimable:
-            raise InsufficientVestedAmount
+    #     if action.amount > claimable:
+    #         raise InsufficientVestedAmount
 
-        self.allocation_withdrawn[index] = Amount(
-            self.allocation_withdrawn[index] + action.amount
-        )
+    #     self.allocation_withdrawn[index] = Amount(
+    #         self.allocation_withdrawn[index] + action.amount
+    #     )
 
     @view
     def get_vesting_info(self, index: int, timestamp: Timestamp) -> dict[str, Any]:

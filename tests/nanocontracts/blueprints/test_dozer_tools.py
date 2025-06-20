@@ -26,10 +26,15 @@ from hathor.nanocontracts.blueprints.dozer_tools import (
     InsufficientCredits,
     TokenBlacklisted,
     ContractAlreadyExists,
+    VestingNotConfigured,
+    InvalidAllocation,
     VESTING_BLUEPRINT_ID,
     STAKING_BLUEPRINT_ID,
     DAO_BLUEPRINT_ID,
     CROWDSALE_BLUEPRINT_ID,
+    STAKING_ALLOCATION_INDEX,
+    PUBLIC_SALE_ALLOCATION_INDEX,
+    DOZER_POOL_ALLOCATION_INDEX,
 )
 from hathor.nanocontracts.blueprints.dozer_pool_manager import DozerPoolManager
 from hathor.nanocontracts.blueprints.vesting import Vesting
@@ -204,11 +209,26 @@ class DozerToolsTest(BlueprintTestCase):
             "https://whitepaper.com",  # whitepaper_url
         )
 
-        # Verify the new token was created and exists in contract balance
-        token_balance = self.runner.get_current_balance(
+        # Verify the new token was created - tokens are now in vesting contract
+        dozer_tools_balance = self.runner.get_current_balance(
             self.dozer_tools_nc_id, token_uid
         )
-        self.assertEqual(token_balance.value, total_supply)
+        self.assertEqual(
+            dozer_tools_balance.value, Amount(0)
+        )  # DozerTools has no tokens
+
+        # Get vesting contract and verify it has all tokens
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        vesting_contract_hex = contracts["vesting_contract"]
+        self.assertNotEqual(vesting_contract_hex, "")
+        vesting_contract_id = ContractId(VertexId(bytes.fromhex(vesting_contract_hex)))
+
+        vesting_balance = self.runner.get_current_balance(
+            vesting_contract_id, token_uid
+        )
+        self.assertEqual(vesting_balance.value, total_supply)
 
         # Verify HTR balance is zero after token creation (HTR was consumed)
         htr_balance = self.runner.get_current_balance(self.dozer_tools_nc_id, htr_uid)
@@ -317,11 +337,26 @@ class DozerToolsTest(BlueprintTestCase):
             "",  # whitepaper_url
         )
 
-        # Verify User 1's token was created and HTR consumed
-        user1_token_balance = self.runner.get_current_balance(
+        # Verify User 1's token was created - tokens are in vesting contract
+        user1_dozer_balance = self.runner.get_current_balance(
             self.dozer_tools_nc_id, user1_token_uid
         )
-        self.assertEqual(user1_token_balance.value, user1_total_supply)
+        self.assertEqual(
+            user1_dozer_balance.value, Amount(0)
+        )  # DozerTools has no tokens
+
+        # Get vesting contract and verify it has all tokens
+        user1_contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", user1_token_uid
+        )
+        user1_vesting_hex = user1_contracts["vesting_contract"]
+        self.assertNotEqual(user1_vesting_hex, "")
+        user1_vesting_id = ContractId(VertexId(bytes.fromhex(user1_vesting_hex)))
+
+        user1_vesting_balance = self.runner.get_current_balance(
+            user1_vesting_id, user1_token_uid
+        )
+        self.assertEqual(user1_vesting_balance.value, user1_total_supply)
 
         # User 2 creates a project with different supply
         user2_token_name = "User2Token"
@@ -357,11 +392,26 @@ class DozerToolsTest(BlueprintTestCase):
             "",  # whitepaper_url
         )
 
-        # Verify User 2's token was created
-        user2_token_balance = self.runner.get_current_balance(
+        # Verify User 2's token was created - tokens are in vesting contract
+        user2_dozer_balance = self.runner.get_current_balance(
             self.dozer_tools_nc_id, user2_token_uid
         )
-        self.assertEqual(user2_token_balance.value, user2_total_supply)
+        self.assertEqual(
+            user2_dozer_balance.value, Amount(0)
+        )  # DozerTools has no tokens
+
+        # Get vesting contract and verify it has all tokens
+        user2_contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", user2_token_uid
+        )
+        user2_vesting_hex = user2_contracts["vesting_contract"]
+        self.assertNotEqual(user2_vesting_hex, "")
+        user2_vesting_id = ContractId(VertexId(bytes.fromhex(user2_vesting_hex)))
+
+        user2_vesting_balance = self.runner.get_current_balance(
+            user2_vesting_id, user2_token_uid
+        )
+        self.assertEqual(user2_vesting_balance.value, user2_total_supply)
 
         # Verify both projects exist and have correct owners
         user1_project_info = self.runner.call_view_method(
@@ -631,6 +681,157 @@ class DozerToolsTest(BlueprintTestCase):
             category,  # category
             "",  # whitepaper_url - empty
         )
+
+    def test_configure_project_vesting(self) -> None:
+        """Test configuring project vesting with special allocations."""
+        # Create a test project
+        token_uid = self._create_test_project("VestingToken", "VEST")
+
+        # Configure vesting with special allocations
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Configure vesting: 20% staking, 10% public sale, 5% dozer pool, 65% regular vesting
+        allocation_names = ["Team", "Advisors"]
+        allocation_percentages = [40, 25]  # 40% team, 25% advisors
+        allocation_beneficiaries = [self.dev_address, self.user_address]
+        allocation_cliff_months = [12, 6]  # 12 months cliff for team, 6 for advisors
+        allocation_vesting_months = [
+            36,
+            24,
+        ]  # 36 months vesting for team, 24 for advisors
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20,  # staking_percentage
+            10,  # public_sale_percentage
+            5,  # dozer_pool_percentage
+            500,  # earnings_per_day
+            allocation_names,
+            allocation_percentages,
+            allocation_beneficiaries,
+            allocation_cliff_months,
+            allocation_vesting_months,
+        )
+
+        # Verify vesting was configured and staking contract auto-created
+        vesting_overview = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_vesting_overview", token_uid
+        )
+
+        self.assertEqual(vesting_overview["vesting_configured"], "true")
+        self.assertEqual(vesting_overview["staking_status"], "active")  # Auto-created
+        self.assertEqual(vesting_overview["staking_percentage"], "20")
+        self.assertIn(
+            "staking_contract", vesting_overview
+        )  # Contract ID should be present
+        self.assertEqual(
+            vesting_overview["public_sale_status"], "allocated_not_deployed"
+        )
+        self.assertEqual(vesting_overview["public_sale_percentage"], "10")
+        self.assertEqual(
+            vesting_overview["dozer_pool_status"], "allocated_not_deployed"
+        )
+        self.assertEqual(vesting_overview["dozer_pool_percentage"], "5")
+
+        # Verify token distribution
+        distribution = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_token_distribution", token_uid
+        )
+
+        self.assertEqual(distribution["staking_allocation_percentage"], "20")
+        self.assertEqual(distribution["public_sale_allocation_percentage"], "10")
+        self.assertEqual(distribution["dozer_pool_allocation_percentage"], "5")
+        self.assertEqual(distribution["regular_vesting_percentage"], "65")
+        self.assertEqual(distribution["staking_deployed"], "true")  # Auto-created
+        self.assertEqual(distribution["crowdsale_deployed"], "false")
+        self.assertEqual(distribution["pool_deployed"], "false")
+        self.assertIn("staking_contract", distribution)  # Contract ID should be present
+
+    def test_create_staking_with_vesting_integration(self) -> None:
+        """Test creating staking contract that withdraws from vesting."""
+        # Create project and configure vesting
+        token_uid = self._create_test_project("StakingToken", "STAKE")
+
+        # Configure vesting with staking allocation
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            30,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            1000,  # earnings_per_day
+            ["Team"],  # allocation_names
+            [70],  # allocation_percentages (70% for team)
+            [self.dev_address],  # allocation_beneficiaries
+            [12],  # allocation_cliff_months
+            [36],  # allocation_vesting_months
+        )
+
+        # Verify staking contract was automatically created during vesting configuration
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+
+        self.assertNotEqual(contracts["staking_contract"], "")
+
+        # Verify updated vesting overview shows staking as active
+        vesting_overview = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_vesting_overview", token_uid
+        )
+
+        self.assertEqual(vesting_overview["staking_status"], "active")
+        self.assertEqual(
+            vesting_overview["staking_contract"], contracts["staking_contract"]
+        )
+
+    def test_invalid_allocation_percentages(self) -> None:
+        """Test validation of allocation percentages."""
+        token_uid = self._create_test_project("InvalidToken", "INV")
+
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Try to configure vesting with total > 100%
+        with self.assertRaises(InvalidAllocation):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "configure_project_vesting",
+                context,
+                token_uid,
+                50,  # staking_percentage
+                30,  # public_sale_percentage
+                20,  # dozer_pool_percentage
+                1000,  # earnings_per_day
+                ["Team"],
+                [10],  # This makes total 110%
+                [self.dev_address],
+                [12],
+                [36],
+            )
 
 
 if __name__ == "__main__":

@@ -388,41 +388,41 @@ class VestingTestCase(BlueprintTestCase):
                 self.contract_id, "claim_allocation", claim_ctx, index
             )
 
-    def test_admin_claim_allocation(self):
-        """Test admin claiming on behalf of beneficiary."""
-        self._initialize_contract()
-        amount = 120_000_00
-        cliff_months = 6
-        vesting_months = 12
-        beneficiary = self._configure_vesting(0, amount, cliff_months, vesting_months)
+    # def test_admin_claim_allocation(self):
+    #     """Test admin claiming on behalf of beneficiary."""
+    #     self._initialize_contract()
+    #     amount = 120_000_00
+    #     cliff_months = 6
+    #     vesting_months = 12
+    #     beneficiary = self._configure_vesting(0, amount, cliff_months, vesting_months)
 
-        # Start vesting
-        start_time = self.now
-        ctx = self.create_context(
-            address=self.admin_address,
-            timestamp=start_time,
-        )
-        self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
+    #     # Start vesting
+    #     start_time = self.now
+    #     ctx = self.create_context(
+    #         address=self.admin_address,
+    #         timestamp=start_time,
+    #     )
+    #     self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
 
-        # Move time to after cliff
-        claim_time = start_time + ((cliff_months + 1) * self.month_in_seconds)
-        expected_vested = amount // vesting_months
+    #     # Move time to after cliff
+    #     claim_time = start_time + ((cliff_months + 1) * self.month_in_seconds)
+    #     expected_vested = amount // vesting_months
 
-        # Admin claims on behalf of beneficiary
-        admin_claim_ctx = self.create_context(
-            actions=[
-                NCWithdrawalAction(token_uid=self.token_uid, amount=expected_vested)
-            ],
-            address=self.admin_address,
-            timestamp=claim_time,
-        )
+    #     # Admin claims on behalf of beneficiary
+    #     admin_claim_ctx = self.create_context(
+    #         actions=[
+    #             NCWithdrawalAction(token_uid=self.token_uid, amount=expected_vested)
+    #         ],
+    #         address=self.admin_address,
+    #         timestamp=claim_time,
+    #     )
 
-        self.runner.call_public_method(
-            self.contract_id, "admin_claim_allocation", admin_claim_ctx, 0
-        )
+    #     self.runner.call_public_method(
+    #         self.contract_id, "admin_claim_allocation", admin_claim_ctx, 0
+    #     )
 
-        # Verify withdrawal was successful
-        info = self.runner.call_view_method(
-            self.contract_id, "get_vesting_info", 0, Timestamp(claim_time)
-        )
-        self.assertEqual(info["withdrawn"], expected_vested)
+    #     # Verify withdrawal was successful
+    #     info = self.runner.call_view_method(
+    #         self.contract_id, "get_vesting_info", 0, Timestamp(claim_time)
+    #     )
+    #     self.assertEqual(info["withdrawn"], expected_vested)

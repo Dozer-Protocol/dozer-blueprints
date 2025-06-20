@@ -70,7 +70,7 @@ class Crowdsale(Blueprint):
     htr_balance: Amount  # Balance of HTR
 
     # Access control
-    owner: Address  # Project owner
+    owner: bytes  # Project owner
     platform: Address  # Platform fee recipient
 
     # Participant tracking
@@ -135,7 +135,7 @@ class Crowdsale(Blueprint):
         self.htr_balance = Amount(0)
 
         # Set control addresses
-        self.owner = Address(ctx.address)
+        self.owner = ctx.address
         self.platform = Address(ctx.address)  # TODO: Configure platform address
 
         # Initialize tracking
