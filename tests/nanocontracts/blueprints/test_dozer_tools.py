@@ -280,137 +280,136 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertEqual(project_info["website"], "")
         self.assertEqual(project_info["category"], "")
 
-    # def test_create_project_multiple_users_htr_isolation(self) -> None:
-    #     """Test that users can't consume each other's HTR when creating projects."""
-    #     # User 1 creates a project
-    #     user1_token_name = "User1Token"
-    #     user1_token_symbol = "U1T"
-    #     user1_total_supply = Amount(100_000)
-    #     user1_required_htr = user1_total_supply // 100
+    def test_create_project_multiple_users_htr_isolation(self) -> None:
+        """Test that users can't consume each other's HTR when creating projects."""
+        # User 1 creates a project
+        user1_token_name = "User1Token"
+        user1_token_symbol = "U1T"
+        user1_total_supply = Amount(100_000)
+        user1_required_htr = user1_total_supply // 100
 
-    #     tx1 = self._get_any_tx()
-    #     htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        tx1 = self._get_any_tx()
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
 
-    #     # User 1 deposits HTR and creates project
-    #     context1 = Context(
-    #         [NCDepositAction(token_uid=htr_uid, amount=user1_required_htr)],
-    #         tx1,
-    #         self.dev_address,  # User 1
-    #         timestamp=self.get_current_timestamp(),
-    #     )
+        # User 1 deposits HTR and creates project
+        context1 = Context(
+            [NCDepositAction(token_uid=htr_uid, amount=user1_required_htr)],
+            tx1,
+            self.dev_address,  # User 1
+            timestamp=self.get_current_timestamp(),
+        )
 
-    #     user1_token_uid = self.runner.call_public_method(
-    #         self.dozer_tools_nc_id,
-    #         "create_project",
-    #         context1,
-    #         user1_token_name,
-    #         user1_token_symbol,
-    #         user1_total_supply,
-    #         "User 1 project",
-    #         "",  # website
-    #         "",  # logo_url
-    #         "",  # twitter
-    #         "",  # telegram
-    #         "",  # discord
-    #         "",  # github
-    #         "DeFi",  # category
-    #         "",  # whitepaper_url
-    #     )
+        user1_token_uid = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context1,
+            user1_token_name,
+            user1_token_symbol,
+            user1_total_supply,
+            "User 1 project",
+            "",  # website
+            "",  # logo_url
+            "",  # twitter
+            "",  # telegram
+            "",  # discord
+            "",  # github
+            "DeFi",  # category
+            "",  # whitepaper_url
+        )
 
-    #     # Verify User 1's token was created and HTR consumed
-    #     user1_token_balance = self.runner.get_current_balance(
-    #         self.dozer_tools_nc_id, user1_token_uid
-    #     )
-    #     self.assertEqual(user1_token_balance.value, user1_total_supply)
+        # Verify User 1's token was created and HTR consumed
+        user1_token_balance = self.runner.get_current_balance(
+            self.dozer_tools_nc_id, user1_token_uid
+        )
+        self.assertEqual(user1_token_balance.value, user1_total_supply)
 
-    #     # User 2 creates a project with different supply
-    #     user2_token_name = "User2Token"
-    #     user2_token_symbol = "U2T"
-    #     user2_total_supply = Amount(200_000)
-    #     user2_required_htr = user2_total_supply // 100
+        # User 2 creates a project with different supply
+        user2_token_name = "User2Token"
+        user2_token_symbol = "U2T"
+        user2_total_supply = Amount(200_000)
+        user2_required_htr = user2_total_supply // 100
 
-    #     tx2 = self._get_any_tx()
+        tx2 = self._get_any_tx()
 
-    #     # User 2 deposits HTR and creates project
-    #     context2 = Context(
-    #         [NCDepositAction(token_uid=htr_uid, amount=2 * user2_required_htr)],
-    #         tx2,
-    #         self.user_address,  # User 2 (different address)
-    #         timestamp=self.get_current_timestamp(),
-    #     )
+        # User 2 deposits HTR and creates project
+        context2 = Context(
+            [NCDepositAction(token_uid=htr_uid, amount=user2_required_htr)],
+            tx2,
+            self.user_address,  # User 2 (different address)
+            timestamp=self.get_current_timestamp(),
+        )
 
-    #     user2_token_uid = self.runner.call_public_method(
-    #         self.dozer_tools_nc_id,
-    #         "create_project",
-    #         context2,
-    #         user2_token_name,
-    #         user2_token_symbol,
-    #         user2_total_supply,
-    #         "User 2 project",
-    #         "",  # website
-    #         "",  # logo_url
-    #         "",  # twitter
-    #         "",  # telegram
-    #         "",  # discord
-    #         "",  # github
-    #         "Gaming",  # category
-    #         "",  # whitepaper_url
-    #     )
+        user2_token_uid = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context2,
+            user2_token_name,
+            user2_token_symbol,
+            user2_total_supply,
+            "User 2 project",
+            "",  # website
+            "",  # logo_url
+            "",  # twitter
+            "",  # telegram
+            "",  # discord
+            "",  # github
+            "Gaming",  # category
+            "",  # whitepaper_url
+        )
 
-    #     # Verify User 2's token was created
-    #     user2_token_balance = self.runner.get_current_balance(
-    #         self.dozer_tools_nc_id, user2_token_uid
-    #     )
-    #     self.assertEqual(user2_token_balance.value, user2_total_supply)
+        # Verify User 2's token was created
+        user2_token_balance = self.runner.get_current_balance(
+            self.dozer_tools_nc_id, user2_token_uid
+        )
+        self.assertEqual(user2_token_balance.value, user2_total_supply)
 
-    #     # Verify both projects exist and have correct owners
-    #     user1_project_info = self.runner.call_view_method(
-    #         self.dozer_tools_nc_id, "get_project_info", user1_token_uid
-    #     )
-    #     user2_project_info = self.runner.call_view_method(
-    #         self.dozer_tools_nc_id, "get_project_info", user2_token_uid
-    #     )
+        # Verify both projects exist and have correct owners
+        user1_project_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_info", user1_token_uid
+        )
+        user2_project_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_info", user2_token_uid
+        )
 
-    #     self.assertEqual(user1_project_info["dev"], self.dev_address.hex())
-    #     self.assertEqual(user1_project_info["category"], "DeFi")
-    #     self.assertEqual(user2_project_info["dev"], self.user_address.hex())
-    #     self.assertEqual(user2_project_info["category"], "Gaming")
+        self.assertEqual(user1_project_info["dev"], self.dev_address.hex())
+        self.assertEqual(user1_project_info["category"], "DeFi")
+        self.assertEqual(user2_project_info["dev"], self.user_address.hex())
+        self.assertEqual(user2_project_info["category"], "Gaming")
 
-    #     # Verify total projects count
-    #     contract_info = self.runner.call_view_method(
-    #         self.dozer_tools_nc_id, "get_contract_info"
-    #     )
-    #     # Should be 2
-    #     self.assertEqual(contract_info["total_projects"], "2")
+        # Verify total projects count
+        contract_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_contract_info"
+        )
+        # Should be 2
+        self.assertEqual(contract_info["total_projects"], "2")
 
-    #     # Test that User 2 cannot create project without proper HTR deposit
-    #     tx3 = self._get_any_tx()
-    #     insufficient_context = Context(
-    #         [NCDepositAction(token_uid=htr_uid, amount=Amount(2))],  # Insufficient HTR
-    #         tx3,
-    #         self.user_address,
-    #         timestamp=self.get_current_timestamp(),
-    #     )
+        # Test that User 2 cannot create project without proper HTR deposit
+        tx3 = self._get_any_tx()
+        insufficient_context = Context(
+            [NCDepositAction(token_uid=htr_uid, amount=Amount(2))],  # Insufficient HTR
+            tx3,
+            self.user_address,
+            timestamp=self.get_current_timestamp(),
+        )
 
-    #     with self.assertRaises(InsufficientCredits):
-    #         self.runner.call_public_method(
-    #             self.dozer_tools_nc_id,
-    #             "create_project",
-    #             insufficient_context,
-    #             "Fail",
-    #             "FAIL",
-    #             Amount(1000),
-    #             "Should fail",
-    #             "",
-    #             "",
-    #             "",
-    #             "",
-    #             "",
-    #             "",
-    #             "",
-    #             "",
-    #             "",
-    #         )
+        with self.assertRaises(InsufficientCredits):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "create_project",
+                insufficient_context,
+                "Fail",
+                "FAIL",
+                Amount(1000),
+                "Should fail",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            )
 
     def test_deposit_credits(self) -> None:
         """Test depositing HTR and DZR credits to project."""

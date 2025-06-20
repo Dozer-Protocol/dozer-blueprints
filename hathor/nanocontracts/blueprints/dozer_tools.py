@@ -316,7 +316,7 @@ class DozerTools(Blueprint):
         # Cast to deposit action to access amount safely
         if isinstance(htr_action, NCDepositAction):
             required_htr = total_supply // 100  # 1% of total supply
-            if htr_action.amount < required_htr:
+            if htr_action.amount != required_htr:
                 raise InsufficientCredits(
                     "HTR deposit amount must be at least 1 percent of total supply"
                 )
