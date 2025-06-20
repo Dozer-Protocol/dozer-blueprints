@@ -2,7 +2,7 @@ from typing import List
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
-from hathor.nanocontracts.types import NCAction, NCActionType, public, view
+from hathor.nanocontracts.types import NCDepositAction, NCWithdrawalAction, public, view
 from hathor.types import Address, Amount, TokenUid, Timestamp, AddressB58
 from math import floor, ceil
 
@@ -30,7 +30,7 @@ class Stake(Blueprint):
     earnings_per_second: int  # Changed to int for fixed-point arithmetic
     total_staked: Amount
     rewards_per_share: int  # Changed to int for fixed-point arithmetic
-    last_reward: Timestamp
+    last_reward: int
     paused: bool  # For emergency pause
 
     # Owner
@@ -40,7 +40,7 @@ class Stake(Blueprint):
     # User
     user_deposits: dict[Address, Amount]
     user_debit: dict[Address, int]  # Changed to int for fixed-point arithmetic
-    user_stake_timestamp: dict[Address, Timestamp]  # For timelock
+    user_stake_timestamp: dict[Address, int]  # For timelock
 
     def _validate_state(self) -> None:
         """Validate contract state invariants"""
@@ -62,7 +62,7 @@ class Stake(Blueprint):
     def _validate_unstake_time(self, ctx: Context, address: Address) -> None:
         """Validate unstaking timelock"""
         if (
-            ctx.timestamp
+            int(ctx.timestamp)
             < self.user_stake_timestamp[address] + MIN_PERIOD_DAYS * DAY_IN_SECONDS
         ):
             raise InvalidTime("Staking period not completed")
@@ -72,33 +72,38 @@ class Stake(Blueprint):
         if amount < MIN_PERIOD_DAYS * earnings_per_day:
             raise InsufficientBalance(f"keep enough for {MIN_PERIOD_DAYS} days")
 
-    def _get_action(
-        self, ctx: Context, action_type: NCActionType, auth: bool
-    ) -> NCAction:
-        """Returns one action tested by type and token"""
-        if len(ctx.actions) != 1:
-            raise InvalidActions("only one action supported")
-        if self.token_uid not in ctx.actions:
-            raise InvalidTokens(f"token different from {self.token_uid.hex()}")
-        if ctx.actions[self.token_uid].type != action_type:
-            raise InvalidActions("invalid action")
-        if auth:
-            if ctx.address != self.owner_address:
-                raise Unauthorized("Unauthorized")
+    def _get_single_deposit_action(self, ctx: Context) -> NCDepositAction:
+        """Get a single deposit action for the specified token."""
+        action = ctx.get_single_action(self.token_uid)
+        if not isinstance(action, NCDepositAction):
+            raise InvalidActions("Expected deposit action")
+        return action
 
-        return ctx.actions[self.token_uid]
+    def _get_single_withdrawal_action(self, ctx: Context) -> NCWithdrawalAction:
+        """Get a single withdrawal action for the specified token."""
+        action = ctx.get_single_action(self.token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise InvalidActions("Expected withdrawal action")
+        return action
+
+    def _validate_owner_auth(self, ctx: Context) -> None:
+        """Validate owner authorization"""
+        if ctx.address != self.owner_address:
+            raise Unauthorized("Unauthorized")
 
     def _safe_pay(self, amount: int, address: Address) -> None:
         """Safe payment handling"""
         if amount <= self.owner_balance:
-            self.owner_balance -= amount
-            self.user_deposits[address] += amount
+            self.owner_balance = Amount(self.owner_balance - amount)
+            self.user_deposits[address] = Amount(
+                self.user_deposits.get(address, 0) + amount
+            )
             self._validate_state()
 
     def _update_pool(self, ctx: Context):
         """Update pool with fixed-point arithmetic"""
-        now = ctx.timestamp
-        if self.last_reward != 0 and ctx.timestamp <= self.last_reward:
+        now = int(ctx.timestamp)
+        if self.last_reward != 0 and now <= self.last_reward:
             return
         if self.total_staked == 0:
             self.last_reward = now
@@ -112,24 +117,26 @@ class Stake(Blueprint):
     def _pending_rewards(self, address: Address) -> Amount:
         """Calculate pending rewards with fixed-point arithmetic"""
         if address not in self.user_deposits:
-            return 0
-        return floor(
-            (self.user_deposits[address] * self.rewards_per_share) // PRECISION
-            - self.user_debit[address]
+            return Amount(0)
+        return Amount(
+            floor(
+                (self.user_deposits[address] * self.rewards_per_share) // PRECISION
+                - self.user_debit.get(address, 0)
+            )
         )
 
-    @public
+    @public(allow_deposit=True)
     def initialize(
         self, ctx: Context, earnings_per_day: int, token_uid: TokenUid
     ) -> None:
         self.token_uid = token_uid
-        action = self._get_action(ctx, NCActionType.DEPOSIT, False)
+        action = self._get_single_deposit_action(ctx)
         self.earnings_per_second = (earnings_per_day * PRECISION) // DAY_IN_SECONDS
-        self.owner_address = ctx.address
+        self.owner_address = Address(ctx.address)
         amount = action.amount
         self._amount_check(amount, earnings_per_day)
-        self.owner_balance = amount
-        self.total_staked = 0
+        self.owner_balance = Amount(amount)
+        self.total_staked = Amount(0)
         self.last_reward = 0
         self.rewards_per_share = 0
         self.paused = False
@@ -149,45 +156,46 @@ class Stake(Blueprint):
             raise Unauthorized("Only owner can unpause")
         self.paused = False
 
-    @public
+    @public(allow_withdrawal=True)
     def emergency_withdraw(self, ctx: Context) -> None:
         """Emergency withdrawal without timelock"""
         if not self.paused:
             raise InvalidState("Contract must be paused")
-        action = self._get_action(ctx, NCActionType.WITHDRAWAL, False)
-        address = ctx.address
+        action = self._get_single_withdrawal_action(ctx)
+        address = Address(ctx.address)
         if address not in self.user_deposits:
             raise Unauthorized("user not staked")
         amount = action.amount
         if amount > self.user_deposits[address]:
             raise InsufficientBalance("insufficient funds")
-        self.user_deposits[address] -= amount
-        self.total_staked -= amount
+        self.user_deposits[address] = Amount(self.user_deposits[address] - amount)
+        self.total_staked = Amount(self.total_staked - amount)
         self._validate_state()
 
-    @public
+    @public(allow_deposit=True)
     def owner_deposit(self, ctx: Context) -> None:
-        action = self._get_action(ctx, NCActionType.DEPOSIT, False)
-        self.owner_balance += action.amount
+        action = self._get_single_deposit_action(ctx)
+        self.owner_balance = Amount(self.owner_balance + action.amount)
         self._validate_state()
 
-    @public
+    @public(allow_withdrawal=True)
     def owner_withdraw(self, ctx: Context) -> None:
-        action = self._get_action(ctx, NCActionType.WITHDRAWAL, True)
+        action = self._get_single_withdrawal_action(ctx)
+        self._validate_owner_auth(ctx)
         amount = action.amount
         if amount > self.owner_balance:
             raise InsufficientBalance("insufficient owner balance")
-        self.owner_balance -= amount
+        self.owner_balance = Amount(self.owner_balance - amount)
         self._validate_state()
 
-    @public
+    @public(allow_deposit=True)
     def stake(self, ctx: Context) -> None:
         if self.paused:
             raise InvalidState("Contract is paused")
         if ctx.address == self.owner_address:
             raise Unauthorized("admin, please use other address to stake")
-        action = self._get_action(ctx, NCActionType.DEPOSIT, False)
-        address = ctx.address
+        action = self._get_single_deposit_action(ctx)
+        address = Address(ctx.address)
         amount = action.amount
         self._validate_stake_amount(amount)
         self._validate_address(address)
@@ -198,23 +206,24 @@ class Stake(Blueprint):
         pending = self._pending_rewards(address)
         # create entries for newcomers
         if pending == 0:
-            self.user_deposits[address] = 0
-            self.user_stake_timestamp[address] = ctx.timestamp
+            if address not in self.user_deposits:
+                self.user_deposits[address] = Amount(0)
+            self.user_stake_timestamp[address] = int(ctx.timestamp)
 
         self._safe_pay(pending, address)
-        self.user_deposits[address] += amount
-        self.total_staked += amount + pending
+        self.user_deposits[address] = Amount(self.user_deposits[address] + amount)
+        self.total_staked = Amount(self.total_staked + amount + pending)
         self.user_debit[address] = (
             self.user_deposits[address] * self.rewards_per_share
         ) // PRECISION
         self._validate_state()
 
-    @public
+    @public(allow_withdrawal=True)
     def unstake(self, ctx: Context) -> None:
         if self.paused:
             raise InvalidState("Contract is paused")
-        action = self._get_action(ctx, NCActionType.WITHDRAWAL, False)
-        address = ctx.address
+        action = self._get_single_withdrawal_action(ctx)
+        address = Address(ctx.address)
         if address not in self.user_deposits:
             raise Unauthorized("user not staked")
 
@@ -227,14 +236,18 @@ class Stake(Blueprint):
             raise InsufficientBalance("insufficient funds")
 
         # First update total staked
-        self.total_staked = max(0, self.total_staked - self.user_deposits[address])
+        self.total_staked = Amount(
+            max(0, self.total_staked - self.user_deposits[address])
+        )
         # Then set user's deposit to zero before updating with pending rewards
-        self.user_deposits[address] = 0
+        self.user_deposits[address] = Amount(0)
         # Add pending rewards
         if pending > 0:
             self._safe_pay(pending, address)
         # Finally process withdrawal
-        self.user_deposits[address] = max(0, self.user_deposits[address] - amount)
+        self.user_deposits[address] = Amount(
+            max(0, self.user_deposits[address] - amount)
+        )
         self.user_debit[address] = 0
 
         self._validate_state()
@@ -242,25 +255,27 @@ class Stake(Blueprint):
     @view
     def get_max_withdrawal(self, address: Address, timestamp: Timestamp) -> Amount:
         if self.paused:
-            return self.user_deposits.get(address, 0)
+            return Amount(self.user_deposits.get(address, 0))
 
         rewards_per_share = self.rewards_per_share
         if (
-            timestamp >= self.last_reward
+            int(timestamp) >= self.last_reward
             and self.total_staked != 0
             and address in self.user_deposits
         ):
-            multiplier = timestamp - self.last_reward
+            multiplier = int(timestamp) - self.last_reward
             rewards_per_share += (
                 multiplier * self.earnings_per_second
             ) // self.total_staked
-            pending = floor(
-                (self.user_deposits[address] * rewards_per_share) // PRECISION
-                - self.user_debit[address]
+            pending = Amount(
+                floor(
+                    (self.user_deposits[address] * rewards_per_share) // PRECISION
+                    - self.user_debit.get(address, 0)
+                )
             )
-            return self.user_deposits[address] + pending
+            return Amount(self.user_deposits[address] + pending)
         else:
-            return 0
+            return Amount(0)
 
     @view
     def get_user_info(self, address: Address) -> dict[str, int]:
