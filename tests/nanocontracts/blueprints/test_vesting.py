@@ -4,7 +4,13 @@ from hathor.conf.get_settings import HathorSettings
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
-from hathor.nanocontracts.types import NCAction, NCActionType
+from hathor.nanocontracts.types import (
+    NCDepositAction,
+    NCWithdrawalAction,
+    Address,
+    Amount,
+    Timestamp,
+)
 from hathor.wallet.keypair import KeyPair
 from hathor.util import not_none
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
@@ -35,9 +41,9 @@ class VestingTestCase(BlueprintTestCase):
         super().setUp()
 
         # Set up contract
-        self.contract_id = self.gen_random_nanocontract_id()
-        self.runner.register_contract(Vesting, self.contract_id)
-        self.storage = self.runner.get_storage(self.contract_id)
+        self.contract_id = self.gen_random_contract_id()
+        self.blueprint_id = self.gen_random_blueprint_id()
+        self.register_blueprint_class(self.blueprint_id, Vesting)
 
         # Generate test tokens and addresses
         self.token_uid = self.gen_random_token_uid()
@@ -50,28 +56,29 @@ class VestingTestCase(BlueprintTestCase):
         self.initial_deposit = 1_000_000_00
         self.month_in_seconds = MONTH_IN_SECONDS
 
-    def _get_any_address(self) -> tuple[bytes, KeyPair]:
+    def _get_any_address(self) -> tuple[Address, KeyPair]:
         """Generate a random address and keypair."""
         password = os.urandom(12)
         key = KeyPair.create(password)
         address_b58 = key.address
         address_bytes = decode_address(not_none(address_b58))
-        return address_bytes, key
+        return Address(address_bytes), key
 
     def _initialize_contract(self, amount: int | None = None) -> None:
         """Initialize contract with token deposit."""
         if amount is None:
             amount = self.initial_deposit
 
-        ctx = Context(
-            [NCAction(NCActionType.DEPOSIT, self.token_uid, amount)],
-            self.tx,
-            self.admin_address,
-            timestamp=self.clock.seconds(),
+        # Create context with token deposit action
+        ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=self.token_uid, amount=amount)],
+            address=self.admin_address,
+            timestamp=self.now,
         )
 
-        self.runner.call_public_method(
-            self.contract_id, "initialize", ctx, self.token_uid
+        # Use runner.create_contract to create and initialize the contract
+        self.runner.create_contract(
+            self.contract_id, self.blueprint_id, ctx, self.token_uid
         )
 
     def _configure_vesting(
@@ -80,14 +87,17 @@ class VestingTestCase(BlueprintTestCase):
         amount: int,
         cliff_months: int = 6,
         vesting_months: int = 24,
-        beneficiary: bytes | None = None,
+        beneficiary: Address | None = None,
         name: str | None = None,
-    ) -> bytes:
+    ) -> Address:
         """Configure a vesting allocation."""
         if beneficiary is None:
             beneficiary = self._get_any_address()[0]
 
-        ctx = Context([], self.tx, self.admin_address, timestamp=self.clock.seconds())
+        ctx = self.create_context(
+            address=self.admin_address,
+            timestamp=self.now,
+        )
 
         if not name:
             name = "Team"
@@ -97,7 +107,7 @@ class VestingTestCase(BlueprintTestCase):
             "configure_vesting",
             ctx,
             index,
-            amount,
+            Amount(amount),
             beneficiary,
             cliff_months,
             vesting_months,
@@ -110,14 +120,15 @@ class VestingTestCase(BlueprintTestCase):
         """Test contract initialization."""
         # Test initialization with wrong token first
         wrong_token = self.gen_random_token_uid()
-        ctx = Context(
-            [NCAction(NCActionType.DEPOSIT, wrong_token, self.initial_deposit)],
-            self.tx,
-            self.admin_address,
-            timestamp=self.clock.seconds(),
+        ctx = self.create_context(
+            actions=[
+                NCDepositAction(token_uid=wrong_token, amount=self.initial_deposit)
+            ],
+            address=self.admin_address,
+            timestamp=self.now,
         )
 
-        with self.assertRaises(InvalidTokenDeposit):
+        with self.assertRaises(NCFail):
             self.runner.call_public_method(
                 self.contract_id, "initialize", ctx, self.token_uid
             )
@@ -125,12 +136,13 @@ class VestingTestCase(BlueprintTestCase):
         # Then test valid initialization
         self._initialize_contract()
 
-        # Verify initial state
-        self.assertEqual(self.storage.get("admin"), self.admin_address)
-        self.assertEqual(self.storage.get("token_uid"), self.token_uid)
-        self.assertEqual(self.storage.get("available_balance"), self.initial_deposit)
-        self.assertEqual(self.storage.get("total_allocated"), 0)
-        self.assertEqual(self.storage.get("is_started"), False)
+        # Verify initial state using contract instance
+        contract = self.get_readonly_contract(self.contract_id)
+        self.assertEqual(contract.admin, self.admin_address)
+        self.assertEqual(contract.token_uid, self.token_uid)
+        self.assertEqual(contract.available_balance, self.initial_deposit)
+        self.assertEqual(contract.total_allocated, 0)
+        self.assertEqual(contract.is_started, False)
 
     def test_configure_vesting(self):
         """Test vesting configuration."""
@@ -142,7 +154,7 @@ class VestingTestCase(BlueprintTestCase):
 
         # Verify configuration
         info = self.runner.call_view_method(
-            self.contract_id, "get_vesting_info", 0, self.clock.seconds()
+            self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
         )
 
         self.assertEqual(info["beneficiary"], beneficiary)
@@ -160,13 +172,17 @@ class VestingTestCase(BlueprintTestCase):
         amount = 100_000_00
         beneficiary = self._configure_vesting(0, amount)
 
-        start_time = self.clock.seconds()
-        ctx = Context([], self.tx, self.admin_address, timestamp=start_time)
+        start_time = self.now
+        ctx = self.create_context(
+            address=self.admin_address,
+            timestamp=start_time,
+        )
         self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
 
         # Verify started state
-        self.assertTrue(self.storage.get("is_started"))
-        self.assertEqual(self.storage.get("vesting_start"), start_time)
+        contract = self.get_readonly_contract(self.contract_id)
+        self.assertTrue(contract.is_started)
+        self.assertEqual(contract.vesting_start, start_time)
 
         # Test cannot configure after start
         with self.assertRaises(NCFail):
@@ -181,15 +197,17 @@ class VestingTestCase(BlueprintTestCase):
         beneficiary = self._configure_vesting(0, amount, cliff_months, vesting_months)
 
         # Start vesting
-        start_time = self.clock.seconds()
-        ctx = Context([], self.tx, self.admin_address, timestamp=start_time)
+        start_time = self.now
+        ctx = self.create_context(
+            address=self.admin_address,
+            timestamp=start_time,
+        )
         self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
 
         # Try claiming before cliff (should fail)
-        early_claim_ctx = Context(
-            [NCAction(NCActionType.WITHDRAWAL, self.token_uid, 1)],
-            self.tx,
-            beneficiary,
+        early_claim_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=1)],
+            address=beneficiary,
             timestamp=start_time + (cliff_months * self.month_in_seconds) - 1,
         )
         with self.assertRaises(InsufficientVestedAmount):
@@ -200,10 +218,11 @@ class VestingTestCase(BlueprintTestCase):
         # Claim one month after cliff
         after_cliff = start_time + ((cliff_months + 1) * self.month_in_seconds)
         monthly_vesting = amount // vesting_months
-        claim_ctx = Context(
-            [NCAction(NCActionType.WITHDRAWAL, self.token_uid, monthly_vesting)],
-            self.tx,
-            beneficiary,
+        claim_ctx = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=self.token_uid, amount=monthly_vesting)
+            ],
+            address=beneficiary,
             timestamp=after_cliff,
         )
         self.runner.call_public_method(
@@ -212,7 +231,7 @@ class VestingTestCase(BlueprintTestCase):
 
         # Verify withdrawal
         info = self.runner.call_view_method(
-            self.contract_id, "get_vesting_info", 0, after_cliff
+            self.contract_id, "get_vesting_info", 0, Timestamp(after_cliff)
         )
         self.assertEqual(info["withdrawn"], monthly_vesting)
 
@@ -224,20 +243,24 @@ class VestingTestCase(BlueprintTestCase):
         new_beneficiary = self._get_any_address()[0]
 
         # Change beneficiary
-        ctx = Context([], self.tx, old_beneficiary, timestamp=self.clock.seconds())
+        ctx = self.create_context(
+            address=old_beneficiary,
+            timestamp=self.now,
+        )
         self.runner.call_public_method(
             self.contract_id, "change_beneficiary", ctx, 0, new_beneficiary
         )
 
         # Verify change
         info = self.runner.call_view_method(
-            self.contract_id, "get_vesting_info", 0, self.clock.seconds()
+            self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
         )
         self.assertEqual(info["beneficiary"], new_beneficiary)
 
         # Test unauthorized change
-        unauthorized_ctx = Context(
-            [], self.tx, self._get_any_address()[0], timestamp=self.clock.seconds()
+        unauthorized_ctx = self.create_context(
+            address=self._get_any_address()[0],
+            timestamp=self.now,
         )
         with self.assertRaises(InvalidBeneficiary):
             self.runner.call_public_method(
@@ -254,32 +277,34 @@ class VestingTestCase(BlueprintTestCase):
 
         # Test deposit
         deposit_amount = 50_000_00
-        deposit_ctx = Context(
-            [NCAction(NCActionType.DEPOSIT, self.token_uid, deposit_amount)],
-            self.tx,
-            self.admin_address,
-            timestamp=self.clock.seconds(),
+        deposit_ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=self.token_uid, amount=deposit_amount)],
+            address=self.admin_address,
+            timestamp=self.now,
         )
         self.runner.call_public_method(self.contract_id, "deposit_tokens", deposit_ctx)
 
+        contract = self.get_readonly_contract(self.contract_id)
         self.assertEqual(
-            self.storage.get("available_balance"), self.initial_deposit + deposit_amount
+            contract.available_balance, self.initial_deposit + deposit_amount
         )
 
         # Test withdrawal
         withdraw_amount = 20_000_00
-        withdraw_ctx = Context(
-            [NCAction(NCActionType.WITHDRAWAL, self.token_uid, withdraw_amount)],
-            self.tx,
-            self.admin_address,
-            timestamp=self.clock.seconds(),
+        withdraw_ctx = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=self.token_uid, amount=withdraw_amount)
+            ],
+            address=self.admin_address,
+            timestamp=self.now,
         )
         self.runner.call_public_method(
             self.contract_id, "withdraw_available", withdraw_ctx
         )
 
+        contract = self.get_readonly_contract(self.contract_id)
         self.assertEqual(
-            self.storage.get("available_balance"),
+            contract.available_balance,
             self.initial_deposit + deposit_amount - withdraw_amount,
         )
 
@@ -292,8 +317,11 @@ class VestingTestCase(BlueprintTestCase):
         beneficiary = self._configure_vesting(0, amount, cliff_months, vesting_months)
 
         # Start vesting
-        start_time = self.clock.seconds()
-        ctx = Context([], self.tx, self.admin_address, timestamp=start_time)
+        start_time = self.now
+        ctx = self.create_context(
+            address=self.admin_address,
+            timestamp=start_time,
+        )
         self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
 
         # Check vesting at different times
@@ -309,7 +337,7 @@ class VestingTestCase(BlueprintTestCase):
         for months, expected_vested in check_points:
             timestamp = start_time + (months * self.month_in_seconds)
             info = self.runner.call_view_method(
-                self.contract_id, "get_vesting_info", 0, timestamp
+                self.contract_id, "get_vesting_info", 0, Timestamp(timestamp)
             )
             self.assertEqual(
                 info["vested"], expected_vested, f"Incorrect vesting at {months} months"
@@ -331,8 +359,11 @@ class VestingTestCase(BlueprintTestCase):
             beneficiaries.append(beneficiary)
 
         # Start vesting
-        start_time = self.clock.seconds()
-        ctx = Context([], self.tx, self.admin_address, timestamp=start_time)
+        start_time = self.now
+        ctx = self.create_context(
+            address=self.admin_address,
+            timestamp=start_time,
+        )
         self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
 
         # Test each allocation one month after its cliff
@@ -341,15 +372,16 @@ class VestingTestCase(BlueprintTestCase):
             expected_vested = amount // duration
 
             info = self.runner.call_view_method(
-                self.contract_id, "get_vesting_info", index, claim_time
+                self.contract_id, "get_vesting_info", index, Timestamp(claim_time)
             )
             self.assertEqual(info["vested"], expected_vested)
 
             # Test claiming
-            claim_ctx = Context(
-                [NCAction(NCActionType.WITHDRAWAL, self.token_uid, expected_vested)],
-                self.tx,
-                beneficiaries[i],
+            claim_ctx = self.create_context(
+                actions=[
+                    NCWithdrawalAction(token_uid=self.token_uid, amount=expected_vested)
+                ],
+                address=beneficiaries[i],
                 timestamp=claim_time,
             )
             self.runner.call_public_method(
@@ -365,8 +397,11 @@ class VestingTestCase(BlueprintTestCase):
         beneficiary = self._configure_vesting(0, amount, cliff_months, vesting_months)
 
         # Start vesting
-        start_time = self.clock.seconds()
-        ctx = Context([], self.tx, self.admin_address, timestamp=start_time)
+        start_time = self.now
+        ctx = self.create_context(
+            address=self.admin_address,
+            timestamp=start_time,
+        )
         self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
 
         # Move time to after cliff
@@ -374,10 +409,11 @@ class VestingTestCase(BlueprintTestCase):
         expected_vested = amount // vesting_months
 
         # Admin claims on behalf of beneficiary
-        admin_claim_ctx = Context(
-            [NCAction(NCActionType.WITHDRAWAL, self.token_uid, expected_vested)],
-            self.tx,
-            self.admin_address,
+        admin_claim_ctx = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=self.token_uid, amount=expected_vested)
+            ],
+            address=self.admin_address,
             timestamp=claim_time,
         )
 
@@ -387,10 +423,6 @@ class VestingTestCase(BlueprintTestCase):
 
         # Verify withdrawal was successful
         info = self.runner.call_view_method(
-            self.contract_id, "get_vesting_info", 0, claim_time
+            self.contract_id, "get_vesting_info", 0, Timestamp(claim_time)
         )
         self.assertEqual(info["withdrawn"], expected_vested)
-
-        # This method no longer takes a beneficiary parameter, so we don't need to test
-        # passing an invalid beneficiary as it's now impossible
-        # The test for wrong configuration is still covered elsewhere

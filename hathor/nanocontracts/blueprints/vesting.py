@@ -6,8 +6,8 @@ from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
     Address,
     Amount,
-    NCAction,
-    NCActionType,
+    NCDepositAction,
+    NCWithdrawalAction,
     TokenUid,
     Timestamp,
     public,
@@ -101,12 +101,22 @@ class Vesting(Blueprint):
         if ctx.address != self.admin:
             raise NCFail("Only admin can call this method")
 
-    def _get_token_action(self, ctx: Context) -> NCAction:
-        if len(ctx.actions) != 1:
-            raise NCFail("Expected single token action")
-        action = list(ctx.actions.values())[0]
-        if action.token_uid != self.token_uid:
-            raise InvalidTokenDeposit("Invalid token")
+    def _get_single_deposit_action(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> NCDepositAction:
+        """Get a single deposit action for the specified token."""
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCDepositAction):
+            raise NCFail("Expected deposit action")
+        return action
+
+    def _get_single_withdrawal_action(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> NCWithdrawalAction:
+        """Get a single withdrawal action for the specified token."""
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
         return action
 
     def _calculate_vested_amount(self, index: int, timestamp: Timestamp) -> Amount:
@@ -129,15 +139,17 @@ class Vesting(Blueprint):
         return Amount(min(vested_amount, total_amount))
 
     @public(allow_deposit=True)
-    def initialize(self, ctx: Context, token_uid: bytes) -> None:
+    def initialize(self, ctx: Context, token_uid: TokenUid) -> None:
         """Initialize contract with token deposit."""
         self.token_uid = token_uid
-        action = self._get_token_action(ctx)
-        if action.type != NCActionType.DEPOSIT:
-            raise NCFail("Expected deposit action")
+        action = self._get_single_deposit_action(ctx, token_uid)
 
-        self.admin = ctx.address
-        self.available_balance = action.amount
+        # Ensure ctx.address is an Address (not ContractId)
+        if not hasattr(ctx.address, "__len__") or len(ctx.address) != 25:
+            raise NCFail("Invalid address")
+
+        self.admin = Address(ctx.address)
+        self.available_balance = Amount(action.amount)
         self.total_allocated = Amount(0)
         self.is_started = False
 
@@ -173,8 +185,8 @@ class Vesting(Blueprint):
         self.allocation_withdrawn[index] = Amount(0)
         self.is_configured[index] = True
 
-        self.available_balance -= amount
-        self.total_allocated += amount
+        self.available_balance = Amount(self.available_balance - amount)
+        self.total_allocated = Amount(self.total_allocated + amount)
 
     @public
     def start_vesting(self, ctx: Context) -> None:
@@ -185,9 +197,9 @@ class Vesting(Blueprint):
             raise NCFail("Vesting already started")
 
         self.is_started = True
-        self.vesting_start = ctx.timestamp
+        self.vesting_start = Timestamp(ctx.timestamp)
 
-    @public
+    @public(allow_withdrawal=True)
     def claim_allocation(self, ctx: Context, index: int) -> None:
         """Claim vested tokens for an allocation."""
         self._validate_index(index)
@@ -202,18 +214,18 @@ class Vesting(Blueprint):
         if ctx.address != self.admin and ctx.address != beneficiary:
             raise InvalidBeneficiary("Only admin or beneficiary can claim")
 
-        action = self._get_token_action(ctx)
-        if action.type != NCActionType.WITHDRAWAL:
-            raise NCFail("Expected withdrawal action")
+        action = self._get_single_withdrawal_action(ctx, self.token_uid)
 
-        vested = self._calculate_vested_amount(index, ctx.timestamp)
+        vested = self._calculate_vested_amount(index, Timestamp(ctx.timestamp))
         withdrawn = self.allocation_withdrawn[index]
         claimable = vested - withdrawn
 
         if action.amount > claimable:
             raise InsufficientVestedAmount
 
-        self.allocation_withdrawn[index] += action.amount
+        self.allocation_withdrawn[index] = Amount(
+            self.allocation_withdrawn[index] + action.amount
+        )
 
     @public
     def change_beneficiary(
@@ -231,36 +243,31 @@ class Vesting(Blueprint):
 
         self.allocation_addresses[index] = new_beneficiary
 
-    @public
+    @public(allow_deposit=True)
     def deposit_tokens(self, ctx: Context) -> None:
         """Deposit additional tokens to available balance."""
         self._only_admin(ctx)
 
-        action = self._get_token_action(ctx)
-        if action.type != NCActionType.DEPOSIT:
-            raise NCFail("Expected deposit action")
+        action = self._get_single_deposit_action(ctx, self.token_uid)
+        self.available_balance = Amount(self.available_balance + action.amount)
 
-        self.available_balance += action.amount
-
-    @public
+    @public(allow_withdrawal=True)
     def withdraw_available(self, ctx: Context) -> None:
         """Withdraw tokens from available balance."""
         self._only_admin(ctx)
 
-        action = self._get_token_action(ctx)
-        if action.type != NCActionType.WITHDRAWAL:
-            raise NCFail("Expected withdrawal action")
+        action = self._get_single_withdrawal_action(ctx, self.token_uid)
 
         if action.amount > self.available_balance:
             raise InsufficientAvailableBalance
 
-        self.available_balance -= action.amount
+        self.available_balance = Amount(self.available_balance - action.amount)
 
-    @public
+    @public(allow_withdrawal=True)
     def admin_claim_allocation(self, ctx: Context, index: int) -> None:
         """Claim vested tokens for an allocation as admin on behalf of the beneficiary.
-        
-        This function allows the admin to withdraw tokens and send them to the 
+
+        This function allows the admin to withdraw tokens and send them to the
         beneficiary address registered in the allocation. The withdrawal action
         will be processed to transfer funds directly to the beneficiary.
         """
@@ -273,21 +280,18 @@ class Vesting(Blueprint):
         if not self.is_started:
             raise NCFail("Vesting not started")
 
-        # Get the beneficiary address from the allocation directly
-        beneficiary = self.allocation_addresses[index]
-        
-        action = self._get_token_action(ctx)
-        if action.type != NCActionType.WITHDRAWAL:
-            raise NCFail("Expected withdrawal action")
+        action = self._get_single_withdrawal_action(ctx, self.token_uid)
 
-        vested = self._calculate_vested_amount(index, ctx.timestamp)
+        vested = self._calculate_vested_amount(index, Timestamp(ctx.timestamp))
         withdrawn = self.allocation_withdrawn[index]
         claimable = vested - withdrawn
 
         if action.amount > claimable:
             raise InsufficientVestedAmount
 
-        self.allocation_withdrawn[index] += action.amount
+        self.allocation_withdrawn[index] = Amount(
+            self.allocation_withdrawn[index] + action.amount
+        )
 
     @view
     def get_vesting_info(self, index: int, timestamp: Timestamp) -> dict[str, Any]:

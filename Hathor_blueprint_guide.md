@@ -10,6 +10,116 @@ Hathor Network uses **Blueprints** (smart contracts) written in Python that inhe
 2. **Contract Creation Method** - Create new contracts from within a contract
 3. **Token Creation Method** - Create new tokens from within a contract
 
+## Smart Contract Constraints and Best Practices
+
+### Dictionary and Collection Limitations
+
+**CRITICAL**: Smart contracts have strict limitations on collection operations:
+
+```python
+# ❌ NOT ALLOWED - Dictionary iteration
+for key in self.my_dict:
+    # This will fail at runtime
+    pass
+
+# ❌ NOT ALLOWED - Dictionary methods that require iteration
+all_keys = list(self.my_dict.keys())
+all_values = list(self.my_dict.values())
+len(self.my_dict)  # May cause state change errors in view methods
+
+# ✅ ALLOWED - Direct key access
+value = self.my_dict.get(key, default_value)
+self.my_dict[key] = value
+key in self.my_dict
+```
+
+**Solutions for Iteration Needs**:
+```python
+# Instead of iterating over collections, maintain separate counters
+class MyContract(Blueprint):
+    my_items: dict[str, str]
+    total_items_count: int  # Manual counter instead of len()
+    
+    def add_item(self, key: str, value: str):
+        self.my_items[key] = value
+        self.total_items_count += 1  # Manual increment
+```
+
+### Type Safety with Action Objects
+
+When accessing action attributes, always use type checking:
+
+```python
+# ❌ UNSAFE - Direct attribute access
+action = ctx.get_single_action(token_uid)
+amount = action.amount  # May fail if action is not a deposit
+
+# ✅ SAFE - Type checking before access
+action = ctx.get_single_action(token_uid)
+if isinstance(action, NCDepositAction):
+    amount = action.amount
+else:
+    raise CustomError("Expected deposit action")
+```
+
+### State Management in View Methods
+
+View methods cannot modify state, but accessing certain properties might be interpreted as state changes:
+
+```python
+# ❌ May cause "view methods cannot change state" error
+@view
+def get_stats(self) -> dict[str, str]:
+    count = len(self.items)  # Accessing length might trigger state change
+    return {"count": str(count)}
+
+# ✅ Use manual counters for view methods
+@view
+def get_stats(self) -> dict[str, str]:
+    return {"count": str(self.items_count)}
+```
+
+### Fee Initialization Patterns
+
+Always initialize dictionaries in the `initialize` method:
+
+```python
+@public(allow_deposit=True)
+def initialize(self, ctx: Context, ...):
+    # Initialize fee dictionaries to avoid runtime errors
+    self.method_fees_htr = {}
+    self.method_fees_dzr = {}
+```
+
+### Testing Patterns for Multi-User Scenarios
+
+When testing contracts with multiple users, ensure proper isolation:
+
+```python
+def test_multi_user_isolation(self):
+    # User 1 with specific requirements
+    user1_supply = Amount(100_000)
+    user1_htr = user1_supply // 100
+    
+    context1 = Context(
+        [NCDepositAction(token_uid=htr_uid, amount=user1_htr)],
+        tx1,
+        user1_address,
+        timestamp=self.get_current_timestamp(),
+    )
+    
+    # User 2 with different requirements  
+    user2_supply = Amount(200_000)
+    user2_htr = user2_supply // 100
+    
+    context2 = Context(
+        [NCDepositAction(token_uid=htr_uid, amount=user2_htr)],
+        tx2,
+        user2_address,
+        timestamp=self.get_current_timestamp(),
+    )
+```
+
 ## 1. Contract Calling Methods
 
 ### Description

@@ -9,8 +9,8 @@ from hathor.nanocontracts.types import (
     Amount,
     TokenUid,
     Timestamp,
-    NCAction,
-    NCActionType,
+    NCDepositAction,
+    NCWithdrawalAction,
     public,
     view,
 )
@@ -82,7 +82,7 @@ class Crowdsale(Blueprint):
     platform_fees_withdrawn: bool  # Whether platform fees have been withdrawn
     platform_fees_collected: Amount  # Total fees collected
 
-    @public
+    @public(allow_deposit=True)
     def initialize(
         self,
         ctx: Context,
@@ -107,7 +107,9 @@ class Crowdsale(Blueprint):
             raise NCFail("Invalid rate or minimum deposit")
 
         # Validate token deposit
-        action = self._get_token_action(ctx, token_uid, NCActionType.DEPOSIT)
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCDepositAction):
+            raise NCFail("Expected deposit action")
 
         # Validate sufficient tokens for hard cap
         tokens_needed = hard_cap * rate
@@ -129,27 +131,30 @@ class Crowdsale(Blueprint):
         self.total_raised = Amount(0)
         self.total_sold = Amount(0)
         self.participants_count = 0
-        self.sale_token_balance = action.amount
+        self.sale_token_balance = Amount(action.amount)
         self.htr_balance = Amount(0)
 
         # Set control addresses
-        self.owner = ctx.address
-        self.platform = ctx.address  # TODO: Configure platform address
+        self.owner = Address(ctx.address)
+        self.platform = Address(ctx.address)  # TODO: Configure platform address
 
         # Initialize tracking
+        # Note: deposits and claimed dictionaries are automatically initialized as empty
         self.owner_withdrawn = False
         self.platform_fees_withdrawn = False
         self.platform_fees_collected = Amount(0)
 
-    @public
+    @public(allow_deposit=True)
     def participate(self, ctx: Context) -> None:
         """Participate in the sale by depositing HTR."""
         self._validate_sale_active(ctx)
 
         # Validate HTR deposit
-        action = self._get_token_action(ctx, HTR_UID, NCActionType.DEPOSIT)
-        amount = action.amount
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCDepositAction):
+            raise NCFail("Expected deposit action")
 
+        amount = Amount(action.amount)
         if amount < self.min_deposit:
             raise NCFail(CrowdsaleErrors.BELOW_MIN)
 
@@ -158,71 +163,86 @@ class Crowdsale(Blueprint):
             raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
         # Update participant tracking
-        if ctx.address not in self.deposits:
+        participant_address = Address(ctx.address)
+        if participant_address not in self.deposits:
             self.participants_count += 1
 
         # Update state
-        self.deposits[ctx.address] = self.deposits.get(ctx.address, 0) + amount
-        self.total_raised += amount
-        self.total_sold += self._calculate_tokens(amount)
-        self.htr_balance += amount
+        self.deposits[participant_address] = Amount(
+            self.deposits.get(participant_address, Amount(0)) + amount
+        )
+        self.total_raised = Amount(self.total_raised + amount)
+        self.total_sold = Amount(self.total_sold + self._calculate_tokens(amount))
+        self.htr_balance = Amount(self.htr_balance + amount)
 
         # Check if soft cap reached
         if self.total_raised >= self.soft_cap:
             self.state = SaleState.SUCCESS
 
-    @public
+    @public(allow_withdrawal=True)
     def claim_tokens(self, ctx: Context) -> None:
         """Claim tokens after successful sale."""
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
-        if self.claimed.get(ctx.address, False):
+
+        participant_address = Address(ctx.address)
+        if self.claimed.get(participant_address, False):
             raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
 
-        deposit = self.deposits.get(ctx.address, 0)
-        if deposit == 0:
+        deposit = self.deposits.get(participant_address, Amount(0))
+        if deposit == Amount(0):
             raise NCFail("No tokens to claim")
 
         tokens_due = self._calculate_tokens(deposit)
 
         # Validate token withdrawal
-        action = self._get_token_action(ctx, self.token_uid, NCActionType.WITHDRAWAL)
+        action = ctx.get_single_action(self.token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
         if action.amount != tokens_due:
             raise NCFail("Invalid withdrawal amount")
 
-        self.deposits[ctx.address] -= deposit
+        self.deposits[participant_address] = Amount(
+            self.deposits[participant_address] - deposit
+        )
 
         # Mark as claimed and update balance
-        self.claimed[ctx.address] = True
-        self.sale_token_balance -= tokens_due
+        self.claimed[participant_address] = True
+        self.sale_token_balance = Amount(self.sale_token_balance - tokens_due)
 
-    @public
+    @public(allow_withdrawal=True)
     def claim_refund(self, ctx: Context) -> None:
         """Claim refund if sale failed."""
         if self.state != SaleState.FAILED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
-        if self.claimed.get(ctx.address, False):
+
+        participant_address = Address(ctx.address)
+        if self.claimed.get(participant_address, False):
             raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
 
-        deposit = self.deposits.get(ctx.address, 0)
-        if deposit == 0:
+        deposit = self.deposits.get(participant_address, Amount(0))
+        if deposit == Amount(0):
             raise NCFail("No refund available")
 
         # Validate HTR withdrawal
-        action = self._get_token_action(ctx, HTR_UID, NCActionType.WITHDRAWAL)
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
         if action.amount != deposit:
             raise NCFail("Invalid withdrawal amount")
 
-        self.deposits[ctx.address] -= deposit
+        self.deposits[participant_address] = Amount(
+            self.deposits[participant_address] - deposit
+        )
 
         # Mark as claimed and update balance
-        self.claimed[ctx.address] = True
-        self.htr_balance -= deposit
+        self.claimed[participant_address] = True
+        self.htr_balance = Amount(self.htr_balance - deposit)
 
-    @public
+    @public(allow_withdrawal=True)
     def withdraw_raised_htr(self, ctx: Context) -> None:
         """Withdraw raised HTR after successful sale."""
-        if ctx.address != self.owner:
+        if Address(ctx.address) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -234,35 +254,39 @@ class Crowdsale(Blueprint):
         withdrawable = self.total_raised - platform_fee
 
         # Validate owner HTR withdrawal
-        action = self._get_token_action(ctx, HTR_UID, NCActionType.WITHDRAWAL)
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
         if action.amount != withdrawable:
             raise NCFail("Invalid withdrawal amount")
 
         # Mark as withdrawn and update balance
         self.owner_withdrawn = True
-        self.platform_fees_collected = platform_fee
-        self.htr_balance -= withdrawable
+        self.platform_fees_collected = Amount(platform_fee)
+        self.htr_balance = Amount(self.htr_balance - withdrawable)
 
-    @public
+    @public(allow_withdrawal=True)
     def withdraw_remaining_tokens(self, ctx: Context) -> None:
         """Withdraw remaining tokens after successful sale (owner only)."""
-        if ctx.address != self.owner:
+        if Address(ctx.address) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
         # Validate token withdrawal action
-        action = self._get_token_action(ctx, self.token_uid, NCActionType.WITHDRAWAL)
+        action = ctx.get_single_action(self.token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
         if action.amount != self.sale_token_balance:
             raise NCFail("Invalid withdrawal amount")
 
         # Update balance
         self.sale_token_balance = Amount(0)
 
-    @public
+    @public(allow_withdrawal=True)
     def withdraw_platform_fees(self, ctx: Context) -> None:
         """Withdraw platform fees after successful sale."""
-        if ctx.address != self.platform:
+        if Address(ctx.address) != self.platform:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -272,41 +296,27 @@ class Crowdsale(Blueprint):
         platform_fee = self._calculate_platform_fee(self.total_raised)
 
         # Validate platform fee withdrawal
-        action = self._get_token_action(ctx, HTR_UID, NCActionType.WITHDRAWAL)
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
         if action.amount != platform_fee:
             raise NCFail("Invalid withdrawal amount")
 
         # Mark as withdrawn and update balance
         self.platform_fees_withdrawn = True
-        self.htr_balance -= platform_fee
+        self.htr_balance = Amount(self.htr_balance - platform_fee)
 
     @public
     def early_activate(self, ctx: Context) -> None:
         """Activate the sale (owner only)."""
-        if ctx.address != self.owner:
+        if Address(ctx.address) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.PENDING:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if ctx.timestamp < self.start_time:
-            self.start_time = ctx.timestamp
+            self.start_time = Timestamp(ctx.timestamp)
 
         self.state = SaleState.ACTIVE
-
-    def _get_token_action(
-        self, ctx: Context, token_uid: TokenUid, expected_type: NCActionType
-    ) -> NCAction:
-        """Get and validate token action for specific token and type."""
-        if len(ctx.actions) != 1:
-            raise NCFail("Expected single action")
-
-        action = next(iter(ctx.actions.values()))
-        if action.token_uid != token_uid:
-            raise NCFail(f"Expected token {token_uid.hex()}")
-
-        if action.type != expected_type:
-            raise NCFail(f"Expected {expected_type.name} action")
-
-        return action
 
     def _activate_if_started(self, ctx: Context) -> None:
         """Activate the sale (anyone)"""
@@ -328,7 +338,7 @@ class Crowdsale(Blueprint):
     @public
     def pause(self, ctx: Context) -> None:
         """Pause the sale (only owner)."""
-        if ctx.address != self.owner:
+        if Address(ctx.address) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.ACTIVE:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -337,7 +347,7 @@ class Crowdsale(Blueprint):
     @public
     def unpause(self, ctx: Context) -> None:
         """Unpause the sale (only owner)."""
-        if ctx.address != self.owner:
+        if Address(ctx.address) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.PAUSED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -346,7 +356,7 @@ class Crowdsale(Blueprint):
     @public
     def finalize(self, ctx: Context) -> None:
         """Force end sale early (only owner)."""
-        if ctx.address != self.owner:
+        if Address(ctx.address) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state not in {SaleState.ACTIVE, SaleState.PAUSED}:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -358,11 +368,11 @@ class Crowdsale(Blueprint):
 
     def _calculate_tokens(self, htr_amount: Amount) -> Amount:
         """Calculate tokens to be received for HTR amount."""
-        return htr_amount * self.rate
+        return Amount(htr_amount * self.rate)
 
     def _calculate_platform_fee(self, amount: Amount) -> Amount:
         """Calculate platform fee for given amount."""
-        return amount * self.platform_fee // BASIS_POINTS
+        return Amount(amount * self.platform_fee // BASIS_POINTS)
 
     @view
     def get_sale_info(self) -> dict:
@@ -383,7 +393,7 @@ class Crowdsale(Blueprint):
     @view
     def get_participant_info(self, address: Address) -> dict:
         """Get participant-specific information."""
-        deposit = self.deposits.get(address, 0)
+        deposit = self.deposits.get(address, Amount(0))
         return {
             "deposited": deposit,
             "tokens_due": self._calculate_tokens(deposit),
