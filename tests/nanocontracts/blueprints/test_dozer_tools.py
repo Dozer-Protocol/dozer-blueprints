@@ -803,6 +803,76 @@ class DozerToolsTest(BlueprintTestCase):
             vesting_overview["staking_contract"], contracts["staking_contract"]
         )
 
+        # Test direct user staking to the created staking contract
+        # Convert hex string back to ContractId
+        from hathor.nanocontracts.types import ContractId, VertexId
+
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # Create a new user for staking
+        user_address, _ = self._get_any_address()
+        stake_amount = 1000_00  # 1000 tokens
+
+        # User stakes tokens directly to the staking contract
+        initial_time = self.get_current_timestamp()
+        stake_context = Context(
+            [NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            self._get_any_tx(),
+            Address(user_address),
+            timestamp=initial_time,
+        )
+
+        self.runner.call_public_method(staking_contract_id, "stake", stake_context)
+
+        # Verify user staked successfully
+        user_info = self.runner.call_view_method(
+            staking_contract_id, "get_user_info", Address(user_address)
+        )
+        self.assertEqual(user_info["deposits"], stake_amount)
+
+        # Advance time by 1 day and calculate expected rewards
+        one_day_later = initial_time + (24 * 60 * 60)  # 1 day in seconds
+        earnings_per_day = 1000  # From the configure_project_vesting call above
+
+        # Calculate expected rewards (using same formula as in stake.py)
+        # earnings_per_second = (earnings_per_day * PRECISION) // DAY_IN_SECONDS
+        # reward = (earnings_per_second * time_passed * stake_amount) // (PRECISION * stake_amount)
+        PRECISION = 10**20
+        DAY_IN_SECONDS = 24 * 60 * 60
+        earnings_per_second = (earnings_per_day * PRECISION) // DAY_IN_SECONDS
+        expected_reward = (earnings_per_second * DAY_IN_SECONDS * stake_amount) // (
+            PRECISION * stake_amount
+        )
+
+        # Check max withdrawal includes stake + rewards
+        max_withdrawal = self.runner.call_view_method(
+            staking_contract_id,
+            "get_max_withdrawal",
+            Address(user_address),
+            one_day_later,
+        )
+
+        expected_total = stake_amount + expected_reward
+        self.assertEqual(max_withdrawal, expected_total)
+
+        # Advance time by 2 days and verify rewards doubled
+        two_days_later = initial_time + (2 * 24 * 60 * 60)  # 2 days
+        expected_two_day_reward = (
+            earnings_per_second * 2 * DAY_IN_SECONDS * stake_amount
+        ) // (PRECISION * stake_amount)
+
+        max_withdrawal_two_days = self.runner.call_view_method(
+            staking_contract_id,
+            "get_max_withdrawal",
+            Address(user_address),
+            two_days_later,
+        )
+
+        expected_total_two_days = stake_amount + expected_two_day_reward
+        self.assertEqual(max_withdrawal_two_days, expected_total_two_days)
+
     def test_invalid_allocation_percentages(self) -> None:
         """Test validation of allocation percentages."""
         token_uid = self._create_test_project("InvalidToken", "INV")
