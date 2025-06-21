@@ -873,6 +873,70 @@ class DozerToolsTest(BlueprintTestCase):
         expected_total_two_days = stake_amount + expected_two_day_reward
         self.assertEqual(max_withdrawal_two_days, expected_total_two_days)
 
+        # Test beneficiary checking vesting contract directly for withdrawable tokens
+        vesting_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["vesting_contract"]))
+        )
+
+        # Team allocation should be at index 3 (after special allocations 0, 1, 2)
+        team_allocation_index = 3
+
+        # Advance time past the cliff period (12 months cliff for team allocation)
+        cliff_months = 12
+        vesting_months = 36
+        month_in_seconds = 30 * 24 * 3600  # 30 days in seconds
+
+        # Check vesting info right after cliff period
+        after_cliff_time = initial_time + (cliff_months * month_in_seconds)
+
+        vesting_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            team_allocation_index,
+            after_cliff_time,
+        )
+
+        # At cliff end, no tokens should be vested yet (cliff period just ended)
+        self.assertEqual(vesting_info["vested"], 0)
+        self.assertEqual(vesting_info["claimable"], 0)
+        self.assertEqual(vesting_info["beneficiary"], self.dev_address)
+        self.assertEqual(vesting_info["name"], "Team")
+
+        # Check vesting info 1 month after cliff (should have some vested tokens)
+        one_month_after_cliff = after_cliff_time + month_in_seconds
+
+        vesting_info_after = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            team_allocation_index,
+            one_month_after_cliff,
+        )
+
+        # Calculate expected vested amount (1 month out of 36 months vesting)
+        total_team_allocation = vesting_info_after["amount"]  # 70% of total supply
+        expected_monthly_vesting = total_team_allocation // vesting_months
+
+        self.assertEqual(vesting_info_after["vested"], expected_monthly_vesting)
+        self.assertEqual(vesting_info_after["claimable"], expected_monthly_vesting)
+        self.assertEqual(vesting_info_after["withdrawn"], 0)
+
+        # Check vesting info 6 months after cliff
+        six_months_after_cliff = after_cliff_time + (6 * month_in_seconds)
+
+        vesting_info_six_months = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            team_allocation_index,
+            six_months_after_cliff,
+        )
+
+        expected_six_months_vesting = (total_team_allocation * 6) // vesting_months
+
+        self.assertEqual(vesting_info_six_months["vested"], expected_six_months_vesting)
+        self.assertEqual(
+            vesting_info_six_months["claimable"], expected_six_months_vesting
+        )
+
     def test_invalid_allocation_percentages(self) -> None:
         """Test validation of allocation percentages."""
         token_uid = self._create_test_project("InvalidToken", "INV")
