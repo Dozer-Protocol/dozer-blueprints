@@ -89,6 +89,9 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
     def _check_balance(self):
         """Check the balance of the contract"""
+        contract = self.get_readonly_contract(self.nc_id)
+        assert isinstance(contract, DozerPoolManager)
+        
         token_balances = {}
         for token, contract_balance in self.nc_storage.get_all_balances().items():
             token_uid = token.token_uid
@@ -104,27 +107,27 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 token_b = bytes.fromhex(token_b_hex)
                 if token_uid == token_a:
                     logger.error(
-                        f"Reserve A: {self.nc_storage.get_obj(b'pool_reserve_a',DICT_TYPE, default={})[pool]}"
+                        f"Reserve A: {contract.pool_reserve_a.get(pool, 0)}"
                     )
                     logger.error(
-                        f"Total Balance A: {self.nc_storage.get_obj(f'pool_total_balance_a:{pool}'.encode(), INT_TYPE, default=0)}"
+                        f"Total Balance A: {contract.pool_total_balance_a.get(pool, 0)}"
                     )
                     token_balances[token_uid] = (
                         token_balances.get(token_uid, 0)
-                        + self.nc_storage.get_obj(f"pool_reserve_a:{pool}".encode(), INT_TYPE, default=0)
-                        + self.nc_storage.get_obj(f"pool_total_balance_a:{pool}".encode(), INT_TYPE, default=0)
+                        + contract.pool_reserve_a.get(pool, 0)
+                        + contract.pool_total_balance_a.get(pool, 0)
                     )
                 else:
                     logger.error(
-                        f"Reserve B: {self.nc_storage.get_obj(f'pool_reserve_b:{pool}'.encode(), INT_TYPE, default=0)}"
+                        f"Reserve B: {contract.pool_reserve_b.get(pool, 0)}"
                     )
                     logger.error(
-                        f"Total Balance B: {self.nc_storage.get_obj(f'pool_total_balance_b:{pool}'.encode(), INT_TYPE, default=0)}"
+                        f"Total Balance B: {contract.pool_total_balance_b.get(pool, 0)}"
                     )
                     token_balances[token_uid] = (
                         token_balances.get(token_uid, 0)
-                        + self.nc_storage.get_obj(f"pool_reserve_b:{pool}".encode(), INT_TYPE, default=0)
-                        + self.nc_storage.get_obj(f"pool_total_balance_b:{pool}".encode(), INT_TYPE, default=0)
+                        + contract.pool_reserve_b.get(pool, 0)
+                        + contract.pool_total_balance_b.get(pool, 0)
                     )
             state_balance = token_balances[token_uid]
             logger.error(
@@ -267,24 +270,30 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
     def test_initialize(self):
         """Test contract initialization"""
+        contract = self.get_readonly_contract(self.nc_id)
+        assert isinstance(contract, DozerPoolManager)
+        
         # Verify owner is set correctly
-        self.assertEqual(self.nc_storage.get_obj(b"owner", make_nc_type_for_type(Address)), self.owner_address)
+        self.assertEqual(contract.owner, self.owner_address)
 
         # Verify default fee and protocol fee are set correctly
-        self.assertEqual(self.nc_storage.get_obj(b"default_fee", INT_TYPE), 3)
-        self.assertEqual(self.nc_storage.get_obj(b"default_protocol_fee", INT_TYPE), 10)
+        self.assertEqual(contract.default_fee, 3)
+        self.assertEqual(contract.default_protocol_fee, 10)
 
     def test_create_pool(self):
         """Test pool creation"""
         # Create a pool
         pool_key, creator_address = self._create_pool(self.token_a, self.token_b)
 
+        contract = self.get_readonly_contract(self.nc_id)
+        assert isinstance(contract, DozerPoolManager)
+
         # Verify pool exists
-        self.assertTrue(self.nc_storage.get_obj(f"pool_exists:{pool_key}".encode(), make_nc_type_for_type(bool)))
+        self.assertTrue(contract.pool_exists[pool_key])
 
         # Verify tokens are stored correctly
-        self.assertEqual(self.nc_storage.get_obj(f"pool_token_a:{pool_key}".encode(), make_nc_type_for_type(TokenUid)), self.token_a)
-        self.assertEqual(self.nc_storage.get_obj(f"pool_token_b:{pool_key}".encode(), make_nc_type_for_type(TokenUid)), self.token_b)
+        self.assertEqual(contract.pool_token_a[pool_key], self.token_a)
+        self.assertEqual(contract.pool_token_b[pool_key], self.token_b)
 
         # Verify initial liquidity
         creator_liquidity = self.runner.call_view_method(
@@ -311,63 +320,69 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.runner.call_public_method(self.nc_id, "create_pool", context, 3)
         self._check_balance()
 
-    # def test_create_multiple_pools(self):
-    #     """Test creating multiple pools with different tokens and fees"""
-    #     # Create first pool with token_a and token_b
-    #     pool_key1, _ = self._create_pool(self.token_a, self.token_b, fee=3)
+    def test_create_multiple_pools(self):
+        """Test creating multiple pools with different tokens and fees"""
+        # Create first pool with token_a and token_b
+        pool_key1, _ = self._create_pool(self.token_a, self.token_b, fee=3)
 
-    #     # Create second pool with token_a and token_c
-    #     pool_key2, _ = self._create_pool(self.token_a, self.token_c, fee=5)
+        # Create second pool with token_a and token_c
+        pool_key2, _ = self._create_pool(self.token_a, self.token_c, fee=5)
 
-    #     # Create third pool with token_b and token_c
-    #     pool_key3, _ = self._create_pool(self.token_b, self.token_c, fee=10)
+        # Create third pool with token_b and token_c
+        pool_key3, _ = self._create_pool(self.token_b, self.token_c, fee=10)
 
-    #     # Create fourth pool with token_a and token_b but different fee
-    #     pool_key4, _ = self._create_pool(self.token_a, self.token_b, fee=20)
+        # Create fourth pool with token_a and token_b but different fee
+        pool_key4, _ = self._create_pool(self.token_a, self.token_b, fee=20)
 
-    #     # Verify all pools exist
-    #     self.assertTrue(self.nc_storage.get_obj(f"pool_exists:{pool_key1}".encode(), make_nc_type_for_type(bool)))
-    #     self.assertTrue(self.nc_storage.get_obj(f"pool_exists:{pool_key2}".encode(), make_nc_type_for_type(bool)))
-    #     self.assertTrue(self.nc_storage.get_obj(f"pool_exists:{pool_key3}".encode(), make_nc_type_for_type(bool)))
-    #     self.assertTrue(self.nc_storage.get_obj(f"pool_exists:{pool_key4}".encode(), make_nc_type_for_type(bool)))
+        contract = self.get_readonly_contract(self.nc_id)
+        assert isinstance(contract, DozerPoolManager)
 
-    #     # Verify all pools are in the all_pools list
-    #     all_pools = self.runner.call_view_method(self.nc_id, "get_all_pools")
-    #     self.assertIn(pool_key1, all_pools)
-    #     self.assertIn(pool_key2, all_pools)
-    #     self.assertIn(pool_key3, all_pools)
-    #     self.assertIn(pool_key4, all_pools)
+        # Verify all pools exist
+        self.assertTrue(contract.pool_exists[pool_key1])
+        self.assertTrue(contract.pool_exists[pool_key2])
+        self.assertTrue(contract.pool_exists[pool_key3])
+        self.assertTrue(contract.pool_exists[pool_key4])
 
-    #     # Verify token_to_pools mapping
-    #     token_to_pools = self.runner.call_view_method(
-    #         self.nc_id, "get_pools_for_token", self.token_a
-    #     )
-    #     self.assertIn(pool_key1, token_to_pools)
-    #     self.assertIn(pool_key2, token_to_pools)
-    #     self.assertIn(pool_key4, token_to_pools)
-    #     token_to_pools = self.runner.call_view_method(
-    #         self.nc_id, "get_pools_for_token", self.token_b
-    #     )
-    #     self.assertIn(pool_key1, token_to_pools)
-    #     self.assertIn(pool_key3, token_to_pools)
-    #     self.assertIn(pool_key4, token_to_pools)
-    #     token_to_pools = self.runner.call_view_method(
-    #         self.nc_id, "get_pools_for_token", self.token_c
-    #     )
-    #     self.assertIn(pool_key2, token_to_pools)
-    #     self.assertIn(pool_key3, token_to_pools)
+        # Verify all pools are in the all_pools list
+        all_pools = self.runner.call_view_method(self.nc_id, "get_all_pools")
+        self.assertIn(pool_key1, all_pools)
+        self.assertIn(pool_key2, all_pools)
+        self.assertIn(pool_key3, all_pools)
+        self.assertIn(pool_key4, all_pools)
 
-    #     self._check_balance()
+        # Verify token_to_pools mapping
+        token_to_pools = self.runner.call_view_method(
+            self.nc_id, "get_pools_for_token", self.token_a
+        )
+        self.assertIn(pool_key1, token_to_pools)
+        self.assertIn(pool_key2, token_to_pools)
+        self.assertIn(pool_key4, token_to_pools)
+        token_to_pools = self.runner.call_view_method(
+            self.nc_id, "get_pools_for_token", self.token_b
+        )
+        self.assertIn(pool_key1, token_to_pools)
+        self.assertIn(pool_key3, token_to_pools)
+        self.assertIn(pool_key4, token_to_pools)
+        token_to_pools = self.runner.call_view_method(
+            self.nc_id, "get_pools_for_token", self.token_c
+        )
+        self.assertIn(pool_key2, token_to_pools)
+        self.assertIn(pool_key3, token_to_pools)
+
+        self._check_balance()
 
     # def test_add_liquidity(self):
     #     """Test adding liquidity to a pool"""
     #     # Create a pool
     #     pool_key, creator_address = self._create_pool(self.token_a, self.token_b)
 
+    #     contract = self.get_readonly_contract(self.nc_id)
+    #     assert isinstance(contract, DozerPoolManager)
+
     #     # Initial reserves
-    #     initial_reserve_a = self.nc_storage.get_obj(f"pool_reserve_a:{pool_key}".encode(), INT_TYPE)
-    #     initial_reserve_b = self.nc_storage.get_obj(f"pool_reserve_b:{pool_key}".encode(), INT_TYPE)
-    #     initial_total_liquidity = self.nc_storage.get_obj(f"pool_total_liquidity:{pool_key}".encode(), INT_TYPE)
+    #     initial_reserve_a = contract.pool_reserve_a[pool_key]
+    #     initial_reserve_b = contract.pool_reserve_b[pool_key]
+    #     initial_total_liquidity = contract.pool_total_liquidity[pool_key]
 
     #     amount_a = 500_00
     #     reserve_a, reserve_b = self.runner.call_view_method(
@@ -387,19 +402,23 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #         amount_b,
     #     )
 
+    #     # Get updated contract state
+    #     updated_contract = self.get_readonly_contract(self.nc_id)
+    #     assert isinstance(updated_contract, DozerPoolManager)
+
     #     # Verify reserves increased
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_reserve_a:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_reserve_a[pool_key],
     #         initial_reserve_a + amount_a,
     #     )
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_reserve_b:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_reserve_b[pool_key],
     #         initial_reserve_b + amount_b,
     #     )
 
     #     # Verify total liquidity increased
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_total_liquidity:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_total_liquidity[pool_key],
     #         initial_total_liquidity + liquidity_increase,
     #     )
 
@@ -425,10 +444,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #         500_00,
     #     )
 
+    #     contract = self.get_readonly_contract(self.nc_id)
+    #     assert isinstance(contract, DozerPoolManager)
+
     #     # Initial values before removal
-    #     initial_reserve_a = self.nc_storage.get_obj(f"pool_reserve_a:{pool_key}".encode(), INT_TYPE)
-    #     initial_reserve_b = self.nc_storage.get_obj(f"pool_reserve_b:{pool_key}".encode(), INT_TYPE)
-    #     initial_total_liquidity = self.nc_storage.get_obj(f"pool_total_liquidity:{pool_key}".encode(), INT_TYPE)
+    #     initial_reserve_a = contract.pool_reserve_a[pool_key]
+    #     initial_reserve_b = contract.pool_reserve_b[pool_key]
+    #     initial_total_liquidity = contract.pool_total_liquidity[pool_key]
     #     initial_user_liquidity = self.runner.call_view_method(
     #         self.nc_id, "liquidity_of", add_context.address, pool_key
     #     )
@@ -457,19 +479,23 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #         address=add_context.address,
     #     )
 
+    #     # Get updated contract state
+    #     updated_contract = self.get_readonly_contract(self.nc_id)
+    #     assert isinstance(updated_contract, DozerPoolManager)
+
     #     # Verify reserves decreased
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_reserve_a:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_reserve_a[pool_key],
     #         initial_reserve_a - amount_to_remove_a,
     #     )
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_reserve_b:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_reserve_b[pool_key],
     #         initial_reserve_b - amount_to_remove_b,
     #     )
 
     #     # Verify total liquidity decreased
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_total_liquidity:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_total_liquidity[pool_key],
     #         initial_total_liquidity - liquidity_decrease,
     #     )
 
@@ -490,9 +516,12 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #         self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=10000_00
     #     )
 
+    #     contract = self.get_readonly_contract(self.nc_id)
+    #     assert isinstance(contract, DozerPoolManager)
+
     #     # Initial reserves
-    #     initial_reserve_a = self.nc_storage.get_obj(f"pool_reserve_a:{pool_key}".encode(), INT_TYPE)
-    #     initial_reserve_b = self.nc_storage.get_obj(f"pool_reserve_b:{pool_key}".encode(), INT_TYPE)
+    #     initial_reserve_a = contract.pool_reserve_a[pool_key]
+    #     initial_reserve_b = contract.pool_reserve_b[pool_key]
 
     #     # Execute swap
     #     swap_amount_in = 100_00
@@ -508,17 +537,21 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #         self.token_a, self.token_b, 3, swap_amount_in, swap_amount_out
     #     )
 
+    #     # Get updated contract state
+    #     updated_contract = self.get_readonly_contract(self.nc_id)
+    #     assert isinstance(updated_contract, DozerPoolManager)
+
     #     # Verify reserves changed correctly
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_reserve_a:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_reserve_a[pool_key],
     #         initial_reserve_a + swap_amount_in,
     #     )
     #     self.assertLess(
-    #         self.nc_storage.get_obj(f"pool_reserve_b:{pool_key}".encode(), INT_TYPE), initial_reserve_b
+    #         updated_contract.pool_reserve_b[pool_key], initial_reserve_b
     #     )
 
     #     # Verify transaction count increased
-    #     self.assertEqual(self.nc_storage.get_obj(f"pool_transactions:{pool_key}".encode(), INT_TYPE), 1)
+    #     self.assertEqual(updated_contract.pool_transactions[pool_key], 1)
 
     #     # Verify swap result
     #     self.assertEqual(result.amount_in, swap_amount_in)
@@ -534,12 +567,15 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #         self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=10000_00
     #     )
 
+    #     contract = self.get_readonly_contract(self.nc_id)
+    #     assert isinstance(contract, DozerPoolManager)
+
     #     # Initial reserves
-    #     initial_reserve_a = self.nc_storage.get_obj(f"pool_reserve_a:{pool_key}".encode(), INT_TYPE)
-    #     initial_reserve_b = self.nc_storage.get_obj(f"pool_reserve_b:{pool_key}".encode(), INT_TYPE)
-    #     initial_volume_a = self.nc_storage.get_obj(f"pool_volume_a:{pool_key}".encode(), INT_TYPE)
-    #     initial_volume_b = self.nc_storage.get_obj(f"pool_volume_b:{pool_key}".encode(), INT_TYPE)
-    #     initial_total_liquidity = self.nc_storage.get_obj(f"pool_total_liquidity:{pool_key}".encode(), INT_TYPE)
+    #     initial_reserve_a = contract.pool_reserve_a[pool_key]
+    #     initial_reserve_b = contract.pool_reserve_b[pool_key]
+    #     initial_volume_a = contract.pool_volume_a[pool_key]
+    #     initial_volume_b = contract.pool_volume_b[pool_key]
+    #     initial_total_liquidity = contract.pool_total_liquidity[pool_key]
     #     initial_owner_liquidity = self.runner.call_view_method(
     #         self.nc_id, "liquidity_of", self.owner_address, pool_key
     #     )
@@ -549,8 +585,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
     #     # Calculate the required input amount using get_amount_in
     #     # This is the same calculation used in the blueprint
-    #     fee_numerator = self.nc_storage.get_obj(f"pool_fee_numerator:{pool_key}".encode(), INT_TYPE)
-    #     fee_denominator = self.nc_storage.get_obj(f"pool_fee_denominator:{pool_key}".encode(), INT_TYPE)
+    #     fee_numerator = contract.pool_fee_numerator[pool_key]
+    #     fee_denominator = contract.pool_fee_denominator[pool_key]
     #     required_amount_in = self.runner.call_view_method(
     #         self.nc_id,
     #         "get_amount_in",
@@ -569,7 +605,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #     fee_amount = required_amount_in * fee_numerator // fee_denominator
 
     #     # Calculate expected protocol fee
-    #     protocol_fee_percent = self.nc_storage.get_obj(b"default_protocol_fee", INT_TYPE)
+    #     protocol_fee_percent = contract.default_protocol_fee
     #     protocol_fee_amount = fee_amount * protocol_fee_percent // 100
 
     #     # Execute swap
@@ -577,33 +613,37 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #         self.token_a, self.token_b, 3, swap_amount_in, swap_amount_out
     #     )
 
+    #     # Get updated contract state
+    #     updated_contract = self.get_readonly_contract(self.nc_id)
+    #     assert isinstance(updated_contract, DozerPoolManager)
+
     #     # Verify reserves changed correctly
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_reserve_a:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_reserve_a[pool_key],
     #         initial_reserve_a + required_amount_in,
     #         "Reserve A did not increase by the expected amount",
     #     )
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_reserve_b:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_reserve_b[pool_key],
     #         initial_reserve_b - swap_amount_out,
     #         "Reserve B did not decrease by the expected amount",
     #     )
 
     #     # Verify transaction count increased
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_transactions:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_transactions[pool_key],
     #         1,
     #         "Transaction count did not increase correctly",
     #     )
 
     #     # Verify volume updated correctly
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_volume_a:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_volume_a[pool_key],
     #         initial_volume_a + required_amount_in,
     #         "Volume A did not increase by the expected amount",
     #     )
     #     self.assertEqual(
-    #         self.nc_storage.get_obj(f"pool_volume_b:{pool_key}".encode(), INT_TYPE),
+    #         updated_contract.pool_volume_b[pool_key],
     #         initial_volume_b,
     #         "Volume B should not have changed",
     #     )
@@ -620,7 +660,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #     )
 
     #     # Verify total liquidity increased by the same amount
-    #     new_total_liquidity = self.nc_storage.get_obj(f"pool_total_liquidity:{pool_key}".encode(), INT_TYPE)
+    #     new_total_liquidity = updated_contract.pool_total_liquidity[pool_key]
     #     liquidity_increase = new_total_liquidity - initial_total_liquidity
     #     self.assertEqual(
     #         new_owner_liquidity - initial_owner_liquidity,
@@ -673,8 +713,12 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #         self.nc_id, "change_protocol_fee", context, new_fee
     #     )
 
+    #     # Get updated contract state
+    #     updated_contract = self.get_readonly_contract(self.nc_id)
+    #     assert isinstance(updated_contract, DozerPoolManager)
+
     #     # Verify protocol fee changed
-    #     self.assertEqual(self.nc_storage.get_obj(b"default_protocol_fee", INT_TYPE), new_fee)
+    #     self.assertEqual(updated_contract.default_protocol_fee, new_fee)
 
     #     # Try to change protocol fee with non-owner address
     #     non_owner_context = Context(
@@ -868,9 +912,12 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #         htr_token, usd_token, fee=3, reserve_a=htr_reserve, reserve_b=usd_reserve
     #     )
 
+    #     contract = self.get_readonly_contract(self.nc_id)
+    #     assert isinstance(contract, DozerPoolManager)
+
     #     # Verify the HTR-USD pool doesn't exist in the contract yet
     #     self.assertIsNone(
-    #         self.nc_storage.get_obj("htr_usd_pool_key".encode(), make_nc_type_for_type(bytes)),
+    #         contract.htr_usd_pool_key,
     #         "HTR-USD pool should not be set yet",
     #     )
 
@@ -884,9 +931,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #         self.nc_id, "set_htr_usd_pool", owner_context, htr_token, usd_token, 3
     #     )
 
+    #     # Get updated contract state
+    #     updated_contract = self.get_readonly_contract(self.nc_id)
+    #     assert isinstance(updated_contract, DozerPoolManager)
+
     #     # Verify the HTR-USD pool was set correctly
     #     self.assertEqual(
-    #         self.nc_storage.get_obj("htr_usd_pool_key".encode(), make_nc_type_for_type(bytes)),
+    #         updated_contract.htr_usd_pool_key,
     #         htr_usd_pool_key,
     #         "HTR-USD pool key was not set correctly",
     #     )
@@ -1814,7 +1865,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #     # Always create a context with both deposit and withdrawal actions
     #     # This is required for both swap methods
     #     tx = self._get_any_tx()
-    #     actions = [NCDepositAction(token_uid=token_in, amount=amount_in)]
+    #     actions: list[NCAction] = [NCDepositAction(token_uid=token_in, amount=amount_in)]
 
     #     # Add withdrawal action if token_out and amount_out are provided
     #     if token_out is not None and amount_out is not None:
@@ -1900,7 +1951,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #     )
     #     self.assertEqual(len(user_pools), 1)
     #     self.assertEqual(user_pools[0], pool_key1)
-
     #     # Add liquidity to the third pool
     #     context = Context(
     #         [
@@ -2868,3 +2918,4 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     #     )
 
     #     self._check_balance()
+
