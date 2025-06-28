@@ -42,7 +42,6 @@ from hathor.nanocontracts.blueprints.stake import Stake
 from hathor.nanocontracts.blueprints.dao import DAO
 from hathor.nanocontracts.blueprints.crowdsale import Crowdsale
 from hathor.nanocontracts.context import Context
-from hathor.nanocontracts.nc_types import make_nc_type_for_type
 from hathor.nanocontracts.types import (
     Address,
     Amount,
@@ -61,8 +60,6 @@ from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 DOZER_POOL_MANAGER_BLUEPRINT_ID = (
     "d6c09caa2f1f7ef6a6f416301c2b665e041fa819a792e53b8409c9c1aed2c89a"
 )
-
-TOKEN_UID_TYPE = make_nc_type_for_type(TokenUid)
 
 
 class DozerToolsTest(BlueprintTestCase):
