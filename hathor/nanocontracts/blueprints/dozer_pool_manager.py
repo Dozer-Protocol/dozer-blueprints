@@ -818,7 +818,7 @@ class DozerPoolManager(Blueprint):
 
         return (token_a, change)
 
-    @public
+    @public(allow_withdrawal=True, allow_deposit=True)
     def swap_exact_tokens_for_tokens(
         self,
         ctx: Context,
@@ -934,7 +934,7 @@ class DozerPoolManager(Blueprint):
             action_out.token_uid,
         )
 
-    @public
+    @public(allow_withdrawal=True, allow_deposit=True)
     def swap_tokens_for_exact_tokens(
         self,
         ctx: Context,
@@ -1048,7 +1048,7 @@ class DozerPoolManager(Blueprint):
             action_out.token_uid,
         )
 
-    @public
+    @public(allow_withdrawal=True, allow_deposit=True)
     def swap_exact_tokens_for_tokens_through_path(
         self, ctx: Context, path_str: str
     ) -> SwapResult:
@@ -1084,10 +1084,10 @@ class DozerPoolManager(Blueprint):
         deposit_action = None
         withdrawal_action = None
         for action in ctx.actions.values():
-            if isinstance(action, NCDepositAction):
-                deposit_action = action
-            elif isinstance(action, NCWithdrawalAction):
-                withdrawal_action = action
+            if isinstance(action[0], NCDepositAction):
+                deposit_action = action[0]
+            elif isinstance(action[0], NCWithdrawalAction):
+                withdrawal_action = action[0]
 
         if not deposit_action or not withdrawal_action:
             raise InvalidAction("Missing deposit or withdrawal action")
@@ -1421,7 +1421,7 @@ class DozerPoolManager(Blueprint):
 
         return Amount(amount_out)
 
-    @public
+    @public(allow_withdrawal=True, allow_deposit=True)
     def swap_tokens_for_exact_tokens_through_path(
         self, ctx: Context, path_str: str
     ) -> SwapResult:
@@ -1457,10 +1457,10 @@ class DozerPoolManager(Blueprint):
         deposit_action = None
         withdrawal_action = None
         for action in ctx.actions.values():
-            if isinstance(action, NCDepositAction):
-                deposit_action = action
-            elif isinstance(action, NCWithdrawalAction):
-                withdrawal_action = action
+            if isinstance(action[0], NCDepositAction):
+                deposit_action = action[0]
+            elif isinstance(action[0], NCWithdrawalAction):
+                withdrawal_action = action[0]
 
         if not deposit_action or not withdrawal_action:
             raise InvalidAction("Missing deposit or withdrawal action")
@@ -1819,7 +1819,7 @@ class DozerPoolManager(Blueprint):
         # This should never happen due to the path length validation above
         raise InvalidPath("Invalid path length")
 
-    @public
+    @public(allow_withdrawal=True)
     def withdraw_cashback(
         self,
         ctx: Context,
