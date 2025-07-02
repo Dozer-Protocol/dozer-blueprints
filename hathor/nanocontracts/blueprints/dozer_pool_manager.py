@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from sqlite3 import Time
 from typing import Any, NamedTuple
 
 from hathor.conf import settings
+from hathor.crypto.util import get_address_b58_from_bytes
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
@@ -2475,7 +2477,7 @@ class DozerPoolManager(Blueprint):
     def pool_info(
         self,
         pool_key: str,
-    ) -> dict[str, Any]:
+    ) -> dict[str, str  | int | bool  | None]:
         """Get detailed information about a pool.
 
         Args:
@@ -2488,23 +2490,33 @@ class DozerPoolManager(Blueprint):
             PoolNotFound: If the pool does not exist
         """
         self._validate_pool_exists(pool_key)
-        is_signed = pool_key in self.pool_signers
+        is_signed = pool_key in self.pool_signers if self.pool_signers else False
+        signer_str = get_address_b58_from_bytes(self.pool_signers.get(pool_key, None)) if self.pool_signers else None
 
         return {
-            "token_a": self.pool_token_a[pool_key],
-            "token_b": self.pool_token_b[pool_key],
-            "reserve_a": self.pool_reserve_a[pool_key],
-            "reserve_b": self.pool_reserve_b[pool_key],
-            "fee": self.pool_fee_numerator[pool_key]
-            / self.pool_fee_denominator[pool_key],
-            "total_liquidity": self.pool_total_liquidity[pool_key],
-            "transactions": self.pool_transactions[pool_key],
-            "volume_a": self.pool_volume_a[pool_key],
-            "volume_b": self.pool_volume_b[pool_key],
-            "last_activity": self.pool_last_activity[pool_key],
+            "token_a": self.pool_token_a.get(pool_key, b'').hex(),
+            "token_b": self.pool_token_b.get(pool_key, b'').hex(),
+            "reserve_a": self.pool_reserve_a.get(pool_key, None),
+            "reserve_b": self.pool_reserve_b.get(pool_key, None),
+            "fee": self.pool_fee_numerator.get(pool_key, None),
+            "total_liquidity": self.pool_total_liquidity.get(pool_key, None),
+            "transactions": self.pool_transactions.get(pool_key, None),
+            "volume_a": self.pool_volume_a.get(pool_key, None),
+            "volume_b": self.pool_volume_b.get(pool_key, None),
+            "last_activity": self.pool_last_activity.get(pool_key, None),
             "is_signed": is_signed,
-            "signer": self.pool_signers.get(pool_key, None),
+            "signer": signer_str,
         }
+    
+    @view
+    def pool_info_str(
+        self,
+        pool_key: str,
+    ) -> str:
+        """Get detailed information about a pool.
+        """
+        pool_info = self.pool_info(pool_key)
+        return json.dumps(pool_info)
 
     @view
     def user_info(
@@ -3048,3 +3060,21 @@ class DozerPoolManager(Blueprint):
 
         # Round up
         return Amount(numerator // denominator)
+    
+    @view  
+    def get_user_positions_str(self, address: Address) -> str:
+        """Get detailed information about all user positions as JSON string."""
+        positions = self.get_user_positions(address)
+        return json.dumps(positions)
+
+    @view
+    def find_best_swap_path_str(self, amount_in: Amount, token_in: TokenUid, token_out: TokenUid, max_hops: int) -> str:
+        """Find the best path for swapping between two tokens as JSON string."""
+        path_info = self.find_best_swap_path(amount_in, token_in, token_out, max_hops)
+        return json.dumps(path_info)
+
+    @view
+    def user_info_str(self, address: Address, pool_key: str) -> str:
+        """Get detailed information about a user's position as JSON string."""
+        user_info = self.user_info(address, pool_key)
+        return json.dumps(user_info)
