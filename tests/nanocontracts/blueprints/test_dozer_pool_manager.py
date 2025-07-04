@@ -22,7 +22,14 @@ from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
 
 from hathor.nanocontracts.nc_types.nc_type import NCType
-from hathor.nanocontracts.types import Address, Amount, NCAction, NCActionType, NCDepositAction, NCWithdrawalAction
+from hathor.nanocontracts.types import (
+    Address,
+    Amount,
+    NCAction,
+    NCActionType,
+    NCDepositAction,
+    NCWithdrawalAction,
+)
 from hathor.transaction.base_transaction import BaseTransaction
 from hathor.types import TokenUid
 from hathor.util import not_none
@@ -73,7 +80,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         """Initialize the DozerPoolManager contract"""
         tx = self._get_any_tx()
         context = Context(
-            [], tx, Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+            [],
+            tx,
+            Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp(),
         )
         self.runner.create_contract(
             self.nc_id,
@@ -88,7 +98,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         """Check the balance of the contract"""
         contract = self.get_readonly_contract(self.nc_id)
         assert isinstance(contract, DozerPoolManager)
-        
+
         token_balances = {}
         for token, contract_balance in self.nc_storage.get_all_balances().items():
             token_uid = token.token_uid
@@ -99,14 +109,14 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 token_a_hex, token_b_hex, fee = pool.split("/")
                 token_a = bytes.fromhex(token_a_hex)
                 if token_uid == token_a:
-                   
+
                     token_balances[token_uid] = (
                         token_balances.get(token_uid, 0)
                         + contract.pool_reserve_a.get(pool, 0)
                         + contract.pool_total_balance_a.get(pool, 0)
                     )
                 else:
-                   
+
                     token_balances[token_uid] = (
                         token_balances.get(token_uid, 0)
                         + contract.pool_reserve_b.get(pool, 0)
@@ -151,8 +161,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         ]
         address_bytes, _ = self._get_any_address()
         context = Context(
-            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp() # type: ignore
-        ) 
+            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp()  # type: ignore
+        )
         result = self.runner.call_public_method(
             self.nc_id, "add_liquidity", context, fee
         )
@@ -251,7 +261,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         """Test contract initialization"""
         contract = self.get_readonly_contract(self.nc_id)
         assert isinstance(contract, DozerPoolManager)
-        
+
         # Verify owner is set correctly
         self.assertEqual(contract.owner, self.owner_address)
 
@@ -434,8 +444,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.nc_id, "liquidity_of", add_context.address, pool_key
         )
 
-
-
         # Calculate amount of token A to remove (half of the user's liquidity)
         amount_to_remove_a = (
             current_reserve_a * current_user_liquidity // (current_total_liquidity * 2)
@@ -449,14 +457,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             current_reserve_b,
         )
 
-
-
         # Calculate liquidity decrease using the same formula as in DozerPoolManager.remove_liquidity
         liquidity_decrease = (
             current_total_liquidity * amount_to_remove_a // current_reserve_a
         )
-
-
 
         remove_context, _ = self._remove_liquidity(
             self.token_a,
@@ -534,9 +538,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             updated_contract.pool_reserve_a[pool_key],
             initial_reserve_a + swap_amount_in,
         )
-        self.assertLess(
-            updated_contract.pool_reserve_b[pool_key], initial_reserve_b
-        )
+        self.assertLess(updated_contract.pool_reserve_b[pool_key], initial_reserve_b)
 
         # Verify transaction count increased
         self.assertEqual(updated_contract.pool_transactions[pool_key], 1)
@@ -710,7 +712,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Try to change protocol fee with non-owner address
         non_owner_context = Context(
-            [], tx, Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+            [],
+            tx,
+            Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp(),
         )
 
         # Should fail with Unauthorized
@@ -729,7 +734,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Get pools for token_a
         tx = self._get_any_tx()
         context = Context(
-            [], tx, Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+            [],
+            tx,
+            Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp(),
         )
 
         token_a_pools = self.runner.call_view_method(
@@ -766,7 +774,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Get pool info
         tx = self._get_any_tx()
         context = Context(
-            [], tx, Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+            [],
+            tx,
+            Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp(),
         )
 
         pool_info = self.runner.call_view_method(
@@ -903,7 +914,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         contract = self.get_readonly_contract(self.nc_id)
         assert isinstance(contract, DozerPoolManager)
 
-
         # Set the HTR-USD pool
         tx = self._get_any_tx()
         owner_context = Context(
@@ -956,8 +966,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
 
         # Calculate expected HTR price in USD (with 6 decimal places)
-        # Price = (USD reserve * 1_000000) // HTR reserve
-        expected_htr_price_in_usd = (usd_reserve * 1_000000) // htr_reserve
+        # Price = (USD reserve * 10_000) // HTR reserve (accounting for cents storage)
+        expected_htr_price_in_usd = (usd_reserve * 10_000) // htr_reserve
 
         # Calculate expected token_b price in USD
         # Price = (token_b price in HTR * HTR price in USD) // 1_000000
@@ -1125,7 +1135,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Verify the pool is signed
         pool_info = self.runner.call_view_method(self.nc_id, "pool_info", pool_key)
         self.assertTrue(pool_info["is_signed"])
-        self.assertEqual(pool_info["signer"], self.owner_address)
+        # Convert owner_address to base58 string for comparison since pool_info returns base58 string
+        from hathor.crypto.util import get_address_b58_from_bytes
+
+        expected_signer = get_address_b58_from_bytes(self.owner_address)
+        self.assertEqual(pool_info["signer"], expected_signer)
 
         # Get signed pools
         signed_pools = self.runner.call_view_method(self.nc_id, "get_signed_pools")
@@ -1135,7 +1149,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Try to sign a pool with unauthorized address (should fail)
         unauthorized_address, _ = self._get_any_address()
         unauthorized_context = Context(
-            [], tx, Address(unauthorized_address), timestamp=self.get_current_timestamp()
+            [],
+            tx,
+            Address(unauthorized_address),
+            timestamp=self.get_current_timestamp(),
         )
 
         with self.assertRaises(Unauthorized):
@@ -1169,7 +1186,9 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Verify the second pool is signed
         pool_info2 = self.runner.call_view_method(self.nc_id, "pool_info", pool_key2)
         self.assertTrue(pool_info2["is_signed"])
-        self.assertEqual(pool_info2["signer"], signer_address)
+        # Convert signer_address to base58 string for comparison since pool_info returns base58 string
+        expected_signer2 = get_address_b58_from_bytes(signer_address)
+        self.assertEqual(pool_info2["signer"], expected_signer2)
 
         # Get signed pools (should now have 2)
         signed_pools = self.runner.call_view_method(self.nc_id, "get_signed_pools")
@@ -1205,7 +1224,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Verify the pool is signed
         pool_info = self.runner.call_view_method(self.nc_id, "pool_info", pool_key)
         self.assertTrue(pool_info["is_signed"])
-        self.assertEqual(pool_info["signer"], signer_address)
+        # Convert signer_address to base58 string for comparison since pool_info returns base58 string
+        from hathor.crypto.util import get_address_b58_from_bytes
+
+        expected_signer = get_address_b58_from_bytes(signer_address)
+        self.assertEqual(pool_info["signer"], expected_signer)
 
         # Unsign the pool with the original signer
         self.runner.call_public_method(
@@ -1238,7 +1261,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Try to unsign with unauthorized address (should fail)
         unauthorized_address, _ = self._get_any_address()
         unauthorized_context = Context(
-            [], tx, Address(unauthorized_address), timestamp=self.get_current_timestamp()
+            [],
+            tx,
+            Address(unauthorized_address),
+            timestamp=self.get_current_timestamp(),
         )
 
         # Sign the pool first
@@ -1848,7 +1874,9 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Always create a context with both deposit and withdrawal actions
         # This is required for both swap methods
         tx = self._get_any_tx()
-        actions: list[NCAction] = [NCDepositAction(token_uid=token_in, amount=amount_in)]
+        actions: list[NCAction] = [
+            NCDepositAction(token_uid=token_in, amount=amount_in)
+        ]
 
         # Add withdrawal action if token_out and amount_out are provided
         if token_out is not None and amount_out is not None:
@@ -2236,8 +2264,12 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                     # Execute swap
                     context = Context(
                         [
-                            NCDepositAction(token_uid=self.token_a, amount=swap_amount_a),
-                            NCWithdrawalAction(token_uid=self.token_b, amount=expected_amount_b),
+                            NCDepositAction(
+                                token_uid=self.token_a, amount=swap_amount_a
+                            ),
+                            NCWithdrawalAction(
+                                token_uid=self.token_b, amount=expected_amount_b
+                            ),
                         ],
                         self._get_any_tx(),
                         Address(address_bytes),
@@ -2284,8 +2316,12 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                     # Execute swap
                     context = Context(
                         [
-                            NCDepositAction(token_uid=self.token_b, amount=swap_amount_b),
-                            NCWithdrawalAction(token_uid=self.token_a, amount=expected_amount_a),
+                            NCDepositAction(
+                                token_uid=self.token_b, amount=swap_amount_b
+                            ),
+                            NCWithdrawalAction(
+                                token_uid=self.token_a, amount=expected_amount_a
+                            ),
                         ],
                         self._get_any_tx(),
                         Address(address_bytes),
@@ -2901,4 +2937,3 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
 
         self._check_balance()
-
