@@ -8,7 +8,10 @@ services:
       - ./hathor/nanocontracts/blueprints:/app/hathor/nanocontracts/blueprints
       - ./hathor/conf/nano_testnet.yml:/app/hathor/conf/nano_testnet.yml
       - ./tests:/app/tests
-      # - ./.git:/app/.git
+      - ./.git:/app/.git
+    environment:
+      - GIT_DISCOVERY_ACROSS_FILESYSTEM=1
+      - HATHOR_TEST_DISABLE_GIT=1
 
     # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_rewards.py"] # with stdout
     command: [
@@ -17,7 +20,8 @@ services:
         "pytest",
         "--capture=no",
         "--disable-warnings",
-        "-qq", # quiet mode
-        "--tb=short", # shorter traceback
-        "tests/nanocontracts/blueprints/test_dozer_pool_manager.py",
+        "--tb=short",           # shorter but readable tracebacks on failure
+        "--color=yes",          # colorized output
+        "-q",                   # quiet mode - only show failures and summary
+        "tests/nanocontracts/blueprints/test_dozer_temp.py",
       ]
