@@ -487,6 +487,72 @@ class DozerPoolManager(Blueprint):
             )
         return Amount(amount_in)
 
+    @view
+    def front_quote_add_liquidity_in(
+        self, amount_in: Amount, token_in: TokenUid, pool_key: str
+    ) -> Amount:
+        """Calculate the amount of other tokens to include for a given input amount in add liquidity event.
+
+        Args:
+            amount_in: The amount of input tokens
+            token_in: The token to be used as input
+            pool_key: The pool key identifying the pool
+
+        Returns:
+            The calculated amount of other tokens to include
+
+        Raises:
+            PoolNotFound: If the pool does not exist
+        """
+        if pool_key not in self.all_pools:
+            raise PoolNotFound()
+
+        reserve_a = self.pool_reserve_a[pool_key]
+        reserve_b = self.pool_reserve_b[pool_key]
+        token_a = self.pool_token_a[pool_key]
+
+        if token_in == token_a:
+            # Input is token A, calculate required token B
+            quote = self.quote(amount_in, reserve_a, reserve_b)
+        else:
+            # Input is token B, calculate required token A
+            quote = self.quote(amount_in, reserve_b, reserve_a)
+
+        return quote
+
+    @view
+    def front_quote_add_liquidity_out(
+        self, amount_out: Amount, token_in: TokenUid, pool_key: str
+    ) -> Amount:
+        """Calculate the amount of other tokens to include for a given output amount in add liquidity event.
+
+        Args:
+            amount_out: The amount of output tokens
+            token_in: The token to be used as input
+            pool_key: The pool key identifying the pool
+
+        Returns:
+            The calculated amount of other tokens to include
+
+        Raises:
+            PoolNotFound: If the pool does not exist
+        """
+        if pool_key not in self.all_pools:
+            raise PoolNotFound()
+
+        reserve_a = self.pool_reserve_a[pool_key]
+        reserve_b = self.pool_reserve_b[pool_key]
+        token_a = self.pool_token_a[pool_key]
+
+        if token_in == token_a:
+            # Input is token A, calculate required token A for given token B output
+            quote = self.quote(amount_out, reserve_b, reserve_a)
+        else:
+            # Input is token B, calculate required token B for given token A output
+            quote = self.quote(amount_out, reserve_a, reserve_b)
+
+        return quote
+
     def _get_protocol_liquidity_increase(
         self, protocol_fee_amount: Amount, token: TokenUid, pool_key: str
     ) -> Amount:
@@ -2262,8 +2328,8 @@ class DozerPoolManager(Blueprint):
                     positions[pool_key] = self.user_info(address, pool_key)
 
                     # Add token information to make it more user-friendly
-                    positions[pool_key]["token_a"] = self.pool_token_a[pool_key]
-                    positions[pool_key]["token_b"] = self.pool_token_b[pool_key]
+                    positions[pool_key]["token_a"] = self.pool_token_a[pool_key].hex()
+                    positions[pool_key]["token_b"] = self.pool_token_b[pool_key].hex()
                     positions[pool_key]["fee"] = (
                         self.pool_fee_numerator[pool_key]
                         / self.pool_fee_denominator[pool_key]
@@ -3139,8 +3205,121 @@ class DozerPoolManager(Blueprint):
                 price_impact = (100 * (no_fee_quote - amount_out)) // no_fee_quote
                 return Amount(max(0, price_impact))
 
-        # For multi-hop, approximate price impact (simplified)
-        return Amount(0)  # Could be enhanced with more complex calculation
+        # For multi-hop, calculate cumulative price impact across all pools
+        return self._calculate_multi_hop_price_impact(
+            amount_in, amount_out, pool_keys, token_in, token_out
+        )
+
+    @view
+    def _calculate_multi_hop_price_impact(
+        self,
+        amount_in: Amount,
+        amount_out: Amount,
+        pool_keys: list[str],
+        token_in: TokenUid,
+        token_out: TokenUid,
+    ) -> Amount:
+        """Calculate price impact for multi-hop swaps.
+        
+        The strategy is to calculate the theoretical amount out using spot prices
+        (without considering slippage) and compare it with the actual amount out.
+        
+        Args:
+            amount_in: Input amount
+            amount_out: Actual output amount
+            pool_keys: List of pool keys in the swap path
+            token_in: Input token
+            token_out: Output token
+            
+        Returns:
+            Price impact as a percentage (with precision)
+        """
+        if len(pool_keys) <= 1 or amount_out == 0:
+            return Amount(0)
+            
+        try:
+            # Calculate theoretical amount out using spot prices (no slippage)
+            theoretical_amount_out = self._calculate_theoretical_multi_hop_output(
+                amount_in, pool_keys, token_in, token_out
+            )
+            
+            if theoretical_amount_out == 0:
+                return Amount(0)
+                
+            # Price impact = (theoretical - actual) / theoretical * 100
+            price_impact = (100 * (theoretical_amount_out - amount_out)) // theoretical_amount_out
+            return Amount(max(0, min(price_impact, 100)))  # Cap at 100%
+            
+        except Exception:
+            # If calculation fails, return 0 to avoid contract failure
+            return Amount(0)
+            
+    @view
+    def _calculate_theoretical_multi_hop_output(
+        self,
+        amount_in: Amount,
+        pool_keys: list[str],
+        token_in: TokenUid,
+        token_out: TokenUid,
+    ) -> Amount:
+        """Calculate theoretical output for multi-hop swap using spot prices.
+        
+        This simulates the swap using very small amounts to approximate spot prices,
+        avoiding the slippage that occurs with large trades.
+        
+        Args:
+            amount_in: Input amount
+            pool_keys: List of pool keys in the swap path
+            token_in: Input token
+            token_out: Output token
+            
+        Returns:
+            Theoretical output amount
+        """
+        # Use a small reference amount (1% of input) to calculate spot rates
+        ref_amount = max(Amount(1), amount_in // 100)
+        current_amount = ref_amount
+        current_token = token_in
+        
+        # Trace through each pool to get the exchange rate
+        for pool_key in pool_keys:
+            if pool_key not in self.all_pools:
+                return Amount(0)
+                
+            token_a = self.pool_token_a[pool_key]
+            token_b = self.pool_token_b[pool_key]
+            
+            # Determine which direction we're swapping
+            if current_token == token_a:
+                # Swapping A -> B
+                reserve_in = self.pool_reserve_a[pool_key]
+                reserve_out = self.pool_reserve_b[pool_key]
+                current_token = token_b
+            elif current_token == token_b:
+                # Swapping B -> A
+                reserve_in = self.pool_reserve_b[pool_key]
+                reserve_out = self.pool_reserve_a[pool_key]
+                current_token = token_a
+            else:
+                # Token not found in this pool
+                return Amount(0)
+                
+            # Calculate spot price output (without fees for theoretical calculation)
+            if reserve_in == 0:
+                return Amount(0)
+                
+            # Use spot price formula: output = input * reserve_out / reserve_in
+            current_amount = (current_amount * reserve_out) // reserve_in
+            
+            if current_amount == 0:
+                return Amount(0)
+                
+        # Scale the result back to the original amount
+        if ref_amount == 0:
+            return Amount(0)
+            
+        theoretical_output = (current_amount * amount_in) // ref_amount
+        return Amount(theoretical_output)
 
     @view
     def get_user_positions_str(self, address: Address) -> str:
