@@ -125,7 +125,7 @@ class BlockConsensusAlgorithm:
     def _nc_execute_calls(self, block: Block, *, is_reorg: bool) -> None:
         """Internal method to execute the method calls for transactions confirmed by this block.
         """
-        from hathor.nanocontracts import NCFail
+        from hathor.nanocontracts import NC_EXECUTION_FAIL_ID, NCFail
         from hathor.nanocontracts.types import Address
 
         assert self._settings.ENABLE_NANO_CONTRACTS
@@ -154,7 +154,7 @@ class BlockConsensusAlgorithm:
                 # Clear the NC_EXECUTION_FAIL_ID flag if this is the only reason the transaction was voided.
                 # This case might only happen when handling reorgs.
                 assert tx.storage is not None
-                if tx_meta.voided_by == {tx.hash, self._settings.NC_EXECUTION_FAIL_ID}:
+                if tx_meta.voided_by == {tx.hash, NC_EXECUTION_FAIL_ID}:
                     if tx_meta.conflict_with:
                         for tx_conflict_id in tx_meta.conflict_with:
                             tx_conflict = tx.storage.get_transaction(tx_conflict_id)
@@ -221,6 +221,11 @@ class BlockConsensusAlgorithm:
                 # Update metadata.
                 self.nc_update_metadata(tx, runner)
 
+                # Update indexes. This must be after metadata is updated.
+                assert tx.storage is not None
+                assert tx.storage.indexes is not None
+                tx.storage.indexes.handle_contract_execution(tx)
+
                 # We only emit events when the nc is successfully executed.
                 assert self.context.nc_events is not None
                 last_call_info = runner.get_last_call_info()
@@ -248,10 +253,10 @@ class BlockConsensusAlgorithm:
                 case NCExecutionState.SUCCESS:
                     assert tx_meta.voided_by is None
                 case NCExecutionState.FAILURE:
-                    assert tx_meta.voided_by == {tx.hash, self._settings.NC_EXECUTION_FAIL_ID}
+                    assert tx_meta.voided_by == {tx.hash, NC_EXECUTION_FAIL_ID}
                 case NCExecutionState.SKIPPED:
                     assert tx_meta.voided_by
-                    assert self._settings.NC_EXECUTION_FAIL_ID not in tx_meta.voided_by
+                    assert NC_EXECUTION_FAIL_ID not in tx_meta.voided_by
                 case _:
                     assert_never(tx_meta.nc_execution)
 
@@ -274,9 +279,10 @@ class BlockConsensusAlgorithm:
 
     def mark_as_nc_fail_execution(self, tx: Transaction) -> None:
         """Mark that a transaction failed execution. It also propagates its voidedness through the DAG of funds."""
+        from hathor.nanocontracts import NC_EXECUTION_FAIL_ID
         assert tx.storage is not None
         tx_meta = tx.get_metadata()
-        tx_meta.add_voided_by(self._settings.NC_EXECUTION_FAIL_ID)
+        tx_meta.add_voided_by(NC_EXECUTION_FAIL_ID)
         tx_meta.nc_execution = NCExecutionState.FAILURE
         self.context.save(tx)
         self.context.transaction_algorithm.add_voided_by(tx,
@@ -462,6 +468,7 @@ class BlockConsensusAlgorithm:
         are not propagated through the chains. For further information, see
         the docstring of the ConsensusAlgorithm class.
         """
+        from hathor.nanocontracts import NC_EXECUTION_FAIL_ID
         voided_by: set[bytes] = set()
         for parent in block.get_parents():
             parent_meta = parent.get_metadata()
@@ -476,7 +483,7 @@ class BlockConsensusAlgorithm:
                     voided_by2 = voided_by2.copy()
                     voided_by2.discard(parent.hash)
                 voided_by.update(self.context.consensus.filter_out_voided_by_entries_from_parents(parent, voided_by2))
-                voided_by.discard(self._settings.NC_EXECUTION_FAIL_ID)
+                voided_by.discard(NC_EXECUTION_FAIL_ID)
         return voided_by
 
     def update_voided_by_from_parents(self, block: Block) -> bool:
@@ -683,7 +690,7 @@ class BlockConsensusAlgorithm:
                 if meta.nc_execution is NCExecutionState.SUCCESS:
                     assert tx.storage is not None
                     assert tx.storage.indexes is not None
-                    tx.storage.indexes.nc_update_remove(tx)
+                    tx.storage.indexes.handle_contract_unexecution(tx)
                 meta.nc_execution = NCExecutionState.PENDING
                 meta.nc_calls = None
             meta.first_block = None

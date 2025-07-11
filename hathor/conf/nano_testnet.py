@@ -44,7 +44,8 @@ SETTINGS = HathorSettings(
     ENABLE_NANO_CONTRACTS=True,
     ENABLE_ON_CHAIN_BLUEPRINTS=True,
     NC_ON_CHAIN_BLUEPRINT_ALLOWED_ADDRESSES=[
-        "WWFiNeWAFSmgtjm4ht2MydwS5GY3kMJsEK",
+        'WWFiNeWAFSmgtjm4ht2MydwS5GY3kMJsEK',
+        'WQFDxic8xWWnMLL4aE5abY2XRKPNvGhtjY',
     ],
     BLUEPRINTS={
         bytes.fromhex(
