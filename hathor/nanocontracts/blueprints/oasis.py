@@ -1,9 +1,7 @@
-from re import A, T
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
-    Address,
     Amount,
     Timestamp,
     ContractId,
@@ -23,9 +21,10 @@ HTR_UID = TokenUid(b'\x00')
 
 
 class Oasis(Blueprint):
-    """Oasis contract that interacts with Dozer Pool contract."""
+    """Oasis contract that interacts with Dozer Pool Manager contract."""
 
-    dozer_pool: ContractId
+    dozer_pool_manager: ContractId
+    pool_fee: Amount
     protocol_fee: Amount
 
     owner_address: bytes
@@ -49,12 +48,12 @@ class Oasis(Blueprint):
     def initialize(
         self,
         ctx: Context,
-        dozer_pool: ContractId,
+        dozer_pool_manager: ContractId,
         token_b: TokenUid,
         pool_fee: Amount,
         protocol_fee: Amount,
     ) -> None:
-        """Initialize the contract with dozer pool set."""
+        """Initialize the contract with dozer pool manager set."""
         action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
         if action.amount < MIN_DEPOSIT or action.token_uid != HTR_UID:
             raise NCFail("Deposit amount too low or token not HATHOR")
@@ -62,12 +61,24 @@ class Oasis(Blueprint):
             raise NCFail("Protocol fee must be between 0 and 1000")
         self.token_b = token_b
         self.dev_address = ctx.address
-        self.dozer_pool = dozer_pool
+        self.dozer_pool_manager = dozer_pool_manager
+        self.pool_fee = pool_fee
         self.oasis_htr_balance = Amount(action.amount)
         self.dev_deposit_amount = Amount(action.amount)
         self.total_liquidity = Amount(0)
         self.protocol_fee = protocol_fee
         self.owner_address = ctx.address
+
+    def _get_pool_key(self) -> str:
+        """Generate the pool key for the HTR/token_b pair."""
+        token_a = TokenUid(HTR_UID)
+        token_b = self.token_b
+        
+        # Ensure tokens are ordered (HTR should be smaller)
+        if token_a > token_b:
+            token_a, token_b = token_b, token_a
+            
+        return f"{token_a.hex()}/{token_b.hex()}/{self.pool_fee}"
 
     @public(allow_deposit=True)
     def owner_deposit(self, ctx: Context) -> None:
@@ -125,7 +136,7 @@ class Oasis(Blueprint):
             liquidity_increase = (
                 self.total_liquidity
                 * deposit_amount
-                // self._get_oasis_lp_amount_b(ctx)
+                // self._get_oasis_lp_amount_b()
             )
             self.user_liquidity[ctx.address] = Amount(
                 self.user_liquidity.get(ctx.address, 0) + liquidity_increase
@@ -189,7 +200,7 @@ class Oasis(Blueprint):
             NCDepositAction(amount=htr_amount, token_uid=TokenUid(HTR_UID))
         ]
 
-        result = self.syscall.call_public_method(self.dozer_pool, "add_liquidity", actions)
+        result = self.syscall.call_public_method(self.dozer_pool_manager, "add_liquidity", actions, self.pool_fee)
 
         if result[1] > 0:
             if result[0] == self.token_b:
@@ -203,7 +214,7 @@ class Oasis(Blueprint):
                     NCWithdrawalAction(amount=0, token_uid=self.token_b),
                 ]
             self.syscall.call_public_method(
-                self.dozer_pool, "withdraw_cashback", adjust_actions
+                self.dozer_pool_manager, "withdraw_cashback", adjust_actions, self.pool_fee
             )
             partial = self.user_balances.get(ctx.address, {})
             partial.update(
@@ -238,8 +249,8 @@ class Oasis(Blueprint):
         htr_oasis_amount = oasis_quote["max_withdraw_a"]
         token_b_oasis_amount = oasis_quote["user_lp_b"]
         user_liquidity = self.user_liquidity.get(ctx.address, 0)
-        user_lp_b = (user_liquidity) * token_b_oasis_amount // (self.total_liquidity)
-        user_lp_htr = user_liquidity * htr_oasis_amount // (self.total_liquidity)
+        user_lp_b = user_liquidity * token_b_oasis_amount // self.total_liquidity
+        user_lp_htr = user_liquidity * htr_oasis_amount // self.total_liquidity
 
         # Create actions to remove liquidity
         actions:list[NCAction] = [
@@ -258,12 +269,15 @@ class Oasis(Blueprint):
         # Check for impermanent loss
         if self.user_deposit_b.get(ctx.address, 0) > max_withdraw_b:
             loss = self.user_deposit_b[ctx.address] - max_withdraw_b
-            loss_htr = self.syscall.call_view_method(self.dozer_pool, "quote_token_b", loss)
+            # Get pool reserves to calculate quote
+            pool_key = self._get_pool_key()
+            reserves = self.syscall.call_view_method(self.dozer_pool_manager, "get_reserves", pool_key)
+            loss_htr = self.syscall.call_view_method(self.dozer_pool_manager, "quote", loss, reserves[1], reserves[0])
             if loss_htr > user_lp_htr:
                 loss_htr = user_lp_htr
 
-        # Call dozer pool to remove liquidity
-        self.syscall.call_public_method(self.dozer_pool, "remove_liquidity", actions)
+        # Call dozer pool manager to remove liquidity
+        self.syscall.call_public_method(self.dozer_pool_manager, "remove_liquidity", actions, self.pool_fee)
 
         # Get existing cashback balances
         user_current_balance = self.user_balances.get(ctx.address, {})
@@ -388,22 +402,36 @@ class Oasis(Blueprint):
 
         self.protocol_fee = new_fee
 
-    def _get_oasis_lp_amount_b(self, ctx: Context) -> Amount:
-        return self.syscall.call_view_method(
-            self.dozer_pool,
-            "max_withdraw_b",
+    def _get_oasis_lp_amount_b(self) -> Amount:
+        # Get user info for this contract from the pool manager
+        pool_key = self._get_pool_key()
+        user_info = self.syscall.call_view_method(
+            self.dozer_pool_manager,
+            "user_info",
             self.syscall.get_contract_id(),
+            pool_key
         )
+        return user_info["token1Amount"]  # token_b amount
 
     def _quote_add_liquidity_in(self, amount: Amount) -> Amount:
+        pool_key = self._get_pool_key()
         return self.syscall.call_view_method(
-            self.dozer_pool, "front_quote_add_liquidity_in", amount, self.token_b
+            self.dozer_pool_manager, "front_quote_add_liquidity_in", amount, self.token_b, pool_key
         )
 
     def _quote_remove_liquidity_oasis(self) -> dict[str, int]:
-        return self.syscall.call_view_method(
-            self.dozer_pool, "quote_remove_liquidity", self.syscall.get_contract_id()
+        # Get user info for this contract from the pool manager
+        pool_key = self._get_pool_key()
+        user_info = self.syscall.call_view_method(
+            self.dozer_pool_manager,
+            "user_info",
+            self.syscall.get_contract_id(),
+            pool_key
         )
+        return {
+            "max_withdraw_a": user_info["token0Amount"],  # HTR amount
+            "user_lp_b": user_info["token1Amount"],      # token_b amount
+        }
 
     def _get_user_bonus(self, timelock: int, amount: Amount) -> Amount:
         """Calculates the bonus for a user based on the timelock and amount"""
@@ -478,7 +506,6 @@ class Oasis(Blueprint):
         """Returns one action tested by type and index"""
         if len(ctx.actions) != 1:
             raise NCFail
-        keys = ctx.actions.keys()
         output = ctx.get_single_action(TokenUid(HTR_UID))
         if not output:
             raise NCFail
@@ -504,14 +531,12 @@ class Oasis(Blueprint):
         """Returns one action tested by type and index"""
         if len(ctx.actions) > 2:
             raise NCFail
-        try:
-            output = ctx.actions.get(token)
-        except:
-            raise NCFail
+        output = ctx.get_single_action(token)
 
         if not output:
             raise NCFail
-
+        if output.type != action_type:
+            raise NCFail
         if auth:
             if ctx.address != self.dev_address:
                 raise NCFail
@@ -649,7 +674,10 @@ class Oasis(Blueprint):
         loss_htr = 0
         if self.user_deposit_b.get(address, 0) > max_withdraw_b:
             loss = self.user_deposit_b.get(address, 0) - max_withdraw_b
-            loss_htr = self.syscall.call_view_method(self.dozer_pool, "quote_token_b", loss)
+            # Get pool reserves to calculate quote
+            pool_key = self._get_pool_key()
+            reserves = self.syscall.call_view_method(self.dozer_pool_manager, "get_reserves", pool_key)
+            loss_htr = self.syscall.call_view_method(self.dozer_pool_manager, "quote", loss, reserves[1], reserves[0])
             if loss_htr > user_lp_htr:
                 loss_htr = user_lp_htr
             max_withdraw_htr = user_balance_htr + loss_htr
