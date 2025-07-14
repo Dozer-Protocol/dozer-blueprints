@@ -36,7 +36,7 @@ class Oasis(Blueprint):
     token_price_in_htr_in_deposit: dict[bytes, Amount]
     user_liquidity: dict[bytes, Amount]
     total_liquidity: Amount
-    user_withdrawal_time: dict[bytes, Timestamp]
+    user_withdrawal_time: dict[bytes, int]
     user_balances: dict[bytes, dict[TokenUid, Amount]]
     token_b: TokenUid
     # Track if a user's position has been closed and is ready for withdrawal
@@ -44,7 +44,7 @@ class Oasis(Blueprint):
     # Track withdrawn balances separately from cashback/rewards
     closed_position_balances: dict[bytes, dict[TokenUid, Amount]]
 
-    @public
+    @public(allow_deposit=True)
     def initialize(
         self,
         ctx: Context,
@@ -91,7 +91,7 @@ class Oasis(Blueprint):
         self.oasis_htr_balance = Amount(self.oasis_htr_balance + action.amount)
         self.dev_deposit_amount = Amount(self.dev_deposit_amount + action.amount)
 
-    @public
+    @public(allow_deposit=True)
     def user_deposit(self, ctx: Context, timelock: int, htr_price: Amount) -> None:
         """Deposits token B with a timelock period for bonus rewards.
 
@@ -146,7 +146,7 @@ class Oasis(Blueprint):
         if ctx.address in self.user_withdrawal_time:
             delta = self.user_withdrawal_time[ctx.address] - now
             if delta > 0:
-                self.user_withdrawal_time[ctx.address] = Timestamp(
+                self.user_withdrawal_time[ctx.address] = (
                     now
                     + (
                         (
@@ -158,8 +158,8 @@ class Oasis(Blueprint):
                     + 1
                 )
             else:
-                self.user_withdrawal_time[ctx.address] = Timestamp(
-                    now + timelock * MONTHS_IN_SECONDS
+                self.user_withdrawal_time[ctx.address] = (
+                    int(now + int(timelock * int(MONTHS_IN_SECONDS)))
                 )
             # updating position intial price with weighted average
             self.htr_price_in_deposit[ctx.address] = Amount(
@@ -184,7 +184,7 @@ class Oasis(Blueprint):
         else:
             self.htr_price_in_deposit[ctx.address] = htr_price
             self.token_price_in_htr_in_deposit[ctx.address] = Amount(token_price_in_htr)
-            self.user_withdrawal_time[ctx.address] = Timestamp(now + timelock * MONTHS_IN_SECONDS)
+            self.user_withdrawal_time[ctx.address] = int(now + timelock * MONTHS_IN_SECONDS)
 
         self.oasis_htr_balance = Amount(self.oasis_htr_balance - bonus - htr_amount)
         partial = self.user_balances.get(ctx.address, {})
@@ -224,7 +224,7 @@ class Oasis(Blueprint):
             )
             self.user_balances[ctx.address] = partial
 
-    @public
+    @public(allow_withdrawal=True)
     def close_position(self, ctx: Context) -> None:
         """Close a user's position, removing liquidity from the pool and making funds available for withdrawal.
 
@@ -304,7 +304,7 @@ class Oasis(Blueprint):
         self.user_liquidity.__delitem__(ctx.address)
         self.user_withdrawal_time.__delitem__(ctx.address)
 
-    @public
+    @public(allow_withdrawal=True)
     def user_withdraw(self, ctx: Context) -> None:
         """Withdraw funds after position is closed.
 
@@ -371,7 +371,7 @@ class Oasis(Blueprint):
             self.token_price_in_htr_in_deposit.__delitem__(ctx.address)
             self.user_position_closed.__delitem__(ctx.address)
 
-    @public
+    @public(allow_withdrawal=True)
     def user_withdraw_bonus(self, ctx: Context) -> None:
         action = self._get_action(ctx, NCActionType.WITHDRAWAL, auth=False)
         if action.token_uid != HTR_UID:
@@ -441,7 +441,7 @@ class Oasis(Blueprint):
 
         return Amount(int(bonus_multiplier[timelock] * amount))
 
-    @public
+    @public(allow_withdrawal=True)
     def owner_withdraw(self, ctx: Context) -> None:
         """Allows owner to withdraw HTR from their balance.
 
@@ -460,7 +460,7 @@ class Oasis(Blueprint):
             raise NCFail("Withdrawal amount too high")
         self.oasis_htr_balance = Amount(self.oasis_htr_balance - action.amount)
 
-    @public
+    @public(allow_withdrawal=True)
     def dev_withdraw_fee(self, ctx: Context) -> None:
         """Allows dev to withdraw collected protocol fees.
 

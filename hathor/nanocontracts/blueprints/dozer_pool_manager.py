@@ -124,7 +124,7 @@ class PoolInfo(NamedTuple):
     transactions: Amount | None
     volume_a: Amount | None
     volume_b: Amount | None
-    last_activity: Timestamp | None
+    last_activity: int | None
     is_signed: bool
     signer: str | None
 
@@ -246,7 +246,7 @@ class DozerPoolManager(Blueprint):
         str, dict[TokenUid, Amount]
     ]  # pool_key -> token -> amount
     pool_transactions: dict[str, Amount]  # pool_key -> transaction count
-    pool_last_activity: dict[str, Timestamp]  # pool_key -> last activity timestamp
+    pool_last_activity: dict[str, int]  # pool_key -> last activity timestamp
     pool_volume_a: dict[str, Amount]  # pool_key -> volume_a
     pool_volume_b: dict[str, Amount]  # pool_key -> volume_b
 
@@ -318,7 +318,7 @@ class DozerPoolManager(Blueprint):
         action_b = ctx.get_single_action(token_b)
 
         # Update last activity timestamp
-        self.pool_last_activity[pool_key] = Timestamp(ctx.timestamp)
+        self.pool_last_activity[pool_key] = int(ctx.timestamp)
 
         return action_a, action_b
 
