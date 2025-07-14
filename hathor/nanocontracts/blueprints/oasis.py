@@ -751,3 +751,5 @@ class Oasis(Blueprint):
             loss_htr=Amount(loss_htr),
             position_closed=False,
         )
+
+__blueprint__ = Oasis
