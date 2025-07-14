@@ -91,7 +91,7 @@ class OasisTestCase(BlueprintTestCase):
             self.oasis_id,
             pool_key
         )
-        return user_info["token1Amount"]  # token_b amount
+        return user_info.token1Amount  # token_b amount
 
     def _quote_remove_liquidity_oasis(self) -> dict[str, int]:
         pool_key = self._get_pool_key()
@@ -102,11 +102,11 @@ class OasisTestCase(BlueprintTestCase):
             pool_key
         )
         return {
-            "max_withdraw_a": user_info["token0Amount"],  # HTR amount
-            "user_lp_b": user_info["token1Amount"],      # token_b amount
+            "max_withdraw_a": user_info.token0Amount,  # HTR amount
+            "user_lp_b": user_info.token1Amount,      # token_b amount
         }
 
-    def _user_info(self, address: bytes) -> dict[str, float]:
+    def _user_info(self, address: bytes):
         return self.runner.call_view_method(self.oasis_id, "user_info", address)
 
     def check_balances(self, users_addresses: list[bytes]) -> None:
@@ -114,20 +114,20 @@ class OasisTestCase(BlueprintTestCase):
         oasis_balance_b = self.oasis_storage.get_balance(self.token_b)
 
         users_balances_a = sum(
-            [self._user_info(address)["user_balance_a"] for address in users_addresses]
+            [self._user_info(address).user_balance_a for address in users_addresses]
         )
         users_balances_b = sum(
-            [self._user_info(address)["user_balance_b"] for address in users_addresses]
+            [self._user_info(address).user_balance_b for address in users_addresses]
         )
         users_closed_balances_a = sum(
             [
-                self._user_info(address)["closed_balance_a"]
+                self._user_info(address).closed_balance_a
                 for address in users_addresses
             ]
         )
         users_closed_balances_b = sum(
             [
-                self._user_info(address)["closed_balance_b"]
+                self._user_info(address).closed_balance_b
                 for address in users_addresses
             ]
         )
@@ -138,10 +138,10 @@ class OasisTestCase(BlueprintTestCase):
 
         # The LP HTR was already accounted for when positions were created
         self.assertEqual(
-            oasis_balance_htr,
+            oasis_balance_htr.value,
             oasis_htr_balance + users_balances_a + users_closed_balances_a,
         )
-        self.assertEqual(oasis_balance_b, users_balances_b + users_closed_balances_b)
+        self.assertEqual(oasis_balance_b.value, users_balances_b + users_closed_balances_b)
 
     def initialize_oasis(
         self, amount: int = 10_000_000_00, protocol_fee: int = 0
@@ -339,7 +339,7 @@ class OasisTestCase(BlueprintTestCase):
         dev_info = self.runner.call_view_method(
             self.oasis_id, "user_info", self.dev_address
         )
-        self.assertEqual(dev_info["user_balance_b"], 0)
+        self.assertEqual(dev_info.user_balance_b, 0)
 
         # Test unauthorized withdrawal
         # Create a new owner different from dev
@@ -359,229 +359,229 @@ class OasisTestCase(BlueprintTestCase):
         with self.assertRaises(NCFail):
             self.runner.call_public_method(self.oasis_id, "dev_withdraw_fee", ctx)
 
-    # def test_update_owner_address(self) -> None:
-    #     dev_initial_deposit = 1_000_000_00
-    #     self.initialize_pool()
-    #     self.initialize_oasis(amount=dev_initial_deposit)
+    def test_update_owner_address(self) -> None:
+        dev_initial_deposit = 1_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
 
-    #     # Verify initial owner is dev
-    #     oasis_contract = self.get_readonly_contract(self.oasis_id)
-    #     assert isinstance(oasis_contract, Oasis)
-    #     self.assertEqual(oasis_contract.owner_address, self.dev_address)
+        # Verify initial owner is dev
+        oasis_contract = self.get_readonly_contract(self.oasis_id)
+        assert isinstance(oasis_contract, Oasis)
+        self.assertEqual(oasis_contract.owner_address, self.dev_address)
 
-    #     # Test owner update by dev
-    #     new_owner = self._get_any_address()[0]
-    #     ctx = Context([], self.tx, Address(self.dev_address), timestamp=self.get_current_timestamp())
-    #     self.runner.call_public_method(
-    #         self.oasis_id, "update_owner_address", ctx, new_owner
-    #     )
+        # Test owner update by dev
+        new_owner = self._get_any_address()[0]
+        ctx = Context([], self.tx, Address(self.dev_address), timestamp=self.get_current_timestamp())
+        self.runner.call_public_method(
+            self.oasis_id, "update_owner_address", ctx, new_owner
+        )
 
-    #     # Verify owner update
-    #     oasis_contract = self.get_readonly_contract(self.oasis_id)
-    #     assert isinstance(oasis_contract, Oasis)
-    #     self.assertEqual(oasis_contract.owner_address, new_owner)
+        # Verify owner update
+        oasis_contract = self.get_readonly_contract(self.oasis_id)
+        assert isinstance(oasis_contract, Oasis)
+        self.assertEqual(oasis_contract.owner_address, new_owner)
 
-    #     # Test owner update by current owner
-    #     newer_owner = self._get_any_address()[0]
-    #     ctx = Context([], self.tx, Address(new_owner), timestamp=self.get_current_timestamp())
-    #     self.runner.call_public_method(
-    #         self.oasis_id, "update_owner_address", ctx, newer_owner
-    #     )
+        # Test owner update by current owner
+        newer_owner = self._get_any_address()[0]
+        ctx = Context([], self.tx, Address(new_owner), timestamp=self.get_current_timestamp())
+        self.runner.call_public_method(
+            self.oasis_id, "update_owner_address", ctx, newer_owner
+        )
 
-    #     # Verify owner update
-    #     oasis_contract = self.get_readonly_contract(self.oasis_id)
-    #     assert isinstance(oasis_contract, Oasis)
-    #     self.assertEqual(oasis_contract.owner_address, newer_owner)
+        # Verify owner update
+        oasis_contract = self.get_readonly_contract(self.oasis_id)
+        assert isinstance(oasis_contract, Oasis)
+        self.assertEqual(oasis_contract.owner_address, newer_owner)
 
-    #     # Test unauthorized update
-    #     random_address = self._get_any_address()[0]
-    #     ctx = Context([], self.tx, Address(random_address), timestamp=self.get_current_timestamp())
-    #     with self.assertRaises(NCFail):
-    #         self.runner.call_public_method(
-    #             self.oasis_id, "update_owner_address", ctx, random_address
-    #         )
+        # Test unauthorized update
+        random_address = self._get_any_address()[0]
+        ctx = Context([], self.tx, Address(random_address), timestamp=self.get_current_timestamp())
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.oasis_id, "update_owner_address", ctx, random_address
+            )
 
-    # def test_initialize(self) -> None:
-    #     dev_initial_deposit = 10_000_000_00
-    #     self.initialize_pool()
-    #     self.initialize_oasis()
-    #     oasis_contract = self.get_readonly_contract(self.oasis_id)
-    #     assert isinstance(oasis_contract, Oasis)
-    #     self.assertEqual(
-    #         oasis_contract.oasis_htr_balance, dev_initial_deposit
-    #     )
-    #     # Verify owner is set to dev address
-    #     self.assertEqual(oasis_contract.owner_address, self.dev_address)
+    def test_initialize(self) -> None:
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis()
+        oasis_contract = self.get_readonly_contract(self.oasis_id)
+        assert isinstance(oasis_contract, Oasis)
+        self.assertEqual(
+            oasis_contract.oasis_htr_balance, dev_initial_deposit
+        )
+        # Verify owner is set to dev address
+        self.assertEqual(oasis_contract.owner_address, self.dev_address)
 
-    # def test_user_deposit(self, timelock=6) -> tuple[Context, int, int]:
-    #     dev_initial_deposit = 10_000_000_00
-    #     self.initialize_pool()
-    #     self.initialize_oasis(amount=dev_initial_deposit)
-    #     user_address = self._get_any_address()[0]
-    #     now = self.clock.seconds()
-    #     deposit_amount = 1_000_00
-    #     ctx = Context(
-    #         [
-    #             NCDepositAction(amount=deposit_amount, token_uid=self.token_b),  # type: ignore
-    #         ],
-    #         self.tx,
-    #         Address(user_address),
-    #         timestamp=now,
-    #     )
-    #     self.runner.call_public_method(
-    #         self.oasis_id, "user_deposit", ctx, timelock, 0.03
-    #     )
-    #     user_info = self.runner.call_view_method(
-    #         self.oasis_id, "user_info", user_address
-    #     )
-    #     htr_amount = self._quote_add_liquidity_in(deposit_amount)
-    #     user_bonus = self._get_user_bonus(timelock, htr_amount)
-    #     self.assertEqual(user_info["user_deposit_b"], deposit_amount)
-    #     self.assertEqual(user_info["user_balance_a"], user_bonus)
-    #     # self.assertEqual(user_info["user_balance_b"], 0)
-    #     self.assertEqual(user_info["user_liquidity"], deposit_amount * PRECISION)
-    #     self.assertEqual(
-    #         user_info["user_withdrawal_time"], now + timelock * MONTHS_IN_SECONDS
-    #     )
-    #     self.assertEqual(
-    #         user_info["oasis_htr_balance"],
-    #         dev_initial_deposit - htr_amount - user_bonus,
-    #     )
-    #     self.assertEqual(user_info["total_liquidity"], deposit_amount * PRECISION)
-    #     self.check_balances([user_address])
-    #     return ctx, timelock, htr_amount
+    def test_user_deposit(self, timelock=6) -> tuple[Context, int, int]:
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+        user_address = self._get_any_address()[0]
+        now = self.clock.seconds()
+        deposit_amount = 1_000_00
+        ctx = Context(
+            [
+                NCDepositAction(amount=deposit_amount, token_uid=self.token_b),  # type: ignore
+            ],
+            self.tx,
+            Address(user_address),
+            timestamp=now,
+        )
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock, 3
+        )
+        user_info = self.runner.call_view_method(
+            self.oasis_id, "user_info", user_address
+        )
+        htr_amount = self._quote_add_liquidity_in(deposit_amount)
+        user_bonus = self._get_user_bonus(timelock, htr_amount)
+        self.assertEqual(user_info.user_deposit_b, deposit_amount)
+        self.assertEqual(user_info.user_balance_a, user_bonus)
+        # self.assertEqual(user_info.user_balance_b, 0)
+        self.assertEqual(user_info.user_liquidity, deposit_amount * PRECISION)
+        self.assertEqual(
+            user_info.user_withdrawal_time, int(now + timelock * MONTHS_IN_SECONDS)
+        )
+        self.assertEqual(
+            user_info.oasis_htr_balance,
+            dev_initial_deposit - htr_amount - user_bonus,
+        )
+        self.assertEqual(user_info.total_liquidity, deposit_amount * PRECISION)
+        self.check_balances([user_address])
+        return ctx, timelock, htr_amount
 
-    # def test_multiple_user_deposit_no_repeat(self) -> None:
-    #     dev_initial_deposit = 10_000_000_00
-    #     self.initialize_pool()
-    #     self.initialize_oasis(amount=dev_initial_deposit)
-    #     n_users = 100
-    #     user_addresses = [self._get_any_address()[0] for _ in range(n_users)]
-    #     user_liquidity = [0] * n_users
-    #     user_balances_a = [0] * n_users
-    #     user_deposit_b = [0] * n_users
-    #     total_liquidity = 0
-    #     oasis_htr_balance = dev_initial_deposit
-    #     for i, user_address in enumerate(user_addresses):
-    #         now = self.clock.seconds()
-    #         deposit_amount = 1_000_00
-    #         ## random choice of timelock between the possibilities: 6,9 and 12
-    #         timelock = random.choice([6, 9, 12])
-    #         ctx = Context(
-    #             [
-    #                 NCDepositAction(amount=deposit_amount, token_uid=self.token_b),  # type: ignore
-    #             ],
-    #             self.tx,
-    #             Address(user_address),
-    #             timestamp=now,
-    #         )
-    #         lp_amount_b = self._get_oasis_lp_amount_b()
-    #         self.runner.call_public_method(
-    #             self.oasis_id, "user_deposit", ctx, timelock, 0.03
-    #         )
-    #         htr_amount = self._quote_add_liquidity_in(deposit_amount)
-    #         bonus = self._get_user_bonus(timelock, htr_amount)
-    #         user_info = self.runner.call_view_method(
-    #             self.oasis_id, "user_info", user_address
-    #         )
-    #         if total_liquidity == 0:
-    #             total_liquidity = deposit_amount * PRECISION
-    #             user_liquidity[i] = deposit_amount * PRECISION
-    #         else:
-    #             liquidity_increase = (total_liquidity) * deposit_amount // lp_amount_b
-    #             user_liquidity[i] = user_liquidity[i] + liquidity_increase
-    #             total_liquidity += liquidity_increase
+    def test_multiple_user_deposit_no_repeat(self) -> None:
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+        n_users = 100
+        user_addresses = [self._get_any_address()[0] for _ in range(n_users)]
+        user_liquidity = [0] * n_users
+        user_balances_a = [0] * n_users
+        user_deposit_b = [0] * n_users
+        total_liquidity = 0
+        oasis_htr_balance = dev_initial_deposit
+        for i, user_address in enumerate(user_addresses):
+            now = self.clock.seconds()
+            deposit_amount = 1_000_00
+            ## random choice of timelock between the possibilities: 6,9 and 12
+            timelock = random.choice([6, 9, 12])
+            ctx = Context(
+                [
+                    NCDepositAction(amount=deposit_amount, token_uid=self.token_b),  # type: ignore
+                ],
+                self.tx,
+                Address(user_address),
+                timestamp=now,
+            )
+            lp_amount_b = self._get_oasis_lp_amount_b()
+            self.runner.call_public_method(
+                self.oasis_id, "user_deposit", ctx, timelock, 3
+            )
+            htr_amount = self._quote_add_liquidity_in(deposit_amount)
+            bonus = self._get_user_bonus(timelock, htr_amount)
+            user_info = self.runner.call_view_method(
+                self.oasis_id, "user_info", user_address
+            )
+            if total_liquidity == 0:
+                total_liquidity = deposit_amount * PRECISION
+                user_liquidity[i] = deposit_amount * PRECISION
+            else:
+                liquidity_increase = (total_liquidity) * deposit_amount // lp_amount_b
+                user_liquidity[i] = user_liquidity[i] + liquidity_increase
+                total_liquidity += liquidity_increase
 
-    #         oasis_htr_balance -= bonus + htr_amount
-    #         user_balances_a[i] = user_balances_a[i] + bonus
-    #         user_deposit_b[i] = deposit_amount
-    #         self.assertEqual(user_info["oasis_htr_balance"], oasis_htr_balance)
-    #         self.assertEqual(user_info["user_balance_a"], user_balances_a[i])
-    #         self.assertEqual(user_info["user_deposit_b"], user_deposit_b[i])
-    #         self.assertEqual(user_info["user_liquidity"], user_liquidity[i])
-    #         self.assertEqual(
-    #             user_info["user_withdrawal_time"],
-    #             now + timelock * MONTHS_IN_SECONDS,
-    #         )
-    #         self.assertEqual(user_info["total_liquidity"], total_liquidity)
-    #         self.assertEqual(user_info["oasis_htr_balance"], oasis_htr_balance)
-    #     self.check_balances(user_addresses)
+            oasis_htr_balance -= bonus + htr_amount
+            user_balances_a[i] = user_balances_a[i] + bonus
+            user_deposit_b[i] = deposit_amount
+            self.assertEqual(user_info.oasis_htr_balance, oasis_htr_balance)
+            self.assertEqual(user_info.user_balance_a, user_balances_a[i])
+            self.assertEqual(user_info.user_deposit_b, user_deposit_b[i])
+            self.assertEqual(user_info.user_liquidity, user_liquidity[i])
+            self.assertEqual(
+                user_info.user_withdrawal_time,
+                int(now + timelock * MONTHS_IN_SECONDS),
+            )
+            self.assertEqual(user_info.total_liquidity, total_liquidity)
+            self.assertEqual(user_info.oasis_htr_balance, oasis_htr_balance)
+        self.check_balances(user_addresses)
 
-    # def test_multiple_user_deposit_with_repeat(self) -> None:
-    #     dev_initial_deposit = 10_000_000_00
-    #     self.initialize_pool()
-    #     self.initialize_oasis(amount=dev_initial_deposit)
-    #     n_users = 10
-    #     n_transactions = 500
-    #     user_addresses = [self._get_any_address()[0] for _ in range(n_users)]
-    #     user_liquidity = [0] * n_users
-    #     user_balances_a = [0] * n_users
-    #     user_deposit_b = [0] * n_users
-    #     user_withdrawal_time = [0] * n_users
-    #     total_liquidity = 0
-    #     oasis_htr_balance = dev_initial_deposit
-    #     initial_time = self.clock.seconds()
-    #     for transaction in range(n_transactions):
-    #         i = random.randint(0, n_users - 1)
-    #         user_address = user_addresses[i]
-    #         now = initial_time + transaction * 50
-    #         deposit_amount = 1_000_00
-    #         ## random choice of timelock between the possibilities: 6,9 and 12
-    #         timelock = random.choice([6, 9, 12])
-    #         ctx = Context(
-    #             [
-    #                 NCDepositAction(amount=deposit_amount, token_uid=self.token_b),  # type: ignore
-    #             ],
-    #             self.tx,
-    #             Address(user_address),
-    #             timestamp=now,
-    #         )
-    #         lp_amount_b = self._get_oasis_lp_amount_b()
-    #         self.runner.call_public_method(
-    #             self.oasis_id, "user_deposit", ctx, timelock, 0.03
-    #         )
-    #         htr_amount = self._quote_add_liquidity_in(deposit_amount)
-    #         bonus = self._get_user_bonus(timelock, htr_amount)
-    #         user_info = self.runner.call_view_method(
-    #             self.oasis_id, "user_info", user_address
-    #         )
-    #         user_balances_a[i] += bonus
-    #         if total_liquidity == 0:
-    #             total_liquidity = deposit_amount * PRECISION
-    #             user_liquidity[i] = deposit_amount * PRECISION
-    #         else:
-    #             liquidity_increase = (total_liquidity) * deposit_amount // lp_amount_b
-    #             user_liquidity[i] = user_liquidity[i] + liquidity_increase
-    #             total_liquidity += liquidity_increase
+    def test_multiple_user_deposit_with_repeat(self) -> None:
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+        n_users = 10
+        n_transactions = 500
+        user_addresses = [self._get_any_address()[0] for _ in range(n_users)]
+        user_liquidity = [0] * n_users
+        user_balances_a = [0] * n_users
+        user_deposit_b = [0] * n_users
+        user_withdrawal_time = [0] * n_users
+        total_liquidity = 0
+        oasis_htr_balance = dev_initial_deposit
+        initial_time = self.clock.seconds()
+        for transaction in range(n_transactions):
+            i = random.randint(0, n_users - 1)
+            user_address = user_addresses[i]
+            now = initial_time + transaction * 50
+            deposit_amount = 1_000_00
+            ## random choice of timelock between the possibilities: 6,9 and 12
+            timelock = random.choice([6, 9, 12])
+            ctx = Context(
+                [
+                    NCDepositAction(amount=deposit_amount, token_uid=self.token_b),  # type: ignore
+                ],
+                self.tx,
+                Address(user_address),
+                timestamp=now,
+            )
+            lp_amount_b = self._get_oasis_lp_amount_b()
+            self.runner.call_public_method(
+                self.oasis_id, "user_deposit", ctx, timelock, 3
+            )
+            htr_amount = self._quote_add_liquidity_in(deposit_amount)
+            bonus = self._get_user_bonus(timelock, htr_amount)
+            user_info = self.runner.call_view_method(
+                self.oasis_id, "user_info", user_address
+            )
+            user_balances_a[i] += bonus
+            if total_liquidity == 0:
+                total_liquidity = deposit_amount * PRECISION
+                user_liquidity[i] = deposit_amount * PRECISION
+            else:
+                liquidity_increase = (total_liquidity) * deposit_amount // lp_amount_b
+                user_liquidity[i] = user_liquidity[i] + liquidity_increase
+                total_liquidity += liquidity_increase
 
-    #         if user_withdrawal_time[i] != 0:
-    #             delta = user_withdrawal_time[i] - now
-    #             if delta > 0:
-    #                 user_withdrawal_time[i] = (
-    #                     now
-    #                     + (
-    #                         (
-    #                             (delta * user_deposit_b[i])
-    #                             + (deposit_amount * timelock * MONTHS_IN_SECONDS)
-    #                         )
-    #                         // (user_deposit_b[i] + deposit_amount)
-    #                     )
-    #                     + 1
-    #                 )
-    #             else:
-    #                 user_withdrawal_time[i] = now + timelock * MONTHS_IN_SECONDS
-    #         else:
-    #             user_withdrawal_time[i] = now + timelock * MONTHS_IN_SECONDS
+            if user_withdrawal_time[i] != 0:
+                delta = user_withdrawal_time[i] - now
+                if delta > 0:
+                    user_withdrawal_time[i] = int(
+                        now
+                        + (
+                            (
+                                (delta * user_deposit_b[i])
+                                + (deposit_amount * timelock * MONTHS_IN_SECONDS)
+                            )
+                            // (user_deposit_b[i] + deposit_amount)
+                        )
+                        + 1
+                    )
+                else:
+                    user_withdrawal_time[i] = int(now + timelock * MONTHS_IN_SECONDS)
+            else:
+                user_withdrawal_time[i] = int(now + timelock * MONTHS_IN_SECONDS)
 
-    #         oasis_htr_balance -= bonus + htr_amount
-    #         user_deposit_b[i] += deposit_amount
-    #         self.assertEqual(user_info["oasis_htr_balance"], oasis_htr_balance)
-    #         self.assertEqual(user_info["user_balance_a"], user_balances_a[i])
-    #         self.assertEqual(user_info["user_deposit_b"], user_deposit_b[i])
-    #         self.assertEqual(user_info["user_liquidity"], user_liquidity[i])
-    #         self.assertEqual(user_info["user_withdrawal_time"], user_withdrawal_time[i])
-    #         self.assertEqual(user_info["total_liquidity"], total_liquidity)
-    #     self.check_balances(user_addresses)
+            oasis_htr_balance -= bonus + htr_amount
+            user_deposit_b[i] += deposit_amount
+            self.assertEqual(user_info.oasis_htr_balance, oasis_htr_balance)
+            self.assertEqual(user_info.user_balance_a, user_balances_a[i])
+            self.assertEqual(user_info.user_deposit_b, user_deposit_b[i])
+            self.assertEqual(user_info.user_liquidity, user_liquidity[i])
+            self.assertEqual(user_info.user_withdrawal_time, user_withdrawal_time[i])
+            self.assertEqual(user_info.total_liquidity, total_liquidity)
+        self.check_balances(user_addresses)
 
     # def test_user_withdraw_bonus(self):
     #     ctx_deposit, timelock, htr_amount = self.test_user_deposit()
@@ -658,7 +658,7 @@ class OasisTestCase(BlueprintTestCase):
 
     #         htr_amount = self._quote_add_liquidity_in(deposit_amount)
     #         self.runner.call_public_method(
-    #             self.oasis_id, "user_deposit", ctx, timelock, 0.03
+    #             self.oasis_id, "user_deposit", ctx, timelock, 3
     #         )
 
     #         expected_bonus = int(expected_bonus_rate * htr_amount)
@@ -701,7 +701,7 @@ class OasisTestCase(BlueprintTestCase):
     #         )
 
     #         self.runner.call_public_method(
-    #             self.oasis_id, "user_deposit", ctx, timelock, 0.03
+    #             self.oasis_id, "user_deposit", ctx, timelock, 3
     #         )
 
     #         # Store user data for verification
@@ -758,7 +758,7 @@ class OasisTestCase(BlueprintTestCase):
     #     )
 
     #     self.runner.call_public_method(
-    #         self.oasis_id, "user_deposit", ctx, timelock, 0.03
+    #         self.oasis_id, "user_deposit", ctx, timelock, 3
     #     )
 
     #     # Try closing at different times before timelock expiry
@@ -815,7 +815,7 @@ class OasisTestCase(BlueprintTestCase):
 
     #             with self.assertRaises(NCFail):
     #                 self.runner.call_public_method(
-    #                     self.oasis_id, "user_deposit", ctx, invalid_timelock, 0.03
+    #                     self.oasis_id, "user_deposit", ctx, invalid_timelock, 3
     #                 )
 
     # def test_exact_timelock_expiry(self):
@@ -838,7 +838,7 @@ class OasisTestCase(BlueprintTestCase):
     #     )
 
     #     self.runner.call_public_method(
-    #         self.oasis_id, "user_deposit", deposit_ctx, timelock, 0.03
+    #         self.oasis_id, "user_deposit", deposit_ctx, timelock, 3
     #     )
 
     #     # Try withdrawal exactly at expiry
@@ -984,7 +984,7 @@ class OasisTestCase(BlueprintTestCase):
     #     )
 
     #     self.runner.call_public_method(
-    #         self.oasis_id, "user_deposit", ctx, timelock, 0.03
+    #         self.oasis_id, "user_deposit", ctx, timelock, 3
     #     )
 
     #     user_info = self.runner.call_view_method(
@@ -1015,7 +1015,7 @@ class OasisTestCase(BlueprintTestCase):
     #     )
 
     #     self.runner.call_public_method(
-    #         self.oasis_id, "user_deposit", ctx, timelock, 0.03
+    #         self.oasis_id, "user_deposit", ctx, timelock, 3
     #     )
 
     #     user_info = self.runner.call_view_method(
@@ -1047,7 +1047,7 @@ class OasisTestCase(BlueprintTestCase):
     #     )
 
     #     self.runner.call_public_method(
-    #         self.oasis_id, "user_deposit", ctx, timelock, 0.03
+    #         self.oasis_id, "user_deposit", ctx, timelock, 3
     #     )
 
     #     user_info = self.runner.call_view_method(
@@ -1183,7 +1183,7 @@ class OasisTestCase(BlueprintTestCase):
     #     )
 
     #     self.runner.call_public_method(
-    #         self.oasis_id, "user_deposit", ctx, timelock, 0.03
+    #         self.oasis_id, "user_deposit", ctx, timelock, 3
     #     )
 
     #     # Calculate expected fee
@@ -1226,7 +1226,7 @@ class OasisTestCase(BlueprintTestCase):
 
     #     with self.assertRaises(NCFail):
     #         self.runner.call_public_method(
-    #             self.oasis_id, "user_deposit", ctx, timelock, 0.03
+    #             self.oasis_id, "user_deposit", ctx, timelock, 3
     #         )
 
     # def test_deposit_extreme_ratio(self):
@@ -1251,7 +1251,7 @@ class OasisTestCase(BlueprintTestCase):
     #     )
 
     #     self.runner.call_public_method(
-    #         self.oasis_id, "user_deposit", ctx, timelock, 0.03
+    #         self.oasis_id, "user_deposit", ctx, timelock, 3
     #     )
 
     #     user_info = self.runner.call_view_method(
@@ -1278,7 +1278,7 @@ class OasisTestCase(BlueprintTestCase):
     #     )
 
     #     self.runner.call_public_method(
-    #         self.oasis_id, "user_deposit", ctx, timelock, 0.03
+    #         self.oasis_id, "user_deposit", ctx, timelock, 3
     #     )
 
     #     user_info = self.runner.call_view_method(
@@ -1878,7 +1878,7 @@ class OasisTestCase(BlueprintTestCase):
     #     )
 
     #     self.runner.call_public_method(
-    #         self.oasis_id, "user_deposit", ctx, timelock, 0.03
+    #         self.oasis_id, "user_deposit", ctx, timelock, 3
     #     )
 
     #     htr_amount = self._quote_add_liquidity_in(deposit_amount)

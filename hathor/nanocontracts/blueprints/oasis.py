@@ -1,3 +1,5 @@
+from typing import NamedTuple
+
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.exception import NCFail
@@ -18,6 +20,60 @@ MIN_DEPOSIT = 10000_00
 PRECISION = 10**20
 MONTHS_IN_SECONDS = 60
 HTR_UID = TokenUid(b'\x00')
+
+
+class OasisUserInfo(NamedTuple):
+    """Detailed information about a user's position in the Oasis contract."""
+    
+    user_deposit_b: Amount
+    user_liquidity: Amount
+    user_withdrawal_time: int
+    oasis_htr_balance: Amount
+    total_liquidity: Amount
+    user_balance_a: Amount
+    user_balance_b: Amount
+    closed_balance_a: Amount
+    closed_balance_b: Amount
+    user_lp_b: Amount
+    user_lp_htr: Amount
+    max_withdraw_b: Amount
+    max_withdraw_htr: Amount
+    htr_price_in_deposit: Amount
+    token_price_in_htr_in_deposit: Amount
+    position_closed: bool
+
+
+class OasisInfo(NamedTuple):
+    """General information about the Oasis contract state."""
+    
+    total_liquidity: Amount
+    oasis_htr_balance: Amount
+    token_b: str
+    protocol_fee: Amount
+    dev_deposit_amount: Amount
+
+
+class OasisQuoteInfo(NamedTuple):
+    """Quote information for adding liquidity to Oasis."""
+    
+    bonus: Amount
+    htr_amount: Amount
+    withdrawal_time: int
+    has_position: bool
+    fee_amount: Amount
+    deposit_amount: Amount
+    protocol_fee: Amount
+
+
+class OasisRemoveLiquidityQuote(NamedTuple):
+    """Quote information for removing liquidity from Oasis."""
+    
+    user_lp_b: Amount
+    user_lp_htr: Amount
+    max_withdraw_b: Amount
+    max_withdraw_htr: Amount
+    loss_htr: Amount
+    position_closed: bool
 
 
 class Oasis(Blueprint):
@@ -146,7 +202,7 @@ class Oasis(Blueprint):
         if ctx.address in self.user_withdrawal_time:
             delta = self.user_withdrawal_time[ctx.address] - now
             if delta > 0:
-                self.user_withdrawal_time[ctx.address] = (
+                self.user_withdrawal_time[ctx.address] = int(
                     now
                     + (
                         (
@@ -162,23 +218,21 @@ class Oasis(Blueprint):
                     int(now + int(timelock * int(MONTHS_IN_SECONDS)))
                 )
             # updating position intial price with weighted average
+            # Calculate weighted average avoiding overflow
+            existing_htr_weight = self.htr_price_in_deposit[ctx.address] * self.user_deposit_b[ctx.address]
+            new_htr_weight = htr_price * deposit_amount
+            total_deposits = self.user_deposit_b[ctx.address] + deposit_amount
+            
             self.htr_price_in_deposit[ctx.address] = Amount(
-                (
-                    self.htr_price_in_deposit[ctx.address]
-                    * self.user_deposit_b[ctx.address]
-                    + htr_price * deposit_amount
-                )
-                * 100
-                // (self.user_deposit_b[ctx.address] + deposit_amount)
+                (existing_htr_weight + new_htr_weight) * 100 // total_deposits
             )
+            # Calculate weighted average avoiding overflow
+            existing_weight = self.token_price_in_htr_in_deposit[ctx.address] * self.user_deposit_b[ctx.address]
+            new_weight = token_price_in_htr * deposit_amount
+            total_deposits = self.user_deposit_b[ctx.address] + deposit_amount
+            
             self.token_price_in_htr_in_deposit[ctx.address] = Amount(
-                (
-                    self.token_price_in_htr_in_deposit[ctx.address]
-                    * self.user_deposit_b[ctx.address]
-                    + token_price_in_htr * deposit_amount
-                )
-                * 100
-                // (self.user_deposit_b[ctx.address] + deposit_amount)
+                (existing_weight + new_weight) * 100 // total_deposits
             )
 
         else:
@@ -270,8 +324,7 @@ class Oasis(Blueprint):
         if self.user_deposit_b.get(ctx.address, 0) > max_withdraw_b:
             loss = self.user_deposit_b[ctx.address] - max_withdraw_b
             # Get pool reserves to calculate quote
-            pool_key = self._get_pool_key()
-            reserves = self.syscall.call_view_method(self.dozer_pool_manager, "get_reserves", pool_key)
+            reserves = self.syscall.call_view_method(self.dozer_pool_manager, "get_reserves", HTR_UID, self.token_b, self.pool_fee)
             loss_htr = self.syscall.call_view_method(self.dozer_pool_manager, "quote", loss, reserves[1], reserves[0])
             if loss_htr > user_lp_htr:
                 loss_htr = user_lp_htr
@@ -411,7 +464,7 @@ class Oasis(Blueprint):
             self.syscall.get_contract_id(),
             pool_key
         )
-        return user_info["token1Amount"]  # token_b amount
+        return user_info.token1Amount  # token_b amount
 
     def _quote_add_liquidity_in(self, amount: Amount) -> Amount:
         pool_key = self._get_pool_key()
@@ -429,17 +482,21 @@ class Oasis(Blueprint):
             pool_key
         )
         return {
-            "max_withdraw_a": user_info["token0Amount"],  # HTR amount
-            "user_lp_b": user_info["token1Amount"],      # token_b amount
+            "max_withdraw_a": user_info.token0Amount,  # HTR amount
+            "user_lp_b": user_info.token1Amount,      # token_b amount
         }
 
     def _get_user_bonus(self, timelock: int, amount: Amount) -> Amount:
         """Calculates the bonus for a user based on the timelock and amount"""
         if timelock not in [6, 9, 12]:  # Assuming these are the only valid values
             raise NCFail("Invalid timelock value")
-        bonus_multiplier = {6: 0.1, 9: 0.15, 12: 0.2}
+        # Using integer calculations with basis points (10000 = 100%)
+        # 6 months = 10% = 1000 basis points
+        # 9 months = 15% = 1500 basis points  
+        # 12 months = 20% = 2000 basis points
+        bonus_multiplier = {6: 1000, 9: 1500, 12: 2000}
 
-        return Amount(int(bonus_multiplier[timelock] * amount))
+        return Amount((amount * bonus_multiplier[timelock]) // 10000)
 
     @public(allow_withdrawal=True)
     def owner_withdraw(self, ctx: Context) -> None:
@@ -551,51 +608,51 @@ class Oasis(Blueprint):
     def user_info(
         self,
         address: bytes,
-    ) -> dict[str, float | bool]:
+    ) -> OasisUserInfo:
         remove_liquidity_oasis_quote = self.get_remove_liquidity_oasis_quote(address)
-        return {
-            "user_deposit_b": self.user_deposit_b.get(address, 0),
-            "user_liquidity": self.user_liquidity.get(address, 0),
-            "user_withdrawal_time": self.user_withdrawal_time.get(address, 0),
-            "oasis_htr_balance": self.oasis_htr_balance,
-            "total_liquidity": self.total_liquidity,
-            "user_balance_a": self.user_balances.get(address, {HTR_UID: 0}).get(
+        return OasisUserInfo(
+            user_deposit_b=Amount(self.user_deposit_b.get(address, 0)),
+            user_liquidity=Amount(self.user_liquidity.get(address, 0)),
+            user_withdrawal_time=self.user_withdrawal_time.get(address, 0),
+            oasis_htr_balance=self.oasis_htr_balance,
+            total_liquidity=self.total_liquidity,
+            user_balance_a=Amount(self.user_balances.get(address, {HTR_UID: 0}).get(
                 HTR_UID, 0
-            ),
-            "user_balance_b": self.user_balances.get(address, {self.token_b: 0}).get(
+            )),
+            user_balance_b=Amount(self.user_balances.get(address, {self.token_b: 0}).get(
                 self.token_b, 0
-            ),
-            "closed_balance_a": self.closed_position_balances.get(
+            )),
+            closed_balance_a=Amount(self.closed_position_balances.get(
                 address, {HTR_UID: 0}
-            ).get(HTR_UID, 0),
-            "closed_balance_b": self.closed_position_balances.get(
+            ).get(HTR_UID, 0)),
+            closed_balance_b=Amount(self.closed_position_balances.get(
                 address, {self.token_b: 0}
-            ).get(self.token_b, 0),
-            "user_lp_b": remove_liquidity_oasis_quote.get("user_lp_b", 0),
-            "user_lp_htr": remove_liquidity_oasis_quote.get("user_lp_htr", 0),
-            "max_withdraw_b": remove_liquidity_oasis_quote.get("max_withdraw_b", 0),
-            "max_withdraw_htr": remove_liquidity_oasis_quote.get("max_withdraw_htr", 0),
-            "htr_price_in_deposit": self.htr_price_in_deposit.get(address, 0),
-            "token_price_in_htr_in_deposit": self.token_price_in_htr_in_deposit.get(
+            ).get(self.token_b, 0)),
+            user_lp_b=Amount(remove_liquidity_oasis_quote.user_lp_b),
+            user_lp_htr=Amount(remove_liquidity_oasis_quote.user_lp_htr),
+            max_withdraw_b=Amount(remove_liquidity_oasis_quote.max_withdraw_b),
+            max_withdraw_htr=Amount(remove_liquidity_oasis_quote.max_withdraw_htr),
+            htr_price_in_deposit=Amount(self.htr_price_in_deposit.get(address, 0)),
+            token_price_in_htr_in_deposit=Amount(self.token_price_in_htr_in_deposit.get(
                 address, 0
-            ),
-            "position_closed": self.user_position_closed.get(address, False),
-        }
+            )),
+            position_closed=self.user_position_closed.get(address, False),
+        )
 
     @view
-    def oasis_info(self) -> dict[str, float | str]:
-        return {
-            "total_liquidity": self.total_liquidity,
-            "oasis_htr_balance": self.oasis_htr_balance,
-            "token_b": self.token_b.hex(),
-            "protocol_fee": self.protocol_fee,
-            "dev_deposit_amount": self.dev_deposit_amount,
-        }
+    def oasis_info(self) -> OasisInfo:
+        return OasisInfo(
+            total_liquidity=self.total_liquidity,
+            oasis_htr_balance=self.oasis_htr_balance,
+            token_b=self.token_b.hex(),
+            protocol_fee=self.protocol_fee,
+            dev_deposit_amount=self.dev_deposit_amount,
+        )
 
     @view
     def front_quote_add_liquidity_in(
         self, amount: int, timelock: int, now: Timestamp, address: bytes
-    ) -> dict[str, float | bool]:
+    ) -> OasisQuoteInfo:
         """Calculates the bonus for a user based on the timelock and amount"""
         fee_amount = (amount * self.protocol_fee) // 1000
         deposit_amount = Amount(amount - fee_amount)
@@ -606,7 +663,7 @@ class Oasis(Blueprint):
         if address in self.user_withdrawal_time:
             delta = self.user_withdrawal_time[address] - now
             if delta > 0:
-                withdrawal_time = (
+                withdrawal_time = int(
                     now
                     + (
                         (
@@ -618,37 +675,38 @@ class Oasis(Blueprint):
                     + 1
                 )
             else:
-                withdrawal_time = now + timelock * MONTHS_IN_SECONDS
+                withdrawal_time = int(now + timelock * MONTHS_IN_SECONDS)
         else:
-            withdrawal_time = now + timelock * MONTHS_IN_SECONDS
+            withdrawal_time = int(now + timelock * MONTHS_IN_SECONDS)
 
-        return {
-            "bonus": bonus,
-            "htr_amount": htr_amount,
-            "withdrawal_time": withdrawal_time,
-            "has_position": address in self.user_withdrawal_time,
-            "fee_amount": fee_amount,
-            "deposit_amount": deposit_amount,
-            "protocol_fee": self.protocol_fee,
-        }
+        return OasisQuoteInfo(
+            bonus=bonus,
+            htr_amount=htr_amount,
+            withdrawal_time=withdrawal_time,
+            has_position=address in self.user_withdrawal_time,
+            fee_amount=Amount(fee_amount),
+            deposit_amount=deposit_amount,
+            protocol_fee=self.protocol_fee,
+        )
 
     @view
     def get_remove_liquidity_oasis_quote(
         self, address: bytes
-    ) -> dict[str, float | bool]:
+    ) -> OasisRemoveLiquidityQuote:
         # If position is already closed, return the available balances from closed_position_balances
         if self.user_position_closed.get(address, False):
-            return {
-                "user_lp_b": 0,
-                "user_lp_htr": 0,
-                "max_withdraw_b": self.closed_position_balances.get(address, {}).get(
+            return OasisRemoveLiquidityQuote(
+                user_lp_b=Amount(0),
+                user_lp_htr=Amount(0),
+                max_withdraw_b=Amount(self.closed_position_balances.get(address, {}).get(
                     self.token_b, 0
-                ),
-                "max_withdraw_htr": self.closed_position_balances.get(address, {}).get(
+                )),
+                max_withdraw_htr=Amount(self.closed_position_balances.get(address, {}).get(
                     HTR_UID, 0
-                ),
-                "position_closed": True,
-            }
+                )),
+                loss_htr=Amount(0),
+                position_closed=True,
+            )
 
         # Otherwise calculate withdrawal amounts based on current pool state
         oasis_quote = self._quote_remove_liquidity_oasis()
@@ -675,8 +733,7 @@ class Oasis(Blueprint):
         if self.user_deposit_b.get(address, 0) > max_withdraw_b:
             loss = self.user_deposit_b.get(address, 0) - max_withdraw_b
             # Get pool reserves to calculate quote
-            pool_key = self._get_pool_key()
-            reserves = self.syscall.call_view_method(self.dozer_pool_manager, "get_reserves", pool_key)
+            reserves = self.syscall.call_view_method(self.dozer_pool_manager, "get_reserves", HTR_UID, self.token_b, self.pool_fee)
             loss_htr = self.syscall.call_view_method(self.dozer_pool_manager, "quote", loss, reserves[1], reserves[0])
             if loss_htr > user_lp_htr:
                 loss_htr = user_lp_htr
@@ -684,11 +741,11 @@ class Oasis(Blueprint):
         else:
             max_withdraw_htr = user_balance_htr
 
-        return {
-            "user_lp_b": user_lp_b,
-            "user_lp_htr": user_lp_htr,
-            "max_withdraw_b": max_withdraw_b,
-            "max_withdraw_htr": max_withdraw_htr,
-            "loss_htr": loss_htr,
-            "position_closed": False,
-        }
+        return OasisRemoveLiquidityQuote(
+            user_lp_b=Amount(user_lp_b),
+            user_lp_htr=Amount(user_lp_htr),
+            max_withdraw_b=Amount(max_withdraw_b),
+            max_withdraw_htr=Amount(max_withdraw_htr),
+            loss_htr=Amount(loss_htr),
+            position_closed=False,
+        )
