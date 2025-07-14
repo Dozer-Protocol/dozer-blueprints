@@ -18,6 +18,7 @@ from hathor.nanocontracts.types import (
 
 MIN_DEPOSIT = 10000_00
 PRECISION = 10**20
+PRICE_PRECISION = 10**8  # For decimal price handling (8 decimal places)
 MONTHS_IN_SECONDS = 60
 HTR_UID = TokenUid(b'\x00')
 
@@ -179,7 +180,7 @@ class Oasis(Blueprint):
 
         # Continue with deposit using reduced amount
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
-        token_price_in_htr = deposit_amount * 100 // htr_amount if htr_amount > 0 else 0
+        token_price_in_htr = deposit_amount * PRICE_PRECISION // htr_amount if htr_amount > 0 else 0
         bonus = self._get_user_bonus(timelock, htr_amount)
         now = ctx.timestamp
         if htr_amount + bonus > self.oasis_htr_balance:
@@ -218,21 +219,21 @@ class Oasis(Blueprint):
                     int(now + int(timelock * int(MONTHS_IN_SECONDS)))
                 )
             # updating position intial price with weighted average
-            # Calculate weighted average avoiding overflow
-            existing_htr_weight = self.htr_price_in_deposit[ctx.address] * self.user_deposit_b[ctx.address]
-            new_htr_weight = htr_price * deposit_amount
-            total_deposits = self.user_deposit_b[ctx.address] + deposit_amount
-            
             self.htr_price_in_deposit[ctx.address] = Amount(
-                (existing_htr_weight + new_htr_weight) * 100 // total_deposits
+                (
+                    self.htr_price_in_deposit[ctx.address]
+                    * self.user_deposit_b[ctx.address]
+                    + htr_price * deposit_amount
+                )
+                // (self.user_deposit_b[ctx.address] + deposit_amount)
             )
-            # Calculate weighted average avoiding overflow
-            existing_weight = self.token_price_in_htr_in_deposit[ctx.address] * self.user_deposit_b[ctx.address]
-            new_weight = token_price_in_htr * deposit_amount
-            total_deposits = self.user_deposit_b[ctx.address] + deposit_amount
-            
             self.token_price_in_htr_in_deposit[ctx.address] = Amount(
-                (existing_weight + new_weight) * 100 // total_deposits
+                (
+                    self.token_price_in_htr_in_deposit[ctx.address]
+                    * self.user_deposit_b[ctx.address]
+                    + token_price_in_htr * deposit_amount
+                )
+                // (self.user_deposit_b[ctx.address] + deposit_amount)
             )
 
         else:
