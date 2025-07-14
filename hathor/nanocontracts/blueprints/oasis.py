@@ -4,6 +4,7 @@ from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
+    Address,
     Amount,
     Timestamp,
     ContractId,
@@ -608,7 +609,7 @@ class Oasis(Blueprint):
     @view
     def user_info(
         self,
-        address: bytes,
+        address: Address,
     ) -> OasisUserInfo:
         remove_liquidity_oasis_quote = self.get_remove_liquidity_oasis_quote(address)
         return OasisUserInfo(
@@ -652,7 +653,7 @@ class Oasis(Blueprint):
 
     @view
     def front_quote_add_liquidity_in(
-        self, amount: int, timelock: int, now: Timestamp, address: bytes
+        self, amount: int, timelock: int, now: Timestamp, address: Address
     ) -> OasisQuoteInfo:
         """Calculates the bonus for a user based on the timelock and amount"""
         fee_amount = (amount * self.protocol_fee) // 1000
@@ -692,7 +693,7 @@ class Oasis(Blueprint):
 
     @view
     def get_remove_liquidity_oasis_quote(
-        self, address: bytes
+        self, address: Address
     ) -> OasisRemoveLiquidityQuote:
         # If position is already closed, return the available balances from closed_position_balances
         if self.user_position_closed.get(address, False):
