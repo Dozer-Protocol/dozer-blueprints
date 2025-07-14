@@ -14,24 +14,6 @@ services:
       - HATHOR_TEST_DISABLE_GIT=1
 
     # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_rewards.py"] # with stdout
-    command: [
-        "poetry",
-        "run",
-        "pytest",
-        "--capture=no",
-        "--disable-warnings",
-        "--tb=short", # shorter but readable tracebacks on failure
-        "--color=yes", # colorized output
-        "-q", # quiet mode - only show failures and summary
-        "tests/nanocontracts/blueprints/test_oasis.py",
-      ]
-
-    # command:
-    #   [
-    #     "poetry",
-    #     "run",
-    #     "hathor-cli",
-    #     "check-blueprint",
-    #     "--file",
-    #     "hathor/nanocontracts/blueprints/dozer_pool_manager.py",
-    #   ]
+    command: >
+      bash -c
+        "poetry run pytest --capture=no --disable-warnings --tb=short --color=yes -q tests/nanocontracts/blueprints/test_oasis.py && poetry run hathor-cli check-blueprint --file hathor/nanocontracts/blueprints/oasis.py"
