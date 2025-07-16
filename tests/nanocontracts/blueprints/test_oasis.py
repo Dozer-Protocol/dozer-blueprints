@@ -1432,7 +1432,7 @@ class OasisTestCase(BlueprintTestCase):
 
         # Calculate expected token price in HTR (using integer arithmetic with PRICE_PRECISION)
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
-        expected_token_price_in_htr = deposit_amount * PRICE_PRECISION // htr_amount if htr_amount > 0 else 0
+        expected_token_price_in_htr = htr_amount * PRICE_PRECISION // deposit_amount if deposit_amount > 0 else 0
 
         self.runner.call_public_method(
             self.oasis_id, "user_deposit", ctx, timelock
@@ -1458,7 +1458,7 @@ class OasisTestCase(BlueprintTestCase):
 
         # Calculate expected token price for second deposit (using integer arithmetic)
         second_htr_amount = self._quote_add_liquidity_in(second_deposit_amount)
-        second_token_price_in_htr = second_deposit_amount * PRICE_PRECISION // second_htr_amount if second_htr_amount > 0 else 0
+        second_token_price_in_htr = second_htr_amount * PRICE_PRECISION // second_deposit_amount if second_deposit_amount > 0 else 0
 
         # Calculate expected weighted average (using integer arithmetic)
         expected_weighted_price = (

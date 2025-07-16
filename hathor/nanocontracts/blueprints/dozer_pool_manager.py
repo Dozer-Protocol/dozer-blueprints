@@ -262,6 +262,9 @@ class DozerPoolManager(Blueprint):
 
         # Add owner as authorized signer
         self.authorized_signers[self.owner] = True
+        
+        # Initialize htr_usd_pool_key to empty string
+        self.htr_usd_pool_key = ""
 
     def _get_pool_key(self, token_a: TokenUid, token_b: TokenUid, fee: Amount) -> str:
         """Create a standardized pool key from tokens and fee.
