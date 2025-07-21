@@ -130,7 +130,7 @@ class StakeTestCase(BlueprintTestCase):
         assert isinstance(contract, Stake)
         self.assertEqual(contract.total_staked, stake_amount)
         self.assertEqual(
-            user_info["deposits"],
+            user_info.deposits,
             stake_amount,
         )
 
@@ -198,7 +198,7 @@ class StakeTestCase(BlueprintTestCase):
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Stake)
         self.assertEqual(contract.total_staked, 0)
-        self.assertEqual(user_info["deposits"], 0)
+        self.assertEqual(user_info.deposits, 0)
 
     def test_rewards_calculation(self):
         """Test reward calculation and distribution."""
@@ -363,6 +363,6 @@ class StakeTestCase(BlueprintTestCase):
 
         api_data = self.runner.call_view_method(self.contract_id, "front_end_api")
 
-        self.assertEqual(api_data["owner_balance"], self.initial_deposit)
-        self.assertEqual(api_data["total_staked"], stake_amount)
-        self.assertFalse(api_data["paused"])
+        self.assertEqual(api_data.owner_balance, self.initial_deposit)
+        self.assertEqual(api_data.total_staked, stake_amount)
+        self.assertFalse(api_data.paused)

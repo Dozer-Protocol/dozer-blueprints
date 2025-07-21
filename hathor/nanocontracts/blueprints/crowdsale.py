@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, NamedTuple
 
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
@@ -18,6 +18,47 @@ from hathor.nanocontracts.types import (
 HTR_UID = b'\x00'
 MIN_PLATFORM_FEE = 100  # 1%
 MAX_PLATFORM_FEE = 1000  # 10%
+
+
+class CrowdsaleSaleInfo(NamedTuple):
+    """General sale information."""
+    
+    token_uid: str
+    rate: int
+    soft_cap: int
+    hard_cap: int
+    total_raised: int
+    total_sold: int
+    state: int
+    start_time: int
+    end_time: int
+    participants: int
+
+
+class CrowdsaleParticipantInfo(NamedTuple):
+    """Participant-specific information."""
+    
+    deposited: int
+    tokens_due: int
+    has_claimed: bool
+
+
+class CrowdsaleSaleProgress(NamedTuple):
+    """Current sale progress metrics."""
+    
+    percent_filled: int
+    percent_soft_cap: int
+    is_successful: bool
+
+
+class CrowdsaleWithdrawalInfo(NamedTuple):
+    """Withdrawal-related information."""
+    
+    total_raised: int
+    platform_fees: int
+    withdrawable: int
+    is_withdrawn: bool
+    can_withdraw: bool
 BASIS_POINTS = 10000  # For fee calculations
 
 
@@ -374,54 +415,54 @@ class Crowdsale(Blueprint):
         return Amount(amount * self.platform_fee // BASIS_POINTS)
 
     @view
-    def get_sale_info(self) -> dict:
+    def get_sale_info(self) -> CrowdsaleSaleInfo:
         """Get general sale information."""
-        return {
-            "token_uid": self.token_uid.hex(),
-            "rate": self.rate,
-            "soft_cap": self.soft_cap,
-            "hard_cap": self.hard_cap,
-            "total_raised": self.total_raised,
-            "total_sold": self.total_sold,
-            "state": self.state,
-            "start_time": self.start_time,
-            "end_time": self.end_time,
-            "participants": self.participants_count,
-        }
+        return CrowdsaleSaleInfo(
+            token_uid=self.token_uid.hex(),
+            rate=self.rate,
+            soft_cap=self.soft_cap,
+            hard_cap=self.hard_cap,
+            total_raised=self.total_raised,
+            total_sold=self.total_sold,
+            state=self.state,
+            start_time=self.start_time,
+            end_time=self.end_time,
+            participants=self.participants_count,
+        )
 
     @view
-    def get_participant_info(self, address: Address) -> dict:
+    def get_participant_info(self, address: Address) -> CrowdsaleParticipantInfo:
         """Get participant-specific information."""
         deposit = self.deposits.get(address, Amount(0))
-        return {
-            "deposited": deposit,
-            "tokens_due": self._calculate_tokens(deposit),
-            "has_claimed": self.claimed.get(address, False),
-        }
+        return CrowdsaleParticipantInfo(
+            deposited=deposit,
+            tokens_due=self._calculate_tokens(deposit),
+            has_claimed=self.claimed.get(address, False),
+        )
 
     @view
-    def get_sale_progress(self) -> dict:
+    def get_sale_progress(self) -> CrowdsaleSaleProgress:
         """Get current sale progress metrics."""
-        return {
-            "percent_filled": (self.total_raised * 100) // self.hard_cap,
-            "percent_soft_cap": (self.total_raised * 100) // self.soft_cap,
-            "is_successful": self.state == SaleState.SUCCESS,
-        }
+        return CrowdsaleSaleProgress(
+            percent_filled=(self.total_raised * 100) // self.hard_cap,
+            percent_soft_cap=(self.total_raised * 100) // self.soft_cap,
+            is_successful=self.state == SaleState.SUCCESS,
+        )
 
     @view
-    def get_withdrawal_info(self) -> dict:
+    def get_withdrawal_info(self) -> CrowdsaleWithdrawalInfo:
         """Get withdrawal-related information."""
         platform_fee = self._calculate_platform_fee(self.total_raised)
         withdrawable = self.total_raised - platform_fee
         can_withdraw = self.state == SaleState.SUCCESS and not self.owner_withdrawn
 
-        return {
-            "total_raised": self.total_raised,
-            "platform_fees": platform_fee,
-            "withdrawable": withdrawable,
-            "is_withdrawn": self.owner_withdrawn,
-            "can_withdraw": can_withdraw,
-        }
+        return CrowdsaleWithdrawalInfo(
+            total_raised=self.total_raised,
+            platform_fees=platform_fee,
+            withdrawable=withdrawable,
+            is_withdrawn=self.owner_withdrawn,
+            can_withdraw=can_withdraw,
+        )
 
 
 __blueprint__ = Crowdsale

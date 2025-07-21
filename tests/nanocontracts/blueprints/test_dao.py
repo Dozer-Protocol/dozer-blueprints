@@ -128,8 +128,9 @@ class DAOTestCase(BlueprintTestCase):
         proposal = self.runner.call_view_method(
             self.dao_contract_id, "get_proposal", proposal_id
         )
-        self.assertEqual(proposal["title"], "Test Proposal")
-        self.assertEqual(proposal["creator"], user_addr)
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal.title, "Test Proposal")
+        self.assertEqual(proposal.creator, user_addr)
 
     def test_voting(self) -> None:
         """Test voting mechanics"""
@@ -170,9 +171,10 @@ class DAOTestCase(BlueprintTestCase):
         proposal = self.runner.call_view_method(
             self.dao_contract_id, "get_proposal", proposal_id
         )
-        self.assertEqual(proposal["for_votes"], stake_amount * 2)
-        self.assertEqual(proposal["against_votes"], stake_amount)
-        self.assertEqual(proposal["total_voters"], 3)
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal.for_votes, stake_amount * 2)
+        self.assertEqual(proposal.against_votes, stake_amount)
+        self.assertEqual(proposal.total_voters, 3)
 
     def test_quorum_calculation(self) -> None:
         """Test quorum calculation"""
@@ -218,4 +220,5 @@ class DAOTestCase(BlueprintTestCase):
         proposal = self.runner.call_view_method(
             self.dao_contract_id, "get_proposal", proposal_id
         )
-        self.assertTrue(proposal["quorum_reached"])
+        self.assertIsNotNone(proposal)
+        self.assertTrue(proposal.quorum_reached)

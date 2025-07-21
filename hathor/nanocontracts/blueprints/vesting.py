@@ -1,3 +1,5 @@
+from typing import NamedTuple
+
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
@@ -16,6 +18,30 @@ from hathor.nanocontracts.types import (
 MAX_ALLOCATIONS = 10
 MONTH_IN_SECONDS = 30 * 24 * 3600  # 30 days in seconds
 PRECISION = 10**8
+
+
+class VestingInfo(NamedTuple):
+    """Vesting information for a specific allocation."""
+    
+    name: str
+    beneficiary: Address
+    amount: int
+    cliff_months: int
+    vesting_months: int
+    withdrawn: int
+    vested: int
+    claimable: int
+
+
+class VestingContractInfo(NamedTuple):
+    """Overall vesting contract information."""
+    
+    token_uid: str
+    available: int
+    total_allocated: int
+    is_started: bool
+    start_time: int | None
+    allocations: list[int]
 
 
 class AllocationNotConfigured(NCFail):
@@ -293,7 +319,7 @@ class Vesting(Blueprint):
     #     )
 
     @view
-    def get_vesting_info(self, index: int, timestamp: Timestamp) -> dict[str, str | int | Address]:
+    def get_vesting_info(self, index: int, timestamp: Timestamp) -> VestingInfo:
         """Get vesting information for allocation."""
         if not self.is_configured.get(index, False):
             raise AllocationNotConfigured
@@ -304,29 +330,29 @@ class Vesting(Blueprint):
 
         withdrawn = self.allocation_withdrawn[index]
 
-        return {
-            "name": self.allocation_names[index],
-            "beneficiary": self.allocation_addresses[index],
-            "amount": self.allocation_amounts[index],
-            "cliff_months": self.allocation_cliffs[index],
-            "vesting_months": self.allocation_durations[index],
-            "withdrawn": withdrawn,
-            "vested": vested,
-            "claimable": vested - withdrawn,
-        }
+        return VestingInfo(
+            name=self.allocation_names[index],
+            beneficiary=self.allocation_addresses[index],
+            amount=self.allocation_amounts[index],
+            cliff_months=self.allocation_cliffs[index],
+            vesting_months=self.allocation_durations[index],
+            withdrawn=withdrawn,
+            vested=vested,
+            claimable=vested - withdrawn,
+        )
 
     @view
-    def get_contract_info(self) -> dict[str, str | int | bool | bytes | list[int] | None]:
+    def get_contract_info(self) -> VestingContractInfo:
         """Get overall contract information."""
-        return {
-            "token_uid": self.token_uid.hex(),
-            "available": self.available_balance,
-            "total_allocated": self.total_allocated,
-            "is_started": self.is_started,
-            "start_time": self.vesting_start if self.is_started else None,
-            "allocations": [
+        return VestingContractInfo(
+            token_uid=self.token_uid.hex(),
+            available=self.available_balance,
+            total_allocated=self.total_allocated,
+            is_started=self.is_started,
+            start_time=self.vesting_start if self.is_started else None,
+            allocations=[
                 i for i in range(MAX_ALLOCATIONS) if self.is_configured.get(i, False)
             ],
-        }
+        )
 
 __blueprint__ = Vesting

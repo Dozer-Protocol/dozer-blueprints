@@ -404,8 +404,8 @@ class CrowdsaleTestCase(BlueprintTestCase):
         participant_info = self.runner.call_view_method(
             self.contract_id, "get_participant_info", deposit_ctx.address
         )
-        self.assertTrue(participant_info["has_claimed"])
-        self.assertEqual(participant_info["tokens_due"], 0)
+        self.assertTrue(participant_info.has_claimed)
+        self.assertEqual(participant_info.tokens_due, 0)
         # Verify contract balances
         self._check_contract_balances()
 
@@ -440,8 +440,8 @@ class CrowdsaleTestCase(BlueprintTestCase):
         participant_info = self.runner.call_view_method(
             self.contract_id, "get_participant_info", deposit_ctx.address
         )
-        self.assertTrue(participant_info["has_claimed"])
-        self.assertEqual(participant_info["deposited"], 0)
+        self.assertTrue(participant_info.has_claimed)
+        self.assertEqual(participant_info.deposited, 0)
         # Verify contract balances
         self._check_contract_balances()
 
@@ -526,20 +526,20 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Test get_sale_info
         sale_info = self.runner.call_view_method(self.contract_id, "get_sale_info")
-        self.assertEqual(sale_info["total_raised"], deposit_amount)
-        self.assertEqual(sale_info["participants"], 1)
+        self.assertEqual(sale_info.total_raised, deposit_amount)
+        self.assertEqual(sale_info.participants, 1)
 
         # Test get_participant_info
         participant_info = self.runner.call_view_method(
             self.contract_id, "get_participant_info", ctx.address
         )
-        self.assertEqual(participant_info["deposited"], deposit_amount)
-        self.assertEqual(participant_info["tokens_due"], deposit_amount * self.rate)
+        self.assertEqual(participant_info.deposited, deposit_amount)
+        self.assertEqual(participant_info.tokens_due, deposit_amount * self.rate)
 
         # Test get_sale_progress
         progress = self.runner.call_view_method(self.contract_id, "get_sale_progress")
         expected_percent = (deposit_amount * 100) // self.hard_cap
-        self.assertEqual(progress["percent_filled"], expected_percent)
+        self.assertEqual(progress.percent_filled, expected_percent)
 
     def test_withdraw_remaining_tokens(self):
         """Test withdrawal of remaining tokens after successful sale."""
@@ -647,7 +647,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
             participant_info = self.runner.call_view_method(
                 self.contract_id, "get_participant_info", participant
             )
-            tokens_due = participant_info["tokens_due"]
+            tokens_due = participant_info.tokens_due
             claim_ctx = Context(
                 actions=[
                     NCWithdrawalAction(token_uid=self.token_uid, amount=tokens_due)

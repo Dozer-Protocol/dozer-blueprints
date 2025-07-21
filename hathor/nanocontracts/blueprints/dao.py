@@ -1,3 +1,5 @@
+from typing import NamedTuple
+
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
@@ -16,6 +18,76 @@ DAYS_TO_SECONDS = 24 * 60 * 60
 MAX_VOTING_PERIOD_DAYS = 30
 MAX_QUORUM_PERCENTAGE = 100
 DEFAULT_PAGINATION_LIMIT = 20
+
+
+class ProposalInfo(NamedTuple):
+    """Information about a specific proposal."""
+    
+    title: str
+    description: str
+    creator: bytes
+    start_time: int
+    end_time: int
+    for_votes: int
+    against_votes: int
+    total_staked: int
+    quorum_reached: bool
+    total_voters: int
+
+
+class VoteInfo(NamedTuple):
+    """Information about a specific vote."""
+    
+    support: bool
+    power: int
+    timestamp: int
+
+
+class DAOFrontEndInfo(NamedTuple):
+    """DAO statistics for frontend."""
+    
+    total_proposals: int
+    active_proposals: int
+    total_voters: int
+    total_votes: int
+    quorum_percentage: int
+    proposal_threshold: int
+
+
+class ProposalData(NamedTuple):
+    """Detailed proposal data with state."""
+    
+    title: str
+    description: str
+    creator: Address
+    start_time: int
+    end_time: int
+    for_votes: int
+    against_votes: int
+    total_staked: int
+    quorum_reached: bool
+    total_voters: int
+    state: str
+
+
+class ActiveProposalInfo(NamedTuple):
+    """Summary information for active proposals."""
+    
+    id: int
+    title: str
+    end_time: int
+    for_votes: int
+    against_votes: int
+    quorum_reached: bool
+
+
+class VoteHistoryInfo(NamedTuple):
+    """Vote history information."""
+    
+    voter: Address
+    support: bool
+    power: int
+    timestamp: int
 
 
 class DAO(Blueprint):
@@ -148,84 +220,99 @@ class DAO(Blueprint):
     def _get_total_staked(self, ctx: Context) -> Amount:
         """Get total staked from staking contract."""
         info = self.syscall.call_view_method(self.staking_contract, "front_end_api")
-        return info["total_staked"]
+        return info.total_staked
 
     @view
-    def get_proposal(self, proposal_id: int) -> dict:
+    def get_proposal(self, proposal_id: int) -> ProposalInfo | None:
         """Get proposal details."""
         if proposal_id not in self.proposal_titles:
-            return {}
+            return None
 
-        return {
-            "title": self.proposal_titles[proposal_id],
-            "description": self.proposal_descriptions[proposal_id],
-            "creator": self.proposal_creators[proposal_id],
-            "start_time": self.proposal_start_times[proposal_id],
-            "end_time": self.proposal_end_times[proposal_id],
-            "for_votes": self.proposal_for_votes[proposal_id],
-            "against_votes": self.proposal_against_votes[proposal_id],
-            "total_staked": self.proposal_total_staked[proposal_id],
-            "quorum_reached": self.proposal_quorum_reached[proposal_id],
-            "total_voters": self.proposal_total_voters[proposal_id],
-        }
+        return ProposalInfo(
+            title=self.proposal_titles[proposal_id],
+            description=self.proposal_descriptions[proposal_id],
+            creator=self.proposal_creators[proposal_id],
+            start_time=self.proposal_start_times[proposal_id],
+            end_time=self.proposal_end_times[proposal_id],
+            for_votes=self.proposal_for_votes[proposal_id],
+            against_votes=self.proposal_against_votes[proposal_id],
+            total_staked=self.proposal_total_staked[proposal_id],
+            quorum_reached=self.proposal_quorum_reached[proposal_id],
+            total_voters=self.proposal_total_voters[proposal_id],
+        )
 
     @view
-    def get_vote(self, proposal_id: int, voter: Address) -> dict:
+    def get_vote(self, proposal_id: int, voter: Address) -> VoteInfo | None:
         """Get vote details."""
         vote_key = (proposal_id, voter)
         if vote_key not in self.vote_support:
-            return {}
+            return None
 
-        return {
-            "support": self.vote_support[vote_key],
-            "power": self.vote_power[vote_key],
-            "timestamp": self.vote_timestamp[vote_key],
-        }
+        return VoteInfo(
+            support=self.vote_support[vote_key],
+            power=self.vote_power[vote_key],
+            timestamp=self.vote_timestamp[vote_key],
+        )
 
     @view
-    def front_end_api_dao(self, timestamp: Timestamp) -> dict:
+    def front_end_api_dao(self, timestamp: Timestamp) -> DAOFrontEndInfo:
         """Get DAO statistics for frontend."""
         active = sum(
             1 for end_time in self.proposal_end_times.values() if end_time > timestamp
         )
 
-        return {
-            "total_proposals": self.proposal_count,
-            "active_proposals": active,
-            "total_voters": (
+        return DAOFrontEndInfo(
+            total_proposals=self.proposal_count,
+            active_proposals=active,
+            total_voters=(
                 len(self.vote_support) // self.proposal_count
                 if self.proposal_count > 0
                 else 0
             ),
-            "total_votes": len(self.vote_support),
-            "quorum_percentage": self.quorum_percentage,
-            "proposal_threshold": self.proposal_threshold,
-        }
+            total_votes=len(self.vote_support),
+            quorum_percentage=self.quorum_percentage,
+            proposal_threshold=self.proposal_threshold,
+        )
 
     @view
-    def proposal_data(self, proposal_id: int, timestamp: Timestamp) -> dict:
+    def proposal_data(self, proposal_id: int, timestamp: Timestamp) -> ProposalData | None:
         """Get detailed proposal data."""
         if proposal_id not in self.proposal_titles:
-            return {}
+            return None
 
         proposal = self.get_proposal(proposal_id)
-        proposal["state"] = "active" if proposal["end_time"] > timestamp else "ended"
-        return proposal
+        if proposal is None:
+            return None
+            
+        state = "active" if proposal.end_time > timestamp else "ended"
+        return ProposalData(
+            title=proposal.title,
+            description=proposal.description,
+            creator=proposal.creator,
+            start_time=proposal.start_time,
+            end_time=proposal.end_time,
+            for_votes=proposal.for_votes,
+            against_votes=proposal.against_votes,
+            total_staked=proposal.total_staked,
+            quorum_reached=proposal.quorum_reached,
+            total_voters=proposal.total_voters,
+            state=state,
+        )
 
     @view
     def active_proposals(
         self, timestamp: Timestamp, skip: int = 0, limit: int = DEFAULT_PAGINATION_LIMIT
-    ) -> list[dict]:
+    ) -> list[ActiveProposalInfo]:
         """Get paginated list of active proposals."""
         active = [
-            {
-                "id": pid,
-                "title": self.proposal_titles[pid],
-                "end_time": self.proposal_end_times[pid],
-                "for_votes": self.proposal_for_votes[pid],
-                "against_votes": self.proposal_against_votes[pid],
-                "quorum_reached": self.proposal_quorum_reached[pid],
-            }
+            ActiveProposalInfo(
+                id=pid,
+                title=self.proposal_titles[pid],
+                end_time=self.proposal_end_times[pid],
+                for_votes=self.proposal_for_votes[pid],
+                against_votes=self.proposal_against_votes[pid],
+                quorum_reached=self.proposal_quorum_reached[pid],
+            )
             for pid in range(1, self.proposal_count + 1)
             if self.proposal_end_times[pid] > timestamp
         ]
@@ -234,20 +321,20 @@ class DAO(Blueprint):
     @view
     def proposal_vote_history(
         self, proposal_id: int, skip: int = 0, limit: int = DEFAULT_PAGINATION_LIMIT
-    ) -> list[dict]:
+    ) -> list[VoteHistoryInfo]:
         """Get paginated vote history for proposal."""
         votes = [
-            {
-                "voter": voter,
-                "support": self.vote_support[(proposal_id, voter)],
-                "power": self.vote_power[(proposal_id, voter)],
-                "timestamp": self.vote_timestamp[(proposal_id, voter)],
-            }
+            VoteHistoryInfo(
+                voter=Address(voter),
+                support=self.vote_support[(proposal_id, voter)],
+                power=self.vote_power[(proposal_id, voter)],
+                timestamp=self.vote_timestamp[(proposal_id, voter)],
+            )
             for voter in {
                 key[1] for key in self.vote_support.keys() if key[0] == proposal_id
             }
         ]
-        votes.sort(key=lambda x: x["timestamp"])
+        votes.sort(key=lambda x: x.timestamp)
         return votes[skip : skip + limit]
 
 __blueprint__ = DAO

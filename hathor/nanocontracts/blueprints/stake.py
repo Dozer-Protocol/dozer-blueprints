@@ -1,3 +1,5 @@
+from typing import NamedTuple
+
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
@@ -9,6 +11,21 @@ MIN_PERIOD_DAYS: int = 30
 MIN_STAKE_AMOUNT = 100  # Minimum stake amount
 MAX_STAKE_AMOUNT = 1000000  # Maximum stake amount per address
 PRECISION: int = 10**20  # For fixed-point arithmetic
+
+
+class StakeUserInfo(NamedTuple):
+    """User information for staking contract."""
+    
+    deposits: int
+
+
+class StakeFrontEndInfo(NamedTuple):
+    """Frontend API information for staking contract."""
+    
+    owner_balance: int
+    total_staked: int
+    rewards_per_share: int
+    paused: bool
 
 
 class Stake(Blueprint):
@@ -273,19 +290,19 @@ class Stake(Blueprint):
             return Amount(0)
 
     @view
-    def get_user_info(self, address: Address) -> dict[str, int]:
-        return {
-            "deposits": self.user_deposits.get(address, 0),
-        }
+    def get_user_info(self, address: Address) -> StakeUserInfo:
+        return StakeUserInfo(
+            deposits=self.user_deposits.get(address, 0),
+        )
 
     @view
-    def front_end_api(self) -> dict[str, int]:
-        return {
-            "owner_balance": self.owner_balance,
-            "total_staked": self.total_staked,
-            "rewards_per_share": self.rewards_per_share,
-            "paused": self.paused,
-        }
+    def front_end_api(self) -> StakeFrontEndInfo:
+        return StakeFrontEndInfo(
+            owner_balance=self.owner_balance,
+            total_staked=self.total_staked,
+            rewards_per_share=self.rewards_per_share,
+            paused=self.paused,
+        )
 
 
 class Unauthorized(NCFail):
