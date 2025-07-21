@@ -1,5 +1,3 @@
-from typing import Dict, List
-
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
@@ -34,21 +32,21 @@ class DAO(Blueprint):
 
     # Proposal data
     proposal_count: int
-    proposal_titles: Dict[int, str]
-    proposal_descriptions: Dict[int, str]
-    proposal_creators: Dict[int, Address]
-    proposal_start_times: Dict[int, Timestamp]
-    proposal_end_times: Dict[int, Timestamp]
-    proposal_for_votes: Dict[int, Amount]
-    proposal_against_votes: Dict[int, Amount]
-    proposal_total_staked: Dict[int, Amount]
-    proposal_quorum_reached: Dict[int, bool]
-    proposal_total_voters: Dict[int, int]
+    proposal_titles: dict[int, str]
+    proposal_descriptions: dict[int, str]
+    proposal_creators: dict[int, bytes]
+    proposal_start_times: dict[int, int]
+    proposal_end_times: dict[int, int]
+    proposal_for_votes: dict[int, Amount]
+    proposal_against_votes: dict[int, Amount]
+    proposal_total_staked: dict[int, Amount]
+    proposal_quorum_reached: dict[int, bool]
+    proposal_total_voters: dict[int, int]
 
     # Vote data
-    vote_support: Dict[tuple[int, Address], bool]
-    vote_power: Dict[tuple[int, Address], Amount]
-    vote_timestamp: Dict[tuple[int, Address], Timestamp]
+    vote_support: dict[tuple[int, bytes], bool]
+    vote_power: dict[tuple[int, bytes], Amount]
+    vote_timestamp: dict[tuple[int, bytes], int]
 
     @public
     def initialize(
@@ -126,9 +124,9 @@ class DAO(Blueprint):
         self.vote_timestamp[vote_key] = ctx.timestamp
 
         if support:
-            self.proposal_for_votes[proposal_id] += power
+            self.proposal_for_votes[proposal_id] = Amount(self.proposal_for_votes[proposal_id] + power)
         else:
-            self.proposal_against_votes[proposal_id] += power
+            self.proposal_against_votes[proposal_id] = Amount(self.proposal_against_votes[proposal_id] + power)
 
         self.proposal_total_voters[proposal_id] += 1
 
@@ -141,15 +139,15 @@ class DAO(Blueprint):
         ) // 100
         self.proposal_quorum_reached[proposal_id] = total_votes >= min_votes
 
-    def _get_voting_power(self, ctx: Context, address: Address) -> Amount:
+    def _get_voting_power(self, ctx: Context, address: bytes) -> Amount:
         """Get voting power from staking contract."""
-        return self.call_view_method(
+        return self.syscall.call_view_method(
             self.staking_contract, "get_max_withdrawal", address, ctx.timestamp
         )
 
     def _get_total_staked(self, ctx: Context) -> Amount:
         """Get total staked from staking contract."""
-        info = self.call_view_method(self.staking_contract, "front_end_api")
+        info = self.syscall.call_view_method(self.staking_contract, "front_end_api")
         return info["total_staked"]
 
     @view
@@ -217,7 +215,7 @@ class DAO(Blueprint):
     @view
     def active_proposals(
         self, timestamp: Timestamp, skip: int = 0, limit: int = DEFAULT_PAGINATION_LIMIT
-    ) -> List[dict]:
+    ) -> list[dict]:
         """Get paginated list of active proposals."""
         active = [
             {
@@ -236,7 +234,7 @@ class DAO(Blueprint):
     @view
     def proposal_vote_history(
         self, proposal_id: int, skip: int = 0, limit: int = DEFAULT_PAGINATION_LIMIT
-    ) -> List[dict]:
+    ) -> list[dict]:
         """Get paginated vote history for proposal."""
         votes = [
             {
@@ -251,3 +249,5 @@ class DAO(Blueprint):
         ]
         votes.sort(key=lambda x: x["timestamp"])
         return votes[skip : skip + limit]
+
+__blueprint__ = DAO

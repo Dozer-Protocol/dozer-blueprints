@@ -85,7 +85,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
         init_ctx = Context(
             actions=[NCDepositAction(token_uid=token_uid, amount=hard_cap * rate)],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=start_time - 100,
         )
 
@@ -108,7 +108,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
             activate_ctx = Context(
                 actions=[],
                 vertex=self.tx,
-                address=self.owner_address,
+                address=Address(self.owner_address),
                 timestamp=start_time - 1,
             )
             self.runner.call_public_method(
@@ -123,11 +123,12 @@ class CrowdsaleTestCase(BlueprintTestCase):
             address = self._get_any_address()[0]
         if timestamp is None:
             timestamp = self.start_time + 100
+        
 
         return Context(
-            actions=[NCDepositAction(token_uid=HTR_UID, amount=amount)],
+            actions=[NCDepositAction(token_uid=HTR_UID, amount=amount)], # type: ignore
             vertex=self.tx,
-            address=address,
+            address=Address(address),
             timestamp=timestamp,
         )
 
@@ -144,6 +145,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Get registered balances from contract state
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         expected_htr_balance = contract.htr_balance
         expected_token_balance = contract.sale_token_balance
 
@@ -167,6 +169,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Verify initial state using contract instance
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.token_uid, self.token_uid)
         self.assertEqual(contract.rate, self.rate)
         self.assertEqual(contract.soft_cap, self.soft_cap)
@@ -203,7 +206,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
                 NCDepositAction(token_uid=self.token_uid, amount=insufficient_tokens)
             ],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.start_time - 100,
         )
 
@@ -229,7 +232,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
                 NCDepositAction(token_uid=wrong_token, amount=self.hard_cap * self.rate)
             ],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.start_time - 100,
         )
 
@@ -255,6 +258,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Verify initial pending state
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.PENDING)
 
         # Try participation during PENDING state - should fail
@@ -270,42 +274,48 @@ class CrowdsaleTestCase(BlueprintTestCase):
         activate_ctx = Context(
             actions=[],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.start_time - 1,
         )
         self.runner.call_public_method(self.contract_id, "early_activate", activate_ctx)
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.ACTIVE)
 
         # Test participation works in ACTIVE state
         deposit_ctx = self._create_deposit_context(deposit_amount)
         self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.total_raised, deposit_amount)
 
         # Test pause -> PAUSED
         pause_ctx = Context(
             actions=[],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.start_time + 2,
         )
         self.runner.call_public_method(self.contract_id, "pause", pause_ctx)
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.PAUSED)
 
         # Test unpause -> ACTIVE
         self.runner.call_public_method(self.contract_id, "unpause", pause_ctx)
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.ACTIVE)
 
         # Test reaching soft cap -> SUCCESS
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         remaining = self.soft_cap - contract.total_raised
         if remaining > 0:
             ctx = self._create_deposit_context(remaining)
             self.runner.call_public_method(self.contract_id, "participate", ctx)
             contract = self.get_readonly_contract(self.contract_id)
+            assert isinstance(contract, Crowdsale)
             self.assertEqual(contract.state, SaleState.SUCCESS)
 
         # Verify contract balances
@@ -322,6 +332,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Verify sale is in active state
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.ACTIVE)
 
         # Participate in sale
@@ -329,6 +340,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Verify state changes
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.total_raised, deposit_amount)
         self.assertEqual(contract.total_sold, deposit_amount * self.rate)
         self.assertEqual(contract.participants_count, 1)
@@ -347,6 +359,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
             self.runner.call_public_method(self.contract_id, "participate", ctx)
 
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.total_raised, deposit_amount * num_users)
         self.assertEqual(contract.participants_count, num_users)
 
@@ -362,6 +375,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
         self.runner.call_public_method(self.contract_id, "participate", ctx)
 
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.SUCCESS)
         # Verify contract balances
         self._check_contract_balances()
@@ -408,14 +422,14 @@ class CrowdsaleTestCase(BlueprintTestCase):
         finalize_ctx = Context(
             actions=[],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.end_time + 100,
         )
         self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
 
         # Claim refund
         refund_ctx = Context(
-            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=deposit_amount)],
+            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=deposit_amount)], # type: ignore
             vertex=self.tx,
             address=deposit_ctx.address,
             timestamp=self.end_time + 200,
@@ -439,22 +453,24 @@ class CrowdsaleTestCase(BlueprintTestCase):
         pause_ctx = Context(
             actions=[],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.start_time + 100,
         )
         self.runner.call_public_method(self.contract_id, "pause", pause_ctx)
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.PAUSED)
 
         self.runner.call_public_method(self.contract_id, "unpause", pause_ctx)
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.ACTIVE)
 
         # Test unauthorized access
         unauthorized_ctx = Context(
             actions=[],
             vertex=self.tx,
-            address=self._get_any_address()[0],
+            address=Address(self._get_any_address()[0]),
             timestamp=self.start_time + 100,
         )
         with self.assertRaises(NCFail):
@@ -467,6 +483,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Verify initial pending state
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.PENDING)
 
         # Try to participate while pending - should fail
@@ -482,7 +499,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
         activate_ctx = Context(
             actions=[],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.start_time - 1,  # Just after start time
         )
         self.runner.call_public_method(self.contract_id, "early_activate", activate_ctx)
@@ -492,6 +509,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Verify participation succeeded
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.total_raised, deposit_amount)
 
         # Verify contract balances
@@ -535,7 +553,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
         ctx_withdraw = Context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=1000)],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.start_time + 100,
         )
         with self.assertRaises(NCFail):
@@ -545,6 +563,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Get initial token balance
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         initial_balance = contract.sale_token_balance
 
         # Try unauthorized withdrawal
@@ -553,7 +572,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
                 NCWithdrawalAction(token_uid=self.token_uid, amount=initial_balance)
             ],
             vertex=self.tx,
-            address=self._get_any_address()[0],
+            address=Address(self._get_any_address()[0]),
             timestamp=self.end_time + 100,
         )
         with self.assertRaises(NCFail):
@@ -569,7 +588,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.end_time + 100,
         )
         with self.assertRaises(NCFail):
@@ -583,7 +602,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
                 NCWithdrawalAction(token_uid=self.token_uid, amount=initial_balance)
             ],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.end_time + 100,
         )
         self.runner.call_public_method(
@@ -592,6 +611,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Verify balance is zero
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.sale_token_balance, 0)
 
         # Verify contract balances
@@ -618,6 +638,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Verify sale reached SUCCESS state
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.SUCCESS)
         self.assertEqual(contract.total_raised, total_raised)
 
@@ -643,9 +664,9 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Owner withdraws HTR
         owner_withdrawal_ctx = Context(
-            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=withdrawable_htr)],
+            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=withdrawable_htr)], # type: ignore
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.end_time + 100,
         )
         self.runner.call_public_method(
@@ -654,9 +675,9 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Platform withdraws fees
         platform_ctx = Context(
-            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=platform_fee)],
+            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=platform_fee)], # type: ignore
             vertex=self.tx,
-            address=self.platform_address,  # Using platform address from setUp
+            address=Address(self.platform_address),  # Using platform address from setUp
             timestamp=self.end_time + 100,
         )
         self.runner.call_public_method(
@@ -665,6 +686,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Get remaining tokens and withdraw
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         remaining_tokens = contract.sale_token_balance
         if remaining_tokens > 0:
             token_withdrawal_ctx = Context(
@@ -674,7 +696,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
                     )
                 ],
                 vertex=self.tx,
-                address=self.owner_address,
+                address=Address(self.owner_address),
                 timestamp=self.end_time + 100,
             )
             self.runner.call_public_method(
@@ -683,6 +705,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Verify final state
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.sale_token_balance, 0)
         self.assertTrue(contract.owner_withdrawn)
         self.assertTrue(contract.platform_fees_withdrawn)

@@ -16,4 +16,4 @@ services:
     # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_rewards.py"] # with stdout
     command: >
       bash -c
-        "poetry run pytest --capture=no --disable-warnings --tb=short --color=yes -q tests/nanocontracts/blueprints/test_stake.py && poetry run hathor-cli check-blueprint --file hathor/nanocontracts/blueprints/stake.py"
+        "poetry run pytest --capture=no --disable-warnings --tb=short --color=yes -q tests/nanocontracts/blueprints/test_dao.py && poetry run hathor-cli check-blueprint --file hathor/nanocontracts/blueprints/dao.py"

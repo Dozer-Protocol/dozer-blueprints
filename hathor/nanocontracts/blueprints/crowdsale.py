@@ -1,6 +1,5 @@
 from typing import Optional
 
-from hathor.conf.get_settings import HathorSettings
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
@@ -16,7 +15,7 @@ from hathor.nanocontracts.types import (
 )
 
 # Constants
-HTR_UID = HathorSettings().HATHOR_TOKEN_UID
+HTR_UID = b'\x00'
 MIN_PLATFORM_FEE = 100  # 1%
 MAX_PLATFORM_FEE = 1000  # 10%
 BASIS_POINTS = 10000  # For fee calculations
@@ -423,3 +422,6 @@ class Crowdsale(Blueprint):
             "is_withdrawn": self.owner_withdrawn,
             "can_withdraw": can_withdraw,
         }
+
+
+__blueprint__ = Crowdsale
