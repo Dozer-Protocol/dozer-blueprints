@@ -1,5 +1,3 @@
-from typing import Any
-
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
@@ -295,7 +293,7 @@ class Vesting(Blueprint):
     #     )
 
     @view
-    def get_vesting_info(self, index: int, timestamp: Timestamp) -> dict[str, Any]:
+    def get_vesting_info(self, index: int, timestamp: Timestamp) -> dict[str, str | int | Address]:
         """Get vesting information for allocation."""
         if not self.is_configured.get(index, False):
             raise AllocationNotConfigured
@@ -318,7 +316,7 @@ class Vesting(Blueprint):
         }
 
     @view
-    def get_contract_info(self) -> dict[str, Any]:
+    def get_contract_info(self) -> dict[str, str | int | bool | bytes | list[int] | None]:
         """Get overall contract information."""
         return {
             "token_uid": self.token_uid.hex(),
@@ -330,3 +328,5 @@ class Vesting(Blueprint):
                 i for i in range(MAX_ALLOCATIONS) if self.is_configured.get(i, False)
             ],
         }
+
+__blueprint__ = Vesting

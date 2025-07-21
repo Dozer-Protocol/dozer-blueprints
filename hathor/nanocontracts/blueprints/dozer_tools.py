@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from hathor.conf import settings
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
@@ -30,7 +29,6 @@ from hathor.nanocontracts.types import (
     public,
     view,
     NCActionType,
-    NCGrantAuthorityAction,
 )
 
 # Blueprint IDs from nano_testnet.yml
@@ -70,7 +68,7 @@ DOZER_POOL_ALLOCATION_INDEX = 2  # "Dozer Pool" - for liquidity pool
 # Indices 3-9 available for regular time-locked vesting schedules
 
 # HTR token UID
-HTR_UID = settings.HATHOR_TOKEN_UID
+HTR_UID = b'\x00'
 
 # Null contract ID for initialization
 NULL_CONTRACT_ID = ContractId(VertexId(b"\x00" * 32))
@@ -1436,3 +1434,5 @@ class DozerTools(Blueprint):
         """Start the vesting schedule."""
         vesting_contract = self.project_vesting_contract[token_uid]
         self.syscall.call_public_method(vesting_contract, "start_vesting", [])
+
+__blueprint__ = DozerTools

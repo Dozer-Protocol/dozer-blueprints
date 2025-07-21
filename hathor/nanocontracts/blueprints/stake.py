@@ -1,16 +1,13 @@
-from typing import List
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
-from hathor.nanocontracts.types import NCDepositAction, NCWithdrawalAction, public, view
-from hathor.types import Address, Amount, TokenUid, Timestamp, AddressB58
-from math import floor, ceil
+from hathor.nanocontracts.types import Amount, TokenUid, Timestamp, Address, NCDepositAction, NCWithdrawalAction, public, view
 
 # Constants
 DAY_IN_SECONDS: int = 60 * 60 * 24
 MIN_PERIOD_DAYS: int = 30
-MIN_STAKE_AMOUNT: Amount = 100  # Minimum stake amount
-MAX_STAKE_AMOUNT: Amount = 1000000  # Maximum stake amount per address
+MIN_STAKE_AMOUNT = 100  # Minimum stake amount
+MAX_STAKE_AMOUNT = 1000000  # Maximum stake amount per address
 PRECISION: int = 10**20  # For fixed-point arithmetic
 
 
@@ -49,7 +46,7 @@ class Stake(Blueprint):
 
     def _validate_address(self, address: Address) -> None:
         """Validate address format"""
-        if not isinstance(address, Address):
+        if not isinstance(address, bytes):
             raise InvalidInput("Invalid address format")
 
     def _validate_stake_amount(self, amount: Amount) -> None:
@@ -119,10 +116,9 @@ class Stake(Blueprint):
         if address not in self.user_deposits:
             return Amount(0)
         return Amount(
-            floor(
                 (self.user_deposits[address] * self.rewards_per_share) // PRECISION
                 - self.user_debit.get(address, 0)
-            )
+            
         )
 
     @public(allow_deposit=True)
@@ -133,7 +129,7 @@ class Stake(Blueprint):
         action = self._get_single_deposit_action(ctx)
         self.earnings_per_second = (earnings_per_day * PRECISION) // DAY_IN_SECONDS
         self.owner_address = ctx.address
-        amount = action.amount
+        amount = Amount(action.amount)
         self._amount_check(amount, earnings_per_day)
         self.owner_balance = Amount(amount)
         self.total_staked = Amount(0)
@@ -196,7 +192,7 @@ class Stake(Blueprint):
             raise Unauthorized("admin, please use other address to stake")
         action = self._get_single_deposit_action(ctx)
         address = Address(ctx.address)
-        amount = action.amount
+        amount = Amount(action.amount)
         self._validate_stake_amount(amount)
         self._validate_address(address)
 
@@ -268,10 +264,9 @@ class Stake(Blueprint):
                 multiplier * self.earnings_per_second
             ) // self.total_staked
             pending = Amount(
-                floor(
                     (self.user_deposits[address] * rewards_per_share) // PRECISION
                     - self.user_debit.get(address, 0)
-                )
+                
             )
             return Amount(self.user_deposits[address] + pending)
         else:
@@ -284,7 +279,7 @@ class Stake(Blueprint):
         }
 
     @view
-    def front_end_api(self) -> dict[str, float]:
+    def front_end_api(self) -> dict[str, int]:
         return {
             "owner_balance": self.owner_balance,
             "total_staked": self.total_staked,
@@ -323,3 +318,6 @@ class InvalidState(NCFail):
 
 class InvalidInput(NCFail):
     pass
+
+
+__blueprint__ = Stake

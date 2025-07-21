@@ -138,6 +138,7 @@ class VestingTestCase(BlueprintTestCase):
 
         # Verify initial state using contract instance
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Vesting)
         self.assertEqual(contract.admin, self.admin_address)
         self.assertEqual(contract.token_uid, self.token_uid)
         self.assertEqual(contract.available_balance, self.initial_deposit)
@@ -181,6 +182,7 @@ class VestingTestCase(BlueprintTestCase):
 
         # Verify started state
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Vesting)
         self.assertTrue(contract.is_started)
         self.assertEqual(contract.vesting_start, start_time)
 
@@ -285,6 +287,7 @@ class VestingTestCase(BlueprintTestCase):
         self.runner.call_public_method(self.contract_id, "deposit_tokens", deposit_ctx)
 
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Vesting)
         self.assertEqual(
             contract.available_balance, self.initial_deposit + deposit_amount
         )
@@ -303,6 +306,7 @@ class VestingTestCase(BlueprintTestCase):
         )
 
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Vesting)
         self.assertEqual(
             contract.available_balance,
             self.initial_deposit + deposit_amount - withdraw_amount,
