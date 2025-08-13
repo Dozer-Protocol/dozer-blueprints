@@ -1,3 +1,4 @@
+import inspect
 import json
 import math
 import os
@@ -18,6 +19,7 @@ from hathor.nanocontracts.blueprints.dozer_pool_manager import (
     SwapResult,
     Unauthorized,
 )
+from hathor.nanocontracts.blueprints import dozer_pool_manager
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
 
@@ -40,9 +42,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def setUp(self):
         super().setUp()
 
-        self.blueprint_id = self.gen_random_blueprint_id()
+        # self.blueprint_id = self.gen_random_blueprint_id()
+        self.blueprint_id = self.register_blueprint_file(inspect.getfile(dozer_pool_manager))
         self.nc_id = self.gen_random_contract_id()
-        self.register_blueprint_class(self.blueprint_id, DozerPoolManager)
+        # self.register_blueprint_class(self.blueprint_id, DozerPoolManager)
 
         # Generate random token UIDs for testing
         self.token_a = self.gen_random_token_uid()
