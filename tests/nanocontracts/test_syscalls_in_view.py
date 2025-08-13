@@ -17,8 +17,7 @@ import pytest
 from hathor.nanocontracts import Blueprint, Context, public, view
 from hathor.nanocontracts.blueprint_env import BlueprintEnvironment
 from hathor.nanocontracts.exception import NCViewMethodError
-from hathor.nanocontracts.runner.types import NCRawArgs
-from hathor.nanocontracts.types import BlueprintId, ContractId, TokenUid, VertexId
+from hathor.nanocontracts.types import BlueprintId, ContractId, NCRawArgs, TokenUid, VertexId
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
 
@@ -44,10 +43,6 @@ class MyBlueprint(Blueprint):
     @view
     def get_blueprint_id(self) -> None:
         self.syscall.get_blueprint_id()
-
-    @view
-    def get_balance(self) -> None:
-        self.syscall.get_balance()
 
     @view
     def get_balance_before_current_call(self) -> None:
@@ -124,8 +119,7 @@ class TestSyscallsInView(BlueprintTestCase):
     def setUp(self) -> None:
         super().setUp()
 
-        self.blueprint_id = self.gen_random_blueprint_id()
-        self.register_blueprint_class(self.blueprint_id, MyBlueprint)
+        self.blueprint_id = self._register_blueprint_class(MyBlueprint)
 
         self.ctx = Context(
             actions=[],

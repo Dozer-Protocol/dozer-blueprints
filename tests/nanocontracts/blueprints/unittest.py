@@ -1,10 +1,14 @@
-from hathor.conf import HathorSettings
+from io import TextIOWrapper
+from os import PathLike
+
+from hathor.conf.settings import HATHOR_TOKEN_UID
 from hathor.crypto.util import decode_address
 from hathor.manager import HathorManager
 from hathor.nanocontracts import Context
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.blueprint_env import BlueprintEnvironment
 from hathor.nanocontracts.nc_exec_logs import NCLogConfig
+from hathor.nanocontracts.on_chain_blueprint import Code, OnChainBlueprint
 from hathor.nanocontracts.storage import NCBlockStorage, NCMemoryStorageFactory
 from hathor.nanocontracts.storage.backends import MemoryNodeTrieStore
 from hathor.nanocontracts.storage.patricia_trie import PatriciaTrie
@@ -12,16 +16,13 @@ from hathor.nanocontracts.types import Address, BlueprintId, ContractId, NCActio
 from hathor.nanocontracts.vertex_data import VertexData
 from hathor.transaction import BaseTransaction, Transaction
 from hathor.util import not_none
+from hathor.verification.on_chain_blueprint_verifier import OnChainBlueprintVerifier
 from hathor.wallet import KeyPair
 from tests import unittest
 from tests.nanocontracts.utils import TestRunner
 
-settings = HathorSettings()
-
 
 class BlueprintTestCase(unittest.TestCase):
-    use_memory_storage = True
-
     def setUp(self):
         super().setUp()
         self.manager = self.build_manager()
@@ -30,7 +31,7 @@ class BlueprintTestCase(unittest.TestCase):
         self.reactor = self.manager.reactor
         self.nc_catalog = self.manager.tx_storage.nc_catalog
 
-        self.htr_token_uid = settings.HATHOR_TOKEN_UID
+        self.htr_token_uid = HATHOR_TOKEN_UID
         self.runner = self.build_runner()
         self.now = int(self.reactor.seconds())
 
@@ -38,7 +39,7 @@ class BlueprintTestCase(unittest.TestCase):
 
     def build_manager(self) -> HathorManager:
         """Create a HathorManager instance."""
-        return self.create_peer('testnet', nc_indexes=True, nc_log_config=NCLogConfig.FAILED, wallet_index=True)
+        return self.create_peer('unittests', nc_indexes=True, nc_log_config=NCLogConfig.FAILED, wallet_index=True)
 
     def get_readonly_contract(self, contract_id: ContractId) -> Blueprint:
         """ Returns a read-only instance of a given contract to help testing it.
@@ -72,10 +73,56 @@ class BlueprintTestCase(unittest.TestCase):
         contract = blueprint_class(env)
         return contract
 
-    def register_blueprint_class(self, blueprint_id: BlueprintId, blueprint_class: type[Blueprint]) -> None:
-        """Register a blueprint class with a given id, allowing contracts to be created from it."""
+    def _register_blueprint_class(
+        self,
+        blueprint_class: type[Blueprint],
+        blueprint_id: BlueprintId | None = None,
+    ) -> BlueprintId:
+        """Register a blueprint class with an optional id, allowing contracts to be created from it."""
+        if blueprint_id is None:
+            blueprint_id = self.gen_random_blueprint_id()
+
         assert blueprint_id not in self.nc_catalog.blueprints
         self.nc_catalog.blueprints[blueprint_id] = blueprint_class
+        return blueprint_id
+
+    def register_blueprint_file(self, path: PathLike[str], blueprint_id: BlueprintId | None = None) -> BlueprintId:
+        """Register a blueprint file with an optional id, allowing contracts to be created from it."""
+        with open(path, 'r') as f:
+            return self._register_blueprint_contents(f, blueprint_id)
+
+    def _register_blueprint_contents(
+        self,
+        contents: TextIOWrapper,
+        blueprint_id: BlueprintId | None = None,
+        *,
+        skip_verification: bool = False,
+        inject_in_class: dict[str, object] | None = None,
+    ) -> BlueprintId:
+        """
+        Register blueprint contents with an optional id, allowing contracts to be created from it.
+
+        Args:
+            contents: the blueprint source code, usually a file or StringIO
+            blueprint_id: optional ID for the blueprint
+            skip_verification: skip verifying the blueprint with restrictions such as AST verification
+            inject_in_class: objects to inject in the blueprint class, accessible in contract runtime
+
+        Returns: the blueprint_id
+        """
+        code = Code.from_python_code(contents.read(), self._settings)
+        ocb = OnChainBlueprint(hash=b'', code=code)
+
+        if not skip_verification:
+            verifier = OnChainBlueprintVerifier(settings=self._settings)
+            verifier.verify_code(ocb)
+
+        blueprint_class = ocb.get_blueprint_class()
+        if inject_in_class is not None:
+            for key, value in inject_in_class.items():
+                setattr(blueprint_class, key, value)
+
+        return self._register_blueprint_class(blueprint_class, blueprint_id)
 
     def build_runner(self) -> TestRunner:
         """Create a Runner instance."""

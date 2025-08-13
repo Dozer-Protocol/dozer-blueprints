@@ -12,41 +12,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Sequence, TypeVar
+from __future__ import annotations
 
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+from typing import Sequence, TypeVar, final
+
+from cryptography.hazmat.primitives.ciphers import Cipher, CipherContext, algorithms
 
 from hathor.difficulty import Hash
+from hathor.nanocontracts.faux_immutable import FauxImmutable, __set_faux_immutable__
 
 T = TypeVar('T')
 
 
-class NanoRNG:
+@final
+class NanoRNG(FauxImmutable):
     """Implement a deterministic random number generator that will be used by the sorter.
 
     This implementation uses the ChaCha20 encryption as RNG.
     """
+
+    __slots__ = ('__seed', '__encryptor')
+
     def __init__(self, seed: bytes) -> None:
-        self.__seed = Hash(seed)
+        self.__seed: Hash
+        self.__encryptor: CipherContext
+        __set_faux_immutable__(self, '__seed', Hash(seed))
 
         key = self.__seed
         nonce = self.__seed[:16]
 
         algorithm = algorithms.ChaCha20(key, nonce)
         cipher = Cipher(algorithm, mode=None)
-        self.__encryptor = cipher.encryptor()
+        __set_faux_immutable__(self, '__encryptor', cipher.encryptor())
 
     @property
     def seed(self) -> Hash:
         """Return the seed used to create the RNG."""
         return self.__seed
 
+    def randbytes(self, size: int) -> bytes:
+        """Return a random string of bytes."""
+        assert size >= 1
+        ciphertext = self.__encryptor.update(b'\0' * size)
+        assert len(ciphertext) == size
+        return ciphertext
+
     def randbits(self, bits: int) -> int:
         """Return a random integer in the range [0, 2**bits)."""
-        # Generate 64-bit random string of bytes.
         assert bits >= 1
         size = (bits + 7) // 8
-        ciphertext = self.__encryptor.update(b'\0' * size)
+        ciphertext = self.randbytes(size)
         x = int.from_bytes(ciphertext, byteorder='little', signed=False)
         return x % (2**bits)
 

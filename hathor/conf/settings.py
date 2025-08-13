@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from enum import StrEnum, auto, unique
 from math import log
 from pathlib import Path
 from typing import Any, NamedTuple, Optional, Union
@@ -31,6 +32,31 @@ GENESIS_TOKEN_UNITS = 1 * (10**9)  # 1B
 GENESIS_TOKENS = GENESIS_TOKEN_UNITS * (10**DECIMAL_PLACES)  # 100B
 
 HATHOR_TOKEN_UID = b'\x00'
+
+
+@unique
+class NanoContractsSetting(StrEnum):
+    """Enum to configure the state of the Nano Contracts feature."""
+
+    # Completely disabled.
+    DISABLED = auto()
+
+    # Completely enabled since network creation.
+    ENABLED = auto()
+
+    # Enabled through Feature Activation.
+    FEATURE_ACTIVATION = auto()
+
+    def __bool__(self) -> bool:
+        """
+        >>> bool(NanoContractsSetting.DISABLED)
+        False
+        >>> bool(NanoContractsSetting.ENABLED)
+        True
+        >>> bool(NanoContractsSetting.FEATURE_ACTIVATION)
+        True
+        """
+        return self in (NanoContractsSetting.ENABLED, NanoContractsSetting.FEATURE_ACTIVATION)
 
 
 class HathorSettings(NamedTuple):
@@ -389,6 +415,9 @@ class HathorSettings(NamedTuple):
     # List of soft voided transaction.
     SOFT_VOIDED_TX_IDS: list[bytes] = []
 
+    # List of transactions to skip verification.
+    SKIP_VERIFICATION: list[bytes] = []
+
     # Identifier used in metadata's voided_by to mark a tx as soft-voided.
     SOFT_VOIDED_ID: bytes = b'tx-non-grata'
 
@@ -437,14 +466,7 @@ class HathorSettings(NamedTuple):
     MAX_UNVERIFIED_PEERS_PER_CONN: int = 100
 
     # Used to enable nano contracts.
-    #
-    # This should NEVER be enabled for mainnet and testnet, since both networks will
-    # activate Nano Contracts through the Feature Activation.
-    ENABLE_NANO_CONTRACTS: bool = False
-
-    # This should NEVER be enabled for mainnet and testnet, since both networks will
-    # activate Nano Contracts through the Feature Activation.
-    ENABLE_ON_CHAIN_BLUEPRINTS: bool = False
+    ENABLE_NANO_CONTRACTS: NanoContractsSetting = NanoContractsSetting.DISABLED
 
     # List of enabled blueprints.
     BLUEPRINTS: dict[bytes, 'str'] = {}
@@ -569,6 +591,12 @@ _VALIDATORS = dict(
     )(parse_hex_str),
     _parse_soft_voided_tx_id=pydantic.validator(
         'SOFT_VOIDED_TX_IDS',
+        pre=True,
+        allow_reuse=True,
+        each_item=True
+    )(parse_hex_str),
+    _parse_skipped_verification_tx_id=pydantic.validator(
+        'SKIP_VERIFICATION',
         pre=True,
         allow_reuse=True,
         each_item=True

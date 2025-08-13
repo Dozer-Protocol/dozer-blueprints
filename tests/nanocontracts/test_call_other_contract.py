@@ -57,7 +57,7 @@ class MyBlueprint(Blueprint):
         if self.contract is None:
             return
 
-        actions: list[NCAction] = []
+        actions = []
         for action in ctx.__all_actions__:
             assert isinstance(action, NCDepositAction)
             amount = 1 + action.amount // 2
@@ -69,7 +69,7 @@ class MyBlueprint(Blueprint):
         if self.contract is None:
             return
 
-        actions: list[NCAction] = []
+        actions = []
         for action in ctx.__all_actions__:
             assert isinstance(action, NCWithdrawalAction)
             balance = self.syscall.get_balance_before_current_call(action.token_uid)
@@ -81,7 +81,7 @@ class MyBlueprint(Blueprint):
             self.syscall.call_public_method(self.contract, 'get_tokens_from_another_contract', actions)
 
     @public
-    def dec(self, ctx: Context, fail_on_zero: bool = True) -> None:
+    def dec(self, ctx: Context, fail_on_zero: bool) -> None:
         if self.counter == 0:
             if fail_on_zero:
                 raise ZeroedCounterFail
@@ -110,7 +110,7 @@ class MyBlueprint(Blueprint):
     @public
     def dec_and_get_counter(self, ctx: Context) -> int:
         assert self.contract is not None
-        self.dec(ctx)
+        self.dec(ctx, fail_on_zero=True)
         other = self.syscall.call_view_method(self.contract, 'get_counter')
         return self.counter + other
 
@@ -137,7 +137,7 @@ class NCBlueprintTestCase(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
 
-        self.manager = self.create_peer('testnet')
+        self.manager = self.create_peer('unittests')
         self.genesis = self.manager.tx_storage.get_all_genesis()
         self.tx = [t for t in self.genesis if t.is_transaction][0]
 
@@ -179,13 +179,13 @@ class NCBlueprintTestCase(unittest.TestCase):
         self.assertEqual(storage3.get_obj(b'counter', COUNTER_NC_TYPE), 3)
         self.assertEqual(storage3.get_obj(b'contract', CONTRACT_NC_TYPE), self.nc2_id)
 
-        self.runner.call_public_method(self.nc3_id, 'dec', ctx)
+        self.runner.call_public_method(self.nc3_id, 'dec', ctx, fail_on_zero=True)
         self.assertEqual(storage1.get_obj(b'counter', COUNTER_NC_TYPE), 4)
         self.assertEqual(storage2.get_obj(b'counter', COUNTER_NC_TYPE), 0)
         self.assertEqual(storage3.get_obj(b'counter', COUNTER_NC_TYPE), 2)
 
         with self.assertRaises(ZeroedCounterFail):
-            self.runner.call_public_method(self.nc3_id, 'dec', ctx)
+            self.runner.call_public_method(self.nc3_id, 'dec', ctx, fail_on_zero=True)
 
         self.assertEqual(storage1.get_obj(b'counter', COUNTER_NC_TYPE), 4)
         self.assertEqual(storage2.get_obj(b'counter', COUNTER_NC_TYPE), 0)
@@ -197,7 +197,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         self.runner.call_public_method(self.nc1_id, 'set_contract', ctx, self.nc1_id)
 
         with pytest.raises(NCInvalidContractId, match='a contract cannot call itself'):
-            self.runner.call_public_method(self.nc1_id, 'dec', ctx)
+            self.runner.call_public_method(self.nc1_id, 'dec', ctx, fail_on_zero=True)
 
     def test_call_itself_view(self) -> None:
         ctx = Context([], self.tx, MOCK_ADDRESS, timestamp=0)
@@ -230,7 +230,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         self.runner.call_public_method(self.nc1_id, 'set_contract', ctx, self.nc2_id)
 
         with self.assertRaises(NCUninitializedContractError):
-            self.runner.call_public_method(self.nc1_id, 'dec', ctx)
+            self.runner.call_public_method(self.nc1_id, 'dec', ctx, fail_on_zero=True)
 
     def test_recursion_error(self) -> None:
         # Each call to `self.call_public_method()` in the blueprint adds 8 frames to the call stack.
@@ -246,7 +246,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         self.runner.call_public_method(self.nc2_id, 'set_contract', ctx, self.nc1_id)
 
         with self.assertRaises(NCRecursionError):
-            self.runner.call_public_method(self.nc1_id, 'dec', ctx)
+            self.runner.call_public_method(self.nc1_id, 'dec', ctx, fail_on_zero=True)
         trace = self.runner.get_last_call_info()
         assert trace.calls is not None
         self.assertEqual(len(trace.calls), self.runner.MAX_RECURSION_DEPTH)
@@ -389,7 +389,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         token2_uid = TokenUid(b'b' * 32)
         token3_uid = TokenUid(b'c' * 32)
 
-        actions: list[NCAction] = [
+        actions = [
             NCDepositAction(token_uid=token1_uid, amount=100),
             NCDepositAction(token_uid=token2_uid, amount=50),
             NCDepositAction(token_uid=token3_uid, amount=25),

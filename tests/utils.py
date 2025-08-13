@@ -26,6 +26,7 @@ from hathor.transaction.scripts import P2PKH, HathorScript, Opcode, parse_addres
 from hathor.transaction.token_creation_tx import TokenCreationTransaction
 from hathor.transaction.util import get_deposit_amount
 from hathor.util import Random
+from hathor.verification.verification_params import VerificationParams
 
 settings = HathorSettings()
 
@@ -459,6 +460,7 @@ def create_tokens(manager: 'HathorManager', address_b58: Optional[str] = None, m
 
     change_output: Optional[TxOutput]
     parents: list[bytes]
+    timestamp: int | None = None
     if use_genesis:
         genesis_hash = genesis_block.hash
         assert genesis_hash is not None
@@ -473,6 +475,7 @@ def create_tokens(manager: 'HathorManager', address_b58: Optional[str] = None, m
             block = add_new_block(manager, advance_clock=1, address=address)
             deposit_input.append(TxInput(block.hash, 0, b''))
             total_reward += block.outputs[0].value
+            timestamp = block.timestamp + 1
 
         if total_reward > deposit_amount:
             change_output = TxOutput(total_reward - deposit_amount, script, 0)
@@ -480,7 +483,7 @@ def create_tokens(manager: 'HathorManager', address_b58: Optional[str] = None, m
             change_output = None
 
         add_blocks_unlock_reward(manager)
-        timestamp = int(manager.reactor.seconds())
+        assert timestamp is not None
         parents = manager.get_new_tx_parents(timestamp)
 
     outputs = []
@@ -608,7 +611,8 @@ def add_tx_with_data_script(manager: 'HathorManager', data: list[str], propagate
     manager.cpu_mining_service.resolve(tx)
 
     if propagate:
-        manager.verification_service.verify(tx)
+        params = VerificationParams.default_for_mempool()
+        manager.verification_service.verify(tx, params)
         manager.propagate_tx(tx)
         assert isinstance(manager.reactor, Clock)
         manager.reactor.advance(8)
@@ -630,6 +634,7 @@ class EventMocker:
         inputs=[],
         outputs=[],
         parents=[],
+        headers=[],
         tokens=[],
         metadata=TxMetadata(
             hash='abc',

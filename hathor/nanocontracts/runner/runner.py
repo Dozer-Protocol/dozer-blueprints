@@ -15,9 +15,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
+from typing import Any, Callable, Concatenate, ParamSpec, Sequence, TypeVar
 
-from typing_extensions import assert_never, deprecated
+from typing_extensions import assert_never
 
 from hathor.conf.settings import HATHOR_TOKEN_UID, HathorSettings
 from hathor.nanocontracts.balance_rules import BalanceRules
@@ -38,19 +38,19 @@ from hathor.nanocontracts.exception import (
     NCUninitializedContractError,
     NCViewMethodError,
 )
+from hathor.nanocontracts.faux_immutable import create_with_shell
 from hathor.nanocontracts.metered_exec import MeteredExecutor
-from hathor.nanocontracts.method import Method
+from hathor.nanocontracts.method import Method, ReturnOnly
 from hathor.nanocontracts.rng import NanoRNG
 from hathor.nanocontracts.runner.types import (
     CallInfo,
     CallRecord,
     CallType,
-    NCArgs,
-    NCParsedArgs,
-    NCRawArgs,
+    IndexUpdateRecordType,
     SyscallCreateContractRecord,
-    SyscallRecordType,
     SyscallUpdateTokensRecord,
+    UpdateAuthoritiesRecord,
+    UpdateAuthoritiesRecordType,
 )
 from hathor.nanocontracts.storage import NCBlockStorage, NCChangesTracker, NCContractStorage, NCStorageFactory
 from hathor.nanocontracts.storage.contract_storage import Balance
@@ -65,8 +65,11 @@ from hathor.nanocontracts.types import (
     NCAcquireAuthorityAction,
     NCAction,
     NCActionType,
+    NCArgs,
     NCDepositAction,
     NCGrantAuthorityAction,
+    NCParsedArgs,
+    NCRawArgs,
     NCWithdrawalAction,
     TokenUid,
     VertexId,
@@ -74,6 +77,7 @@ from hathor.nanocontracts.types import (
 from hathor.nanocontracts.utils import (
     derive_child_contract_id,
     derive_child_token_id,
+    is_nc_fallback_method,
     is_nc_public_method,
     is_nc_view_method,
 )
@@ -146,6 +150,7 @@ class Runner:
         self._call_info: CallInfo | None = None
 
         self._rng: NanoRNG | None = NanoRNG(seed) if seed is not None else None
+        self._rng_per_contract: dict[ContractId, NanoRNG] = {}
 
         # Information about updated tokens in the current call via syscalls.
         self._updated_tokens_totals: defaultdict[TokenUid, int] = defaultdict(int)
@@ -300,7 +305,7 @@ class Runner:
         self,
         contract_id: ContractId,
         method_name: str,
-        actions: list[NCAction],
+        actions: Sequence[NCAction],
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
@@ -329,7 +334,7 @@ class Runner:
         self,
         blueprint_id: BlueprintId,
         method_name: str,
-        actions: list[NCAction],
+        actions: Sequence[NCAction],
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
@@ -349,7 +354,7 @@ class Runner:
         self,
         blueprint_id: BlueprintId,
         method_name: str,
-        actions: list[NCAction],
+        actions: Sequence[NCAction],
         nc_args: NCArgs,
     ) -> Any:
         if method_name == NC_INITIALIZE_METHOD:
@@ -373,7 +378,7 @@ class Runner:
         contract_id: ContractId,
         blueprint_id: BlueprintId,
         method_name: str,
-        actions: list[NCAction],
+        actions: Sequence[NCAction],
         nc_args: NCArgs,
     ) -> Any:
         """Invoke another contract's public method without running the usual guard‑safety checks.
@@ -453,16 +458,16 @@ class Runner:
             if call.index_updates is None:
                 assert call.type is CallType.VIEW
                 continue
-            for syscall in call.index_updates:
-                match syscall:
-                    case SyscallCreateContractRecord():
+            for record in call.index_updates:
+                match record:
+                    case SyscallCreateContractRecord() | UpdateAuthoritiesRecord():
                         # Nothing to do here.
                         pass
                     case SyscallUpdateTokensRecord():
-                        calculated_tokens_totals[syscall.token_uid] += syscall.token_amount
-                        calculated_tokens_totals[TokenUid(HATHOR_TOKEN_UID)] += syscall.htr_amount
+                        calculated_tokens_totals[record.token_uid] += record.token_amount
+                        calculated_tokens_totals[TokenUid(HATHOR_TOKEN_UID)] += record.htr_amount
                     case _:
-                        assert_never(syscall)
+                        assert_never(record)
 
         assert calculated_tokens_totals == self._updated_tokens_totals, (
             f'conflicting updated tokens totals: {calculated_tokens_totals, self._updated_tokens_totals}'
@@ -535,30 +540,23 @@ class Runner:
         method = getattr(blueprint, method_name, None)
 
         called_method_name: str = method_name
+        parser: Method | ReturnOnly
         args: tuple[Any, ...]
-        kwargs: dict[str, Any]
         if method is None:
             assert method_name != NC_INITIALIZE_METHOD
             fallback_method = getattr(blueprint, NC_FALLBACK_METHOD, None)
             if fallback_method is None:
                 raise NCMethodNotFound(f'method `{method_name}` not found and no fallback is provided')
             method = fallback_method
+            assert is_nc_fallback_method(method)
+            parser = ReturnOnly.from_callable(method)
             called_method_name = NC_FALLBACK_METHOD
             args = method_name, nc_args
-            kwargs = {}
         else:
             if not is_nc_public_method(method):
                 raise NCInvalidMethodCall(f'method `{method_name}` is not a public method')
-            match nc_args:
-                case NCRawArgs(args_bytes):
-                    parser = Method.from_callable(method)
-                    args = parser.deserialize_args_bytes(args_bytes)
-                    kwargs = {}
-                case NCParsedArgs():
-                    args = nc_args.args
-                    kwargs = nc_args.kwargs
-                case _:
-                    assert_never(nc_args)
+            parser = Method.from_callable(method)
+            args = self._validate_nc_args_for_method(parser, nc_args)
 
         call_record = CallRecord(
             type=CallType.PUBLIC,
@@ -568,7 +566,6 @@ class Runner:
             method_name=called_method_name,
             ctx=ctx,
             args=args,
-            kwargs=kwargs,
             changes_tracker=changes_tracker,
             index_updates=[],
         )
@@ -578,13 +575,14 @@ class Runner:
         for action in ctx.__all_actions__:
             rules = BalanceRules.get_rules(self._settings, action)
             rules.nc_callee_execution_rule(changes_tracker)
+            self._handle_index_update(action)
 
         try:
             # Although the context is immutable, we're passing a copy to the blueprint method as an added precaution.
             # This ensures that, even if the blueprint method attempts to exploit or alter the context, it cannot
             # impact the original context. Since the runner relies on the context for other critical checks, any
             # unauthorized modification would pose a serious security risk.
-            ret = self._metered_executor.call(method, ctx.copy(), *args, **kwargs)
+            ret = self._metered_executor.call(method, args=(ctx.copy(), *args))
         except NCFail:
             raise
         except Exception as e:
@@ -595,7 +593,37 @@ class Runner:
             call_record.changes_tracker.commit()
 
         self._call_info.post_call(call_record)
-        return ret
+        return self._validate_return_type_for_method(parser, ret)
+
+    @staticmethod
+    def _validate_nc_args_for_method(method: Method, nc_args: NCArgs) -> tuple[Any, ...]:
+        """
+        Given a method and its NCArgs, return the merged args and kwargs,
+        while validating their types and cloning the objects.
+        """
+        args_bytes: bytes
+        match nc_args:
+            case NCParsedArgs():
+                # Even though we could simply validate the type with `check_value/isinstance` and return the args,
+                # we do a round-trip to create a new instance and secure mutation of objects across contracts.
+                args_bytes = method.serialize_args_bytes(nc_args.args, nc_args.kwargs)
+            case NCRawArgs(args_bytes):
+                # Nothing to do, we can just deserialize the bytes directly.
+                pass
+            case _:
+                assert_never(nc_args)
+
+        return method.deserialize_args_bytes(args_bytes)
+
+    @staticmethod
+    def _validate_return_type_for_method(method: Method | ReturnOnly, return_value: Any) -> Any:
+        """
+        Given a method and its return value, return that value, while validating its type and cloning the object.
+        """
+        # Even though we could simply validate the type with `check_value/isinstance` and return the value,
+        # we do a round-trip to create a new instance and secure mutation of objects across contracts.
+        return_bytes = method.serialize_return_bytes(return_value)
+        return method.deserialize_return_bytes(return_bytes)
 
     def call_view_method(self, contract_id: ContractId, method_name: str, *args: Any, **kwargs: Any) -> Any:
         """Call a contract view method."""
@@ -605,6 +633,31 @@ class Runner:
             return self._unsafe_call_view_method(contract_id, method_name, args, kwargs)
         finally:
             self._reset_all_change_trackers()
+
+    def _handle_index_update(self, action: NCAction) -> None:
+        """For each action in a public method call, create the appropriate index update records."""
+        call_record = self.get_current_call_record()
+        assert call_record.index_updates is not None
+
+        match action:
+            case NCDepositAction() | NCWithdrawalAction():
+                # Since these actions only affect indexes when used via a transaction call
+                # (not when used across contracts), they are handled only once when the tx
+                # is added to indexes (more specifically, to the tokens index).
+                pass
+            case NCGrantAuthorityAction() | NCAcquireAuthorityAction():
+                # Since these actions "duplicate" authorities, they must be
+                # handled everytime they're used, even across contracts.
+                # That's why they account for index update records.
+                record = UpdateAuthoritiesRecord(
+                    token_uid=action.token_uid,
+                    sub_type=UpdateAuthoritiesRecordType.GRANT,
+                    mint=action.mint,
+                    melt=action.melt,
+                )
+                call_record.index_updates.append(record)
+            case _:
+                assert_never(action)
 
     def syscall_call_another_contract_view_method(
         self,
@@ -636,6 +689,16 @@ class Runner:
 
         changes_tracker = self._create_changes_tracker(contract_id)
         blueprint_id = self.get_blueprint_id(contract_id)
+        blueprint = self._create_blueprint_instance(blueprint_id, changes_tracker)
+        method = getattr(blueprint, method_name, None)
+
+        if method is None:
+            raise NCMethodNotFound(method_name)
+        if not is_nc_view_method(method):
+            raise NCInvalidMethodCall('not a view method')
+
+        parser = Method.from_callable(method)
+        args = self._validate_nc_args_for_method(parser, NCParsedArgs(args, kwargs))
 
         call_record = CallRecord(
             type=CallType.VIEW,
@@ -645,36 +708,18 @@ class Runner:
             method_name=method_name,
             ctx=None,
             args=args,
-            kwargs=kwargs,
             changes_tracker=changes_tracker,
             index_updates=None,
         )
         self._call_info.pre_call(call_record)
 
-        blueprint = self._create_blueprint_instance(blueprint_id, changes_tracker)
-        method = getattr(blueprint, method_name)
-
-        if method is None:
-            raise NCMethodNotFound(method_name)
-        if not is_nc_view_method(method):
-            raise NCInvalidMethodCall('not a view method')
-
-        ret = self._metered_executor.call(method, *args, **kwargs)
+        ret = self._metered_executor.call(method, args=args)
 
         if not changes_tracker.is_empty():
             raise NCViewMethodError('view methods cannot change the state')
 
         self._call_info.post_call(call_record)
-        return ret
-
-    @deprecated('use explicit methods instead, `get_balance_before_current_call` or `get_current_balance`')
-    def get_balance(self, contract_id: ContractId | None, token_uid: TokenUid | None) -> Balance:
-        """
-        Return the contract balance for a given token before the current call, that is,
-        excluding any actions and changes in the current call.
-        This is equivalent to `get_balance_before_current_call`.
-        """
-        return self.get_balance_before_current_call(contract_id, token_uid)
+        return self._validate_return_type_for_method(parser, ret)
 
     def get_balance_before_current_call(self, contract_id: ContractId | None, token_uid: TokenUid | None) -> Balance:
         """
@@ -743,7 +788,10 @@ class Runner:
         """Return the RNG for the current contract being executed."""
         if self._rng is None:
             raise ValueError('no seed was provided')
-        return self._rng
+        contract_id = self.get_current_contract_id()
+        if contract_id not in self._rng_per_contract:
+            self._rng_per_contract[contract_id] = create_with_shell(NanoRNG, seed=self._rng.randbytes(32))
+        return self._rng_per_contract[contract_id]
 
     def _internal_create_contract(self, contract_id: ContractId, blueprint_id: BlueprintId) -> None:
         """Create a new contract without calling the initialize() method."""
@@ -788,7 +836,7 @@ class Runner:
         self,
         blueprint_id: BlueprintId,
         salt: bytes,
-        actions: list[NCAction],
+        actions: Sequence[NCAction],
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> tuple[ContractId, Any]:
@@ -822,16 +870,35 @@ class Runner:
     @_forbid_syscall_from_view('revoke_authorities')
     def syscall_revoke_authorities(self, token_uid: TokenUid, *, revoke_mint: bool, revoke_melt: bool) -> None:
         """Revoke authorities from this nano contract."""
-        contract_id = self.get_current_contract_id()
+        call_record = self.get_current_call_record()
+        contract_id = call_record.contract_id
         if token_uid == HATHOR_TOKEN_UID:
             raise NCInvalidSyscall(f'contract {contract_id.hex()} cannot revoke authorities from HTR token')
 
         changes_tracker = self.get_current_changes_tracker(contract_id)
+        assert changes_tracker.nc_id == call_record.contract_id
+        balance = changes_tracker.get_balance(token_uid)
+
+        if revoke_mint and not balance.can_mint:
+            raise NCInvalidSyscall(f'contract {call_record.contract_id.hex()} cannot mint {token_uid.hex()} tokens')
+
+        if revoke_melt and not balance.can_melt:
+            raise NCInvalidSyscall(f'contract {call_record.contract_id.hex()} cannot melt {token_uid.hex()} tokens')
+
         changes_tracker.revoke_authorities(
             token_uid,
             revoke_mint=revoke_mint,
             revoke_melt=revoke_melt,
         )
+
+        assert call_record.index_updates is not None
+        syscall_record = UpdateAuthoritiesRecord(
+            token_uid=token_uid,
+            sub_type=UpdateAuthoritiesRecordType.REVOKE,
+            mint=revoke_mint,
+            melt=revoke_melt,
+        )
+        call_record.index_updates.append(syscall_record)
 
     @_forbid_syscall_from_view('mint_tokens')
     def syscall_mint_tokens(self, token_uid: TokenUid, amount: int) -> None:
@@ -858,7 +925,7 @@ class Runner:
 
         assert call_record.index_updates is not None
         syscall_record = SyscallUpdateTokensRecord(
-            type=SyscallRecordType.MINT_TOKENS,
+            type=IndexUpdateRecordType.MINT_TOKENS,
             token_uid=token_uid,
             token_amount=token_amount,
             htr_amount=htr_amount,
@@ -890,7 +957,7 @@ class Runner:
 
         assert call_record.index_updates is not None
         syscall_record = SyscallUpdateTokensRecord(
-            type=SyscallRecordType.MELT_TOKENS,
+            type=IndexUpdateRecordType.MELT_TOKENS,
             token_uid=token_uid,
             token_amount=token_amount,
             htr_amount=htr_amount,
@@ -960,7 +1027,7 @@ class Runner:
 
         assert last_call_record.index_updates is not None
         syscall_record = SyscallUpdateTokensRecord(
-            type=SyscallRecordType.CREATE_TOKEN,
+            type=IndexUpdateRecordType.CREATE_TOKEN,
             token_uid=token_id,
             token_amount=token_amount,
             htr_amount=-htr_amount,

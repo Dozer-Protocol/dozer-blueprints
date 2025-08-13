@@ -27,13 +27,15 @@ from typing import (
     Sequence,
     SupportsIndex,
     TypeVar,
+    cast,
     final,
 )
 
 from typing_extensions import Self, TypeVarTuple
 
+from hathor.nanocontracts.allowed_imports import ALLOWED_IMPORTS
 from hathor.nanocontracts.exception import NCDisabledBuiltinError
-from hathor.nanocontracts.on_chain_blueprint import ALLOWED_IMPORTS, BLUEPRINT_CLASS_NAME
+from hathor.nanocontracts.on_chain_blueprint import BLUEPRINT_CLASS_NAME
 
 T = TypeVar('T')
 Ts = TypeVarTuple('Ts')
@@ -218,7 +220,7 @@ class ImportFunction(Protocol):
         ...
 
 
-def _generate_restriced_import_function(allowed_imports: dict[str, set[str]]) -> ImportFunction:
+def _generate_restricted_import_function(allowed_imports: dict[str, dict[str, object]]) -> ImportFunction:
     """Returns a function equivalent to builtins.__import__ but that will only import `allowed_imports`"""
     @_wraps(builtins.__import__)
     def __import__(
@@ -228,18 +230,30 @@ def _generate_restriced_import_function(allowed_imports: dict[str, set[str]]) ->
         fromlist: Sequence[str] = (),
         level: int = 0,
     ) -> types.ModuleType:
-        if level > 0:
+        if level != 0:
             raise ImportError('Relative imports are not allowed')
         if not fromlist and name != 'typing':
             # XXX: typing is allowed here because Foo[T] triggers a __import__('typing', fromlist=None) for some reason
             raise ImportError('Only `from ... import ...` imports are allowed')
         if name not in allowed_imports:
             raise ImportError(f'Import from "{name}" is not allowed.')
+
+        # Create a fake module class that will only be returned by this import call
+        class FakeModule:
+            __slots__ = tuple(fromlist)
+
+        fake_module = FakeModule()
         allowed_fromlist = allowed_imports[name]
+
         for import_what in fromlist:
             if import_what not in allowed_fromlist:
                 raise ImportError(f'Import from "{name}.{import_what}" is not allowed.')
-        return builtins.__import__(name=name, globals=globals, fromlist=fromlist, level=0)
+
+            setattr(fake_module, import_what, allowed_fromlist[import_what])
+
+        # This cast is safe because the only requirement is that the object contains the imported attributes.
+        return cast(types.ModuleType, fake_module)
+
     return __import__
 
 
@@ -329,7 +343,7 @@ EXEC_BUILTINS: dict[str, Any] = {
     # XXX: will trigger the execution of the imported module
     # (name: str, globals: Mapping[str, object] | None = None, locals: Mapping[str, object] | None = None,
     #  fromlist: Sequence[str] = (), level: int = 0) -> types.ModuleType
-    '__import__': _generate_restriced_import_function(ALLOWED_IMPORTS),
+    '__import__': _generate_restricted_import_function(ALLOWED_IMPORTS),
 
     # XXX: also required to declare classes
     # XXX: this would be '__main__' for a module that is loaded as the main entrypoint, and the module name otherwise,
@@ -514,11 +528,6 @@ EXEC_BUILTINS: dict[str, Any] = {
     'next': builtins.next,
 
     # O(1)
-    # type object
-    # () -> object
-    'object': builtins.object,
-
-    # O(1)
     # (number: int | SupportsIndex, /) -> str
     'oct': builtins.object,
 
@@ -586,24 +595,11 @@ EXEC_BUILTINS: dict[str, Any] = {
     # (iterable: Iterable[T], /, start: T) -> T
     'sum': builtins.sum,
 
-    # O(1)
-    # type super
-    # (t: Any, obj: Any, /) -> super
-    # (t: Any, /) -> super
-    # () -> super
-    'super': builtins.super,
-
     # XXX: consumes an iterator when calling
     # O(N) for N=len(iterable)
     # type tuple(Sequence[T])
     # (iterable: Iterable[T] = ..., /) -> tuple[T]
     'tuple': builtins.tuple,
-
-    # O(1)
-    # type type
-    # (o: object, /) -> type
-    # (name: str, bases: tuple[type, ...], namespace: dict[str, Any], /, **kwds: Any) -> T(type)
-    'type': builtins.type,
 
     # O(1)
     # type zip(Iterator[T])
@@ -766,7 +762,7 @@ EXEC_BUILTINS: dict[str, Any] = {
     # XXX: used to dynamically set attributes, must not be allowed
     'setattr': _generate_disabled_builtin_func('setattr'),
 
-    # XXX: same reasoning as locals
+    # XXX: can be used to inspect an object's attributes, including "private" ones
     'vars': _generate_disabled_builtin_func('vars'),
 
     # XXX: disallow just in case
@@ -791,4 +787,25 @@ EXEC_BUILTINS: dict[str, Any] = {
     #     doc: str | None = ...,
     # ) -> property
     'property': _generate_disabled_builtin_func('property'),
+
+    # XXX: Can be used to get an object's class and its metaclass
+    # O(1)
+    # type type
+    # (o: object, /) -> type
+    # (name: str, bases: tuple[type, ...], namespace: dict[str, Any], /, **kwds: Any) -> T(type)
+    'type': _generate_disabled_builtin_func('type'),
+
+    # XXX: Root object which contains dangerous methods such as `__setattr__`
+    # O(1)
+    # type object
+    # () -> object
+    'object': _generate_disabled_builtin_func('object'),
+
+    # XXX: Can be used to get the root `object`
+    # O(1)
+    # type super
+    # (t: Any, obj: Any, /) -> super
+    # (t: Any, /) -> super
+    # () -> super
+    'super': _generate_disabled_builtin_func('super'),
 }

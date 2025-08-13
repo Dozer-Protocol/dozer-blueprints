@@ -53,39 +53,6 @@ PYTHON_CODE_COMPAT_VERSION = (3, 11)
 # max compression level, used as default
 MAX_COMPRESSION_LEVEL = 9
 
-# this is what's allowed to be imported, to be checked in the AST and in runtime
-ALLOWED_IMPORTS: dict[str, set[str]] = {
-    # globals
-    'math': {'ceil', 'floor'},
-    'typing': {'Optional', 'NamedTuple', 'TypeAlias', 'Union'},
-    'collections': {'OrderedDict'},
-    # hathor
-    'hathor.nanocontracts': {'Blueprint'},
-    'hathor.nanocontracts.blueprint': {'Blueprint'},
-    'hathor.nanocontracts.context': {'Context'},
-    'hathor.nanocontracts.exception': {'NCFail'},
-    'hathor.nanocontracts.types': {
-        'NCAction',
-        'NCActionType',
-        'SignedData',
-        'public',
-        'view',
-        'fallback',
-        'Address',
-        'Amount',
-        'Timestamp',
-        'TokenUid',
-        'TxOutputScript',
-        'BlueprintId',
-        'ContractId',
-        'VertexId',
-        'NCDepositAction',
-        'NCWithdrawalAction',
-        'NCGrantAuthorityAction',
-        'NCAcquireAuthorityAction',
-    },
-}
-
 # these names aren't allowed in the code, to be checked in the AST only
 AST_NAME_BLACKLIST: set[str] = {
     '__builtins__',
@@ -103,6 +70,9 @@ AST_NAME_BLACKLIST: set[str] = {
     'open',
     'setattr',
     'vars',
+    'type',
+    'object',
+    'super',
 }
 
 
@@ -230,9 +200,8 @@ class OnChainBlueprint(Transaction):
                          outputs=outputs or [], tokens=tokens, parents=parents or [], hash=hash, storage=storage)
 
         self._settings = get_global_settings()
-        if not self._settings.ENABLE_ON_CHAIN_BLUEPRINTS:
-            assert self._settings.ENABLE_NANO_CONTRACTS, 'OnChainBlueprints require NanoContracts to be enabled'
-            raise RuntimeError('OnChainBlueprints are disabled')
+        if not self._settings.ENABLE_NANO_CONTRACTS:
+            raise RuntimeError('NanoContracts are disabled')
 
         # Pubkey and signature of the transaction owner / caller.
         self.nc_pubkey: bytes = b''
