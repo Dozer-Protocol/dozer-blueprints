@@ -6,6 +6,7 @@ from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
     Address,
     Amount,
+    CallerId,
     ContractId,
     NCDepositAction,
     NCWithdrawalAction,
@@ -181,7 +182,7 @@ class DozerPoolManager(Blueprint):
     owner: Address
     default_fee: Amount
     default_protocol_fee: Amount
-    authorized_signers: dict[bytes, bool]  # Addresses authorized to sign pools
+    authorized_signers: dict[CallerId, bool]  # Addresses authorized to sign pools
     htr_usd_pool_key: str  # Reference pool key for HTR-USD price calculations
 
     # Pool registry - token_a/token_b/fee -> exists
@@ -193,7 +194,7 @@ class DozerPoolManager(Blueprint):
 
     # Signed pools for dApp listing
     signed_pools: list[str]  # List of all signed pools
-    pool_signers: dict[str, bytes]  # pool_key -> signer_address
+    pool_signers: dict[str, CallerId]  # pool_key -> signer_address
 
     # Price calculation
     htr_token_map: dict[
@@ -218,12 +219,12 @@ class DozerPoolManager(Blueprint):
     # Liquidity tracking
     pool_total_liquidity: dict[str, Amount]  # pool_key -> total_liquidity
     pool_user_liquidity: dict[
-        str, dict[bytes, Amount]
+        str, dict[CallerId, Amount]
     ]  # pool_key -> user -> liquidity
 
     # User balances (for slippage)
-    pool_balance_a: dict[str, dict[bytes, Amount]]  # pool_key -> user -> balance_a
-    pool_balance_b: dict[str, dict[bytes, Amount]]  # pool_key -> user -> balance_b
+    pool_balance_a: dict[str, dict[CallerId, Amount]]  # pool_key -> user -> balance_a
+    pool_balance_b: dict[str, dict[CallerId, Amount]]  # pool_key -> user -> balance_b
     pool_total_balance_a: dict[str, Amount]  # pool_key -> total_balance_a
     pool_total_balance_b: dict[str, Amount]  # pool_key -> total_balance_b
 
@@ -242,7 +243,7 @@ class DozerPoolManager(Blueprint):
 
         Sets up the initial state for the contract.
         """
-        self.owner = Address(ctx.address)
+        self.owner = Address(ctx.caller_id)
         self.default_fee = Amount(3)  # 0.3%
         self.default_protocol_fee = Amount(10)  # 10% of fees
 
@@ -387,7 +388,7 @@ class DozerPoolManager(Blueprint):
         return action_in, action_out
 
     def _update_balance(
-        self, address: Address, amount: Amount, token: TokenUid, pool_key: str
+        self, address: CallerId, amount: Amount, token: TokenUid, pool_key: str
     ) -> None:
         """Update balance for a given change.
 
@@ -727,7 +728,7 @@ class DozerPoolManager(Blueprint):
         # Initialize user liquidity for this pool
         if pool_key not in self.pool_user_liquidity:
             self.pool_user_liquidity[pool_key] = {}
-        self.pool_user_liquidity[pool_key][Address(ctx.address)] = Amount(
+        self.pool_user_liquidity[pool_key][ctx.caller_id] = Amount(
             initial_liquidity
         )
 
@@ -793,7 +794,7 @@ class DozerPoolManager(Blueprint):
             InvalidAction: If the actions are invalid
         """
         token_a, token_b = set(ctx.actions.keys())
-        user_address = Address(ctx.address)
+        user_address = ctx.caller_id
 
         # Ensure tokens are ordered
         if token_a > token_b:
@@ -906,7 +907,7 @@ class DozerPoolManager(Blueprint):
             InvalidAction: If the user has no liquidity or insufficient liquidity
         """
         token_a, token_b = set(ctx.actions.keys())
-        user_address = Address(ctx.address)
+        user_address = ctx.caller_id
 
         # Ensure tokens are ordered
         if token_a > token_b:
@@ -1010,7 +1011,7 @@ class DozerPoolManager(Blueprint):
             InsufficientLiquidity: If there is insufficient liquidity
         """
         token_a, token_b = set(ctx.actions.keys())
-        user_address = Address(ctx.address)
+        user_address = ctx.caller_id
 
         # Ensure tokens are ordered
         if token_a > token_b:
@@ -1134,7 +1135,7 @@ class DozerPoolManager(Blueprint):
             InsufficientLiquidity: If there is insufficient liquidity
         """
         token_a, token_b = set(ctx.actions.keys())
-        user_address = Address(ctx.address)
+        user_address = ctx.caller_id
 
         # Ensure tokens are ordered
         if token_a > token_b:
@@ -1254,7 +1255,7 @@ class DozerPoolManager(Blueprint):
             InvalidPath: If the path is invalid
             InvalidAction: If the actions are invalid
         """
-        user_address = Address(ctx.address)
+        user_address = ctx.caller_id
         # Parse the path
         if not path_str:
             raise InvalidPath("Empty path")
@@ -1647,7 +1648,7 @@ class DozerPoolManager(Blueprint):
             InvalidPath: If the path is invalid
             InvalidAction: If the actions are invalid
         """
-        user_address = Address(ctx.address)
+        user_address = ctx.caller_id
         # Parse the path
         if not path_str:
             raise InvalidPath("Empty path")
@@ -2061,7 +2062,7 @@ class DozerPoolManager(Blueprint):
             InvalidAction: If there is not enough cashback
         """
         token_a, token_b = set(ctx.actions.keys())
-        user_address = Address(ctx.address)
+        user_address = ctx.caller_id
 
         # Ensure tokens are ordered
         if token_a > token_b:
@@ -2132,7 +2133,7 @@ class DozerPoolManager(Blueprint):
             Unauthorized: If the caller is not the owner
             InvalidFee: If the fee is invalid
         """
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise Unauthorized("Only owner can set default fee")
 
         if new_fee > 50:
@@ -2152,7 +2153,7 @@ class DozerPoolManager(Blueprint):
             Unauthorized: If the caller is not the owner
             InvalidFee: If the fee is invalid
         """
-        if ctx.address != self.owner:
+        if ctx.caller_id != self.owner:
             raise Unauthorized("Only the owner can change the protocol fee")
 
         if new_fee > 50:
@@ -2174,7 +2175,7 @@ class DozerPoolManager(Blueprint):
         Raises:
             Unauthorized: If the caller is not the owner
         """
-        if ctx.address != self.owner:
+        if ctx.caller_id != self.owner:
             raise Unauthorized("Only the owner can add authorized signers")
 
         self.authorized_signers[signer_address] = True
@@ -2194,7 +2195,7 @@ class DozerPoolManager(Blueprint):
             Unauthorized: If the caller is not the owner
             NCFail: If trying to remove the owner as a signer
         """
-        if ctx.address != self.owner:
+        if ctx.caller_id != self.owner:
             raise Unauthorized("Only the owner can remove authorized signers")
 
         if signer_address == self.owner:
@@ -2222,7 +2223,7 @@ class DozerPoolManager(Blueprint):
             Unauthorized: If the caller is not an authorized signer
             PoolNotFound: If the pool does not exist
         """
-        if not self.authorized_signers.get(Address(ctx.address), False):
+        if not self.authorized_signers.get(ctx.caller_id, False):
             raise Unauthorized("Only authorized signers can sign pools")
 
         # Ensure tokens are ordered
@@ -2232,7 +2233,7 @@ class DozerPoolManager(Blueprint):
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
 
-        self.pool_signers[pool_key] = Address(ctx.address)
+        self.pool_signers[pool_key] = ctx.caller_id
 
     @public
     def unsign_pool(
@@ -2264,7 +2265,7 @@ class DozerPoolManager(Blueprint):
             return
 
         original_signer = self.pool_signers.get(pool_key)
-        if ctx.address != self.owner and ctx.address != original_signer:
+        if ctx.caller_id != self.owner and ctx.caller_id != original_signer:
             raise Unauthorized("Only the owner or original signer can unsign a pool")
 
         if pool_key in self.pool_signers:
@@ -2290,7 +2291,7 @@ class DozerPoolManager(Blueprint):
             PoolNotFound: If the pool does not exist
             InvalidTokens: If neither token is HTR
         """
-        if ctx.address != self.owner:
+        if ctx.caller_id != self.owner:
             raise Unauthorized("Only the owner can set the HTR-USD pool")
 
         # Ensure tokens are ordered
@@ -2573,7 +2574,7 @@ class DozerPoolManager(Blueprint):
         Raises:
             Unauthorized: If the caller is not the owner
         """
-        if ctx.address != self.owner:
+        if ctx.caller_id != self.owner:
             raise Unauthorized("Only owner can change owner")
 
         self.owner = new_owner
@@ -2786,7 +2787,7 @@ class DozerPoolManager(Blueprint):
     @view
     def user_info(
         self,
-        address: Address,
+        address: CallerId,
         pool_key: str,
     ) -> UserInfo:
         """Get detailed information about a user's position in a pool.

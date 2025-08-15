@@ -6,6 +6,7 @@ from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
     Address,
     Amount,
+    CallerId,
     Timestamp,
     ContractId,
     TokenUid,
@@ -85,22 +86,22 @@ class Oasis(Blueprint):
     pool_fee: Amount
     protocol_fee: Amount
 
-    owner_address: bytes
-    dev_address: bytes
+    owner_address: CallerId
+    dev_address: CallerId
     oasis_htr_balance: Amount
     dev_deposit_amount: Amount
-    user_deposit_b: dict[bytes, Amount]
-    htr_price_in_deposit: dict[bytes, Amount]
-    token_price_in_htr_in_deposit: dict[bytes, Amount]
-    user_liquidity: dict[bytes, Amount]
+    user_deposit_b: dict[CallerId, Amount]
+    htr_price_in_deposit: dict[CallerId, Amount]
+    token_price_in_htr_in_deposit: dict[CallerId, Amount]
+    user_liquidity: dict[CallerId, Amount]
     total_liquidity: Amount
-    user_withdrawal_time: dict[bytes, int]
-    user_balances: dict[bytes, dict[TokenUid, Amount]]
+    user_withdrawal_time: dict[CallerId, int]
+    user_balances: dict[CallerId, dict[TokenUid, Amount]]
     token_b: TokenUid
     # Track if a user's position has been closed and is ready for withdrawal
-    user_position_closed: dict[bytes, bool]
+    user_position_closed: dict[CallerId, bool]
     # Track withdrawn balances separately from cashback/rewards
-    closed_position_balances: dict[bytes, dict[TokenUid, Amount]]
+    closed_position_balances: dict[CallerId, dict[TokenUid, Amount]]
 
     @public(allow_deposit=True)
     def initialize(
@@ -118,14 +119,14 @@ class Oasis(Blueprint):
         if protocol_fee < 0 or protocol_fee > 1000:
             raise NCFail("Protocol fee must be between 0 and 1000")
         self.token_b = token_b
-        self.dev_address = ctx.address
+        self.dev_address = ctx.caller_id
         self.dozer_pool_manager = dozer_pool_manager
         self.pool_fee = pool_fee
         self.oasis_htr_balance = Amount(action.amount)
         self.dev_deposit_amount = Amount(action.amount)
         self.total_liquidity = Amount(0)
         self.protocol_fee = protocol_fee
-        self.owner_address = ctx.address
+        self.owner_address = ctx.caller_id
 
     def _get_pool_key(self) -> str:
         """Generate the pool key for the HTR/token_b pair."""
@@ -142,7 +143,7 @@ class Oasis(Blueprint):
     def owner_deposit(self, ctx: Context) -> None:
 
         action = self._get_token_action(ctx, NCActionType.DEPOSIT, TokenUid(HTR_UID), auth=False)
-        if ctx.address not in [self.dev_address, self.owner_address]:
+        if ctx.caller_id not in [self.dev_address, self.owner_address]:
             raise NCFail("Only dev or owner can deposit")
         if action.token_uid != HTR_UID:
             raise NCFail("Deposit token not HATHOR")
@@ -166,7 +167,7 @@ class Oasis(Blueprint):
         if action.token_uid != self.token_b:
             raise NCFail("Deposit token not B")
 
-        if self.user_position_closed.get(ctx.address, False):
+        if self.user_position_closed.get(ctx.caller_id, False):
             raise NCFail("Need to close position before deposit")
 
         # Get HTR price in USD from the DozerPoolManager
@@ -196,66 +197,66 @@ class Oasis(Blueprint):
 
         if self.total_liquidity == 0:
             self.total_liquidity = Amount(deposit_amount * PRECISION)
-            self.user_liquidity[ctx.address] = Amount(deposit_amount * PRECISION)
+            self.user_liquidity[ctx.caller_id] = Amount(deposit_amount * PRECISION)
         else:
             liquidity_increase = (
                 self.total_liquidity
                 * deposit_amount
                 // self._get_oasis_lp_amount_b()
             )
-            self.user_liquidity[ctx.address] = Amount(
-                self.user_liquidity.get(ctx.address, 0) + liquidity_increase
+            self.user_liquidity[ctx.caller_id] = Amount(
+                self.user_liquidity.get(ctx.caller_id, 0) + liquidity_increase
             )
             self.total_liquidity = Amount(self.total_liquidity + liquidity_increase)
 
-        if ctx.address in self.user_withdrawal_time:
-            delta = self.user_withdrawal_time[ctx.address] - now
+        if ctx.caller_id in self.user_withdrawal_time:
+            delta = self.user_withdrawal_time[ctx.caller_id] - now
             if delta > 0:
-                self.user_withdrawal_time[ctx.address] = int(
+                self.user_withdrawal_time[ctx.caller_id] = int(
                     now
                     + (
                         (
-                            (delta * self.user_deposit_b[ctx.address])
+                            (delta * self.user_deposit_b[ctx.caller_id])
                             + (deposit_amount * timelock * MONTHS_IN_SECONDS)
                         )
-                        // (deposit_amount + self.user_deposit_b[ctx.address])
+                        // (deposit_amount + self.user_deposit_b[ctx.caller_id])
                     )
                     + 1
                 )
             else:
-                self.user_withdrawal_time[ctx.address] = (
+                self.user_withdrawal_time[ctx.caller_id] = (
                     int(now + int(timelock * int(MONTHS_IN_SECONDS)))
                 )
             # updating position initial price with weighted average
-            self.htr_price_in_deposit[ctx.address] = Amount(
+            self.htr_price_in_deposit[ctx.caller_id] = Amount(
                 (
-                    self.htr_price_in_deposit[ctx.address]
-                    * self.user_deposit_b[ctx.address]
+                    self.htr_price_in_deposit[ctx.caller_id]
+                    * self.user_deposit_b[ctx.caller_id]
                     + htr_price * deposit_amount
                 )
-                // (self.user_deposit_b[ctx.address] + deposit_amount)
+                // (self.user_deposit_b[ctx.caller_id] + deposit_amount)
             )
-            self.token_price_in_htr_in_deposit[ctx.address] = Amount(
+            self.token_price_in_htr_in_deposit[ctx.caller_id] = Amount(
                 (
-                    self.token_price_in_htr_in_deposit[ctx.address]
-                    * self.user_deposit_b[ctx.address]
+                    self.token_price_in_htr_in_deposit[ctx.caller_id]
+                    * self.user_deposit_b[ctx.caller_id]
                     + token_price_in_htr * deposit_amount
                 )
-                // (self.user_deposit_b[ctx.address] + deposit_amount)
+                // (self.user_deposit_b[ctx.caller_id] + deposit_amount)
             )
 
         else:
-            self.htr_price_in_deposit[ctx.address] = htr_price
-            self.token_price_in_htr_in_deposit[ctx.address] = Amount(token_price_in_htr)
-            self.user_withdrawal_time[ctx.address] = int(now + timelock * MONTHS_IN_SECONDS)
+            self.htr_price_in_deposit[ctx.caller_id] = htr_price
+            self.token_price_in_htr_in_deposit[ctx.caller_id] = Amount(token_price_in_htr)
+            self.user_withdrawal_time[ctx.caller_id] = int(now + timelock * MONTHS_IN_SECONDS)
 
         self.oasis_htr_balance = Amount(self.oasis_htr_balance - bonus - htr_amount)
-        partial = self.user_balances.get(ctx.address, {})
+        partial = self.user_balances.get(ctx.caller_id, {})
         partial[TokenUid(HTR_UID)] = Amount(partial.get(TokenUid(HTR_UID), 0) + bonus)
        
-        self.user_balances[ctx.address] = partial
-        self.user_deposit_b[ctx.address] = Amount(
-            self.user_deposit_b.get(ctx.address, 0) + deposit_amount
+        self.user_balances[ctx.caller_id] = partial
+        self.user_deposit_b[ctx.caller_id] = Amount(
+            self.user_deposit_b.get(ctx.caller_id, 0) + deposit_amount
         )
 
         actions:list[NCAction] = [
@@ -279,13 +280,13 @@ class Oasis(Blueprint):
             self.syscall.call_public_method(
                 self.dozer_pool_manager, "withdraw_cashback", adjust_actions, self.pool_fee
             )
-            partial = self.user_balances.get(ctx.address, {})
+            partial = self.user_balances.get(ctx.caller_id, {})
             partial.update(
                 {
                     result[0]: partial.get(result[0], 0) + result[1],
                 }
             )
-            self.user_balances[ctx.address] = partial
+            self.user_balances[ctx.caller_id] = partial
 
     @public(allow_withdrawal=True)
     def close_position(self, ctx: Context) -> None:
@@ -298,20 +299,20 @@ class Oasis(Blueprint):
             NCFail: If position is still locked or already closed
         """
         # Verify position can be closed
-        if ctx.timestamp < self.user_withdrawal_time.get(ctx.address, 0):
+        if ctx.timestamp < self.user_withdrawal_time.get(ctx.caller_id, 0):
             raise NCFail("Position is still locked")
 
-        if self.user_position_closed.get(ctx.address, False):
+        if self.user_position_closed.get(ctx.caller_id, False):
             raise NCFail("Position already closed")
 
-        if self.user_liquidity.get(ctx.address, 0) == 0:
+        if self.user_liquidity.get(ctx.caller_id, 0) == 0:
             raise NCFail("No position to close")
 
         # Get quote information
         oasis_quote = self._quote_remove_liquidity_oasis()
         htr_oasis_amount = oasis_quote["max_withdraw_a"]
         token_b_oasis_amount = oasis_quote["user_lp_b"]
-        user_liquidity = self.user_liquidity.get(ctx.address, 0)
+        user_liquidity = self.user_liquidity.get(ctx.caller_id, 0)
         user_lp_b = user_liquidity * token_b_oasis_amount // self.total_liquidity
         user_lp_htr = user_liquidity * htr_oasis_amount // self.total_liquidity
 
@@ -324,14 +325,14 @@ class Oasis(Blueprint):
         # Handle impermanent loss calculation
         loss_htr = 0
         # Calculate max withdraw amount including existing balances
-        user_token_b_balance = self.user_balances.get(ctx.address, {}).get(
+        user_token_b_balance = self.user_balances.get(ctx.caller_id, {}).get(
             self.token_b, 0
         )
         max_withdraw_b = user_lp_b + user_token_b_balance
 
         # Check for impermanent loss
-        if self.user_deposit_b.get(ctx.address, 0) > max_withdraw_b:
-            loss = self.user_deposit_b[ctx.address] - max_withdraw_b
+        if self.user_deposit_b.get(ctx.caller_id, 0) > max_withdraw_b:
+            loss = self.user_deposit_b[ctx.caller_id] - max_withdraw_b
             # Get pool reserves to calculate quote
             reserves = self.syscall.call_view_method(self.dozer_pool_manager, "get_reserves", HTR_UID, self.token_b, self.pool_fee)
             loss_htr = self.syscall.call_view_method(self.dozer_pool_manager, "quote", loss, reserves[1], reserves[0])
@@ -342,29 +343,29 @@ class Oasis(Blueprint):
         self.syscall.call_public_method(self.dozer_pool_manager, "remove_liquidity", actions, self.pool_fee)
 
         # Get existing cashback balances
-        user_current_balance = self.user_balances.get(ctx.address, {})
+        user_current_balance = self.user_balances.get(ctx.caller_id, {})
         user_htr_current_balance = Amount(user_current_balance.get(TokenUid(HTR_UID), 0))
 
         # First, return the user_lp_htr back to oasis_htr_balance
         self.oasis_htr_balance = Amount(self.oasis_htr_balance + user_lp_htr - loss_htr)
 
         # Then update closed balances without adding user_lp_htr again
-        closed_balances = self.closed_position_balances.get(ctx.address, {})
+        closed_balances = self.closed_position_balances.get(ctx.caller_id, {})
         closed_balances[self.token_b] = Amount(closed_balances.get(self.token_b, 0) + user_token_b_balance + user_lp_b)
         closed_balances[TokenUid(HTR_UID)] = Amount(closed_balances.get(TokenUid(HTR_UID), 0) + user_htr_current_balance + loss_htr)
-        self.closed_position_balances[ctx.address] = closed_balances
+        self.closed_position_balances[ctx.caller_id] = closed_balances
 
         # Clear user cashback balances after moving them
         if user_token_b_balance > 0 or user_htr_current_balance > 0:
-            self.user_balances[ctx.address] = {TokenUid(HTR_UID): Amount(0), self.token_b: Amount(0)}
+            self.user_balances[ctx.caller_id] = {TokenUid(HTR_UID): Amount(0), self.token_b: Amount(0)}
 
         # Mark position as closed
-        self.user_position_closed[ctx.address] = True
+        self.user_position_closed[ctx.caller_id] = True
 
         # Keep the deposit amounts for reference, but reset liquidity
-        self.total_liquidity = Amount(self.total_liquidity - self.user_liquidity[ctx.address])
-        self.user_liquidity.__delitem__(ctx.address)
-        self.user_withdrawal_time.__delitem__(ctx.address)
+        self.total_liquidity = Amount(self.total_liquidity - self.user_liquidity[ctx.caller_id])
+        self.user_liquidity.__delitem__(ctx.caller_id)
+        self.user_withdrawal_time.__delitem__(ctx.caller_id)
 
     @public(allow_withdrawal=True)
     def user_withdraw(self, ctx: Context) -> None:
@@ -384,18 +385,18 @@ class Oasis(Blueprint):
             action_htr = self._get_token_action(ctx, NCActionType.WITHDRAWAL, TokenUid(HTR_UID))
 
         # Check if the position is unlocked
-        if ctx.timestamp < self.user_withdrawal_time.get(ctx.address, 0):
+        if ctx.timestamp < self.user_withdrawal_time.get(ctx.caller_id, 0):
             raise NCFail("Withdrawal locked")
 
         # For positions that haven't been closed yet, automatically close them first
         if (
-            not self.user_position_closed.get(ctx.address, False)
-            and self.user_liquidity.get(ctx.address, 0) > 0
+            not self.user_position_closed.get(ctx.caller_id, False)
+            and self.user_liquidity.get(ctx.caller_id, 0) > 0
         ):
             raise NCFail("Position must be closed before withdrawal")
 
         # Check token_b withdrawal amount from closed_position_balances
-        available_token_b = self.closed_position_balances.get(ctx.address, {}).get(
+        available_token_b = self.closed_position_balances.get(ctx.caller_id, {}).get(
             self.token_b, 0
         )
         if action_token_b.amount > available_token_b:
@@ -404,12 +405,12 @@ class Oasis(Blueprint):
             )
 
         # Update token_b balance in closed_position_balances
-        closed_balances = self.closed_position_balances.get(ctx.address, {})
+        closed_balances = self.closed_position_balances.get(ctx.caller_id, {})
         closed_balances[self.token_b] = Amount(available_token_b - action_token_b.amount)
 
         # Check HTR withdrawal if requested
         if action_htr:
-            available_htr = self.closed_position_balances.get(ctx.address, {}).get(
+            available_htr = self.closed_position_balances.get(ctx.caller_id, {}).get(
                 TokenUid(HTR_UID), Amount(0)
             )
             if action_htr.amount > available_htr:
@@ -420,31 +421,31 @@ class Oasis(Blueprint):
             closed_balances[TokenUid(HTR_UID)] = Amount(available_htr - action_htr.amount)
 
         # Update closed position balances
-        self.closed_position_balances[ctx.address] = closed_balances
+        self.closed_position_balances[ctx.caller_id] = closed_balances
 
         # If all funds withdrawn, clean up user data
         if (
             closed_balances.get(self.token_b, 0) == 0
             and closed_balances.get(TokenUid(HTR_UID), 0) == 0
         ):
-            self.user_deposit_b.__delitem__(ctx.address)
-            self.user_withdrawal_time.__delitem__(ctx.address)
-            self.htr_price_in_deposit.__delitem__(ctx.address)
-            self.token_price_in_htr_in_deposit.__delitem__(ctx.address)
-            self.user_position_closed.__delitem__(ctx.address)
+            self.user_deposit_b.__delitem__(ctx.caller_id)
+            self.user_withdrawal_time.__delitem__(ctx.caller_id)
+            self.htr_price_in_deposit.__delitem__(ctx.caller_id)
+            self.token_price_in_htr_in_deposit.__delitem__(ctx.caller_id)
+            self.user_position_closed.__delitem__(ctx.caller_id)
 
     @public(allow_withdrawal=True)
     def user_withdraw_bonus(self, ctx: Context) -> None:
         action = self._get_action(ctx, NCActionType.WITHDRAWAL, auth=False)
         if action.token_uid != HTR_UID:
             raise NCFail("Withdrawal token not HATHOR")
-        if action.amount > self.user_balances.get(ctx.address, {HTR_UID: 0}).get(
+        if action.amount > self.user_balances.get(ctx.caller_id, {HTR_UID: 0}).get(
             HTR_UID, 0
         ):
             raise NCFail("Withdrawal amount too high")
-        partial = self.user_balances.get(ctx.address, {})
+        partial = self.user_balances.get(ctx.caller_id, {})
         partial[TokenUid(HTR_UID)] = Amount(partial.get(TokenUid(HTR_UID), 0) - action.amount)
-        self.user_balances[ctx.address] = partial
+        self.user_balances[ctx.caller_id] = partial
 
     @public
     def update_protocol_fee(self, ctx: Context, new_fee: Amount) -> None:
@@ -457,7 +458,7 @@ class Oasis(Blueprint):
         Raises:
             NCFail: If caller is not dev or fee exceeds maximum
         """
-        if ctx.address != self.dev_address:
+        if ctx.caller_id != self.dev_address:
             raise NCFail("Only dev can update protocol fee")
         if new_fee > 1000 or new_fee < 0:
             raise NCFail("Protocol fee cannot exceed 100%")
@@ -517,7 +518,7 @@ class Oasis(Blueprint):
         Raises:
             NCFail: If caller is not owner or withdraw amount exceeds available balance
         """
-        if ctx.address != self.owner_address:
+        if ctx.caller_id != self.owner_address:
             raise NCFail("Only owner can withdraw")
         action = self._get_token_action(
             ctx, NCActionType.WITHDRAWAL, HTR_UID, auth=False
@@ -536,7 +537,7 @@ class Oasis(Blueprint):
         Raises:
             NCFail: If caller is not dev or withdraw amount exceeds available balance
         """
-        if ctx.address != self.dev_address:
+        if ctx.caller_id != self.dev_address:
             raise NCFail("Only dev can withdraw fees")
 
         token_b_action = self._get_token_action(
@@ -552,7 +553,7 @@ class Oasis(Blueprint):
         self.user_balances[self.dev_address] = partial
 
     @public
-    def update_owner_address(self, ctx: Context, new_owner: bytes) -> None:
+    def update_owner_address(self, ctx: Context, new_owner: CallerId) -> None:
         """Updates the owner address. Can be called by dev or current owner.
 
         Args:
@@ -562,7 +563,7 @@ class Oasis(Blueprint):
         Raises:
             NCFail: If caller is not dev or current owner
         """
-        if ctx.address not in [self.dev_address, self.owner_address]:
+        if ctx.caller_id not in [self.dev_address, self.owner_address]:
             raise NCFail("Only dev or owner can update owner address")
         self.owner_address = new_owner
 
@@ -578,7 +579,7 @@ class Oasis(Blueprint):
         if output.type != action_type:
             raise NCFail
         if auth:
-            if ctx.address != self.dev_address:
+            if ctx.caller_id != self.dev_address:
                 raise NCFail
         if isinstance(output, NCDepositAction):
             return NCDepositAction(amount=output.amount, token_uid=output.token_uid)
@@ -604,7 +605,7 @@ class Oasis(Blueprint):
         if output.type != action_type:
             raise NCFail
         if auth:
-            if ctx.address != self.dev_address:
+            if ctx.caller_id != self.dev_address:
                 raise NCFail
         if isinstance(output, NCDepositAction):
             return NCDepositAction(amount=output.amount, token_uid=output.token_uid)

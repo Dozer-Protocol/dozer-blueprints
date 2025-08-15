@@ -80,7 +80,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
 
         self.nc_storage = self.runner.get_storage(self.nc_id)
-        self.owner_address = context.address
+        self.owner_address = context.caller_id
 
     def _check_balance(self):
         """Check the balance of the contract"""
@@ -131,7 +131,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         pool_key = self.runner.call_public_method(
             self.nc_id, "create_pool", context, fee
         )
-        return pool_key, context.address
+        return pool_key, context.caller_id
 
     def _add_liquidity(self, token_a, token_b, fee, amount_a, amount_b=None):
         """Add liquidity to an existing pool"""
@@ -401,7 +401,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         self.assertEqual(
             self.runner.call_view_method(
-                self.nc_id, "liquidity_of", context.address, pool_key
+                self.nc_id, "liquidity_of", context.caller_id, pool_key
             ),
             liquidity_increase,
         )
@@ -429,7 +429,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         current_reserve_b = contract.pool_reserve_b[pool_key]
         current_total_liquidity = contract.pool_total_liquidity[pool_key]
         current_user_liquidity = self.runner.call_view_method(
-            self.nc_id, "liquidity_of", add_context.address, pool_key
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
         )
 
 
@@ -462,7 +462,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             3,
             amount_to_remove_a,
             amount_to_remove_b,
-            address=add_context.address,
+            address=add_context.caller_id,
         )
 
         # Get updated contract state
@@ -488,7 +488,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Verify user liquidity decreased
         self.assertEqual(
             self.runner.call_view_method(
-                self.nc_id, "liquidity_of", remove_context.address, pool_key
+                self.nc_id, "liquidity_of", remove_context.caller_id, pool_key
             ),
             current_user_liquidity - liquidity_decrease,
         )
@@ -676,7 +676,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Verify user balance was updated with slippage
         user_balance = self.runner.call_view_method(
-            self.nc_id, "balance_of", context.address, pool_key
+            self.nc_id, "balance_of", context.caller_id, pool_key
         )
         self.assertEqual(
             user_balance[0],
@@ -2152,7 +2152,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
             elif action == "remove_liquidity" and len(all_users) > 0:
                 # Choose a random user who has added liquidity
-                user_address = random.choice(list(all_users))
+                user_address = Address(random.choice(list(all_users)))
 
                 # Get user's liquidity
                 user_liquidity = self.runner.call_view_method(
@@ -2338,8 +2338,9 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
             # Verify user_info is consistent with liquidity
             if user_liquidity > 0:
+                user_address=Address(user)
                 user_info = self.runner.call_view_method(
-                    self.nc_id, "user_info", user, pool_key
+                    self.nc_id, "user_info", user_address, pool_key
                 )
                 expected_token_a = (
                     final_reserve_a * user_liquidity // final_total_liquidity
@@ -2509,7 +2510,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         user_balance = self.runner.call_view_method(
             self.nc_id,
             "balance_of",
-            context_with_slippage.address,
+            context_with_slippage.caller_id,
             new_pool_key_ec,
         )
         self.assertEqual(user_balance, (slippage_amount, 0))
@@ -2660,7 +2661,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Check that the slippage amount was added to the user's balance
         user_balance = self.runner.call_view_method(
-            self.nc_id, "balance_of", context.address, pool_key_ab
+            self.nc_id, "balance_of", context.caller_id, pool_key_ab
         )
         self.assertEqual(user_balance, (extra_amount, 0))
 
