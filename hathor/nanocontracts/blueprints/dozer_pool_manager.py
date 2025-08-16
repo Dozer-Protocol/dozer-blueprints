@@ -2487,7 +2487,7 @@ class DozerPoolManager(Blueprint):
         # Parse the path to get pool keys
         pool_keys = swap_info.path.split(",")
         
-        # Calculate cumulative price using reserve ratios with float precision
+        # Calculate cumulative price using reserve ratios with integer precision
         # We want TOKEN_A price in USD, so we calculate in reverse direction
         # Start with 1.0 
         final_price = 1.0
@@ -2497,12 +2497,12 @@ class DozerPoolManager(Blueprint):
         for pool_key in reversed(pool_keys):
             # Determine which token is the input and output for this hop
             if self.pool_token_a[pool_key] == current_token:
-                reserve_in = float(self.pool_reserve_a[pool_key])
-                reserve_out = float(self.pool_reserve_b[pool_key])
+                reserve_in = self.pool_reserve_a[pool_key]
+                reserve_out = self.pool_reserve_b[pool_key]
                 next_token = self.pool_token_b[pool_key]
             elif self.pool_token_b[pool_key] == current_token:
-                reserve_in = float(self.pool_reserve_b[pool_key])
-                reserve_out = float(self.pool_reserve_a[pool_key])
+                reserve_in = self.pool_reserve_b[pool_key]
+                reserve_out = self.pool_reserve_a[pool_key]
                 next_token = self.pool_token_a[pool_key]
             else:
                 # Invalid path - token not found in pool

@@ -364,8 +364,8 @@ class Oasis(Blueprint):
 
         # Keep the deposit amounts for reference, but reset liquidity
         self.total_liquidity = Amount(self.total_liquidity - self.user_liquidity[ctx.caller_id])
-        self.user_liquidity.__delitem__(ctx.caller_id)
-        self.user_withdrawal_time.__delitem__(ctx.caller_id)
+        del self.user_liquidity[ctx.caller_id]
+        del self.user_withdrawal_time[ctx.caller_id] 
 
     @public(allow_withdrawal=True)
     def user_withdraw(self, ctx: Context) -> None:
@@ -428,11 +428,11 @@ class Oasis(Blueprint):
             closed_balances.get(self.token_b, 0) == 0
             and closed_balances.get(TokenUid(HTR_UID), 0) == 0
         ):
-            self.user_deposit_b.__delitem__(ctx.caller_id)
-            self.user_withdrawal_time.__delitem__(ctx.caller_id)
-            self.htr_price_in_deposit.__delitem__(ctx.caller_id)
-            self.token_price_in_htr_in_deposit.__delitem__(ctx.caller_id)
-            self.user_position_closed.__delitem__(ctx.caller_id)
+            del self.user_deposit_b[ctx.caller_id]
+            del self.user_withdrawal_time[ctx.caller_id]
+            del self.htr_price_in_deposit[ctx.caller_id]
+            del self.token_price_in_htr_in_deposit[ctx.caller_id]
+            del self.user_position_closed[ctx.caller_id]
 
     @public(allow_withdrawal=True)
     def user_withdraw_bonus(self, ctx: Context) -> None:
