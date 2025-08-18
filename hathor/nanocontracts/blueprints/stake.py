@@ -102,7 +102,7 @@ class Stake(Blueprint):
 
     def _validate_owner_auth(self, ctx: Context) -> None:
         """Validate owner authorization"""
-        if ctx.address != self.owner_address:
+        if ctx.caller_id != self.owner_address:
             raise Unauthorized("Unauthorized")
 
     def _safe_pay(self, amount: int, address: Address) -> None:
@@ -145,7 +145,7 @@ class Stake(Blueprint):
         self.token_uid = token_uid
         action = self._get_single_deposit_action(ctx)
         self.earnings_per_second = (earnings_per_day * PRECISION) // DAY_IN_SECONDS
-        self.owner_address = ctx.address
+        self.owner_address = ctx.caller_id
         amount = Amount(action.amount)
         self._amount_check(amount, earnings_per_day)
         self.owner_balance = Amount(amount)
@@ -158,14 +158,14 @@ class Stake(Blueprint):
     @public
     def pause(self, ctx: Context) -> None:
         """Emergency pause functionality"""
-        if ctx.address != self.owner_address:
+        if ctx.caller_id != self.owner_address:
             raise Unauthorized("Only owner can pause")
         self.paused = True
 
     @public
     def unpause(self, ctx: Context) -> None:
         """Unpause functionality"""
-        if ctx.address != self.owner_address:
+        if ctx.caller_id != self.owner_address:
             raise Unauthorized("Only owner can unpause")
         self.paused = False
 
@@ -175,7 +175,7 @@ class Stake(Blueprint):
         if not self.paused:
             raise InvalidState("Contract must be paused")
         action = self._get_single_withdrawal_action(ctx)
-        address = Address(ctx.address)
+        address = Address(ctx.caller_id)
         if address not in self.user_deposits:
             raise Unauthorized("user not staked")
         amount = action.amount
@@ -205,10 +205,10 @@ class Stake(Blueprint):
     def stake(self, ctx: Context) -> None:
         if self.paused:
             raise InvalidState("Contract is paused")
-        if ctx.address == self.owner_address:
+        if ctx.caller_id == self.owner_address:
             raise Unauthorized("admin, please use other address to stake")
         action = self._get_single_deposit_action(ctx)
-        address = Address(ctx.address)
+        address = Address(ctx.caller_id)
         amount = Amount(action.amount)
         self._validate_stake_amount(amount)
         self._validate_address(address)
@@ -236,7 +236,7 @@ class Stake(Blueprint):
         if self.paused:
             raise InvalidState("Contract is paused")
         action = self._get_single_withdrawal_action(ctx)
-        address = Address(ctx.address)
+        address = Address(ctx.caller_id)
         if address not in self.user_deposits:
             raise Unauthorized("user not staked")
 

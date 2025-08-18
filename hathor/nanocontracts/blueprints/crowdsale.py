@@ -175,8 +175,8 @@ class Crowdsale(Blueprint):
         self.htr_balance = Amount(0)
 
         # Set control addresses
-        self.owner = ctx.address
-        self.platform = Address(ctx.address)  # TODO: Configure platform address
+        self.owner = ctx.caller_id
+        self.platform = Address(ctx.caller_id)  # TODO: Configure platform address
 
         # Initialize tracking
         # Note: deposits and claimed dictionaries are automatically initialized as empty
@@ -203,7 +203,7 @@ class Crowdsale(Blueprint):
             raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
         # Update participant tracking
-        participant_address = Address(ctx.address)
+        participant_address = Address(ctx.caller_id)
         if participant_address not in self.deposits:
             self.participants_count += 1
 
@@ -225,7 +225,7 @@ class Crowdsale(Blueprint):
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
-        participant_address = Address(ctx.address)
+        participant_address = Address(ctx.caller_id)
         if self.claimed.get(participant_address, False):
             raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
 
@@ -256,7 +256,7 @@ class Crowdsale(Blueprint):
         if self.state != SaleState.FAILED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
-        participant_address = Address(ctx.address)
+        participant_address = Address(ctx.caller_id)
         if self.claimed.get(participant_address, False):
             raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
 
@@ -282,7 +282,7 @@ class Crowdsale(Blueprint):
     @public(allow_withdrawal=True)
     def withdraw_raised_htr(self, ctx: Context) -> None:
         """Withdraw raised HTR after successful sale."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -308,7 +308,7 @@ class Crowdsale(Blueprint):
     @public(allow_withdrawal=True)
     def withdraw_remaining_tokens(self, ctx: Context) -> None:
         """Withdraw remaining tokens after successful sale (owner only)."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -326,7 +326,7 @@ class Crowdsale(Blueprint):
     @public(allow_withdrawal=True)
     def withdraw_platform_fees(self, ctx: Context) -> None:
         """Withdraw platform fees after successful sale."""
-        if Address(ctx.address) != self.platform:
+        if Address(ctx.caller_id) != self.platform:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -349,7 +349,7 @@ class Crowdsale(Blueprint):
     @public
     def early_activate(self, ctx: Context) -> None:
         """Activate the sale (owner only)."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.PENDING:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -378,7 +378,7 @@ class Crowdsale(Blueprint):
     @public
     def pause(self, ctx: Context) -> None:
         """Pause the sale (only owner)."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.ACTIVE:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -387,7 +387,7 @@ class Crowdsale(Blueprint):
     @public
     def unpause(self, ctx: Context) -> None:
         """Unpause the sale (only owner)."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.PAUSED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -396,7 +396,7 @@ class Crowdsale(Blueprint):
     @public
     def finalize(self, ctx: Context) -> None:
         """Force end sale early (only owner)."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state not in {SaleState.ACTIVE, SaleState.PAUSED}:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)

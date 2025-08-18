@@ -152,7 +152,7 @@ class DAO(Blueprint):
     @public
     def create_proposal(self, ctx: Context, title: str, description: str) -> int:
         """Create new proposal if caller meets staking threshold."""
-        staked = self._get_voting_power(ctx, ctx.address)
+        staked = self._get_voting_power(ctx, ctx.caller_id)
         if staked < self.proposal_threshold:
             raise NCFail("Insufficient staked tokens")
 
@@ -161,7 +161,7 @@ class DAO(Blueprint):
 
         self.proposal_titles[proposal_id] = title
         self.proposal_descriptions[proposal_id] = description
-        self.proposal_creators[proposal_id] = ctx.address
+        self.proposal_creators[proposal_id] = ctx.caller_id
         self.proposal_start_times[proposal_id] = ctx.timestamp
         self.proposal_end_times[proposal_id] = (
             ctx.timestamp + self.voting_period_seconds
@@ -183,11 +183,11 @@ class DAO(Blueprint):
         if ctx.timestamp >= self.proposal_end_times[proposal_id]:
             raise NCFail("Voting period ended")
 
-        vote_key = (proposal_id, ctx.address)
+        vote_key = (proposal_id, ctx.caller_id)
         if vote_key in self.vote_support:
             raise NCFail("Already voted")
 
-        power = self._get_voting_power(ctx, ctx.address)
+        power = self._get_voting_power(ctx, ctx.caller_id)
         if power == 0:
             raise NCFail("No voting power")
 

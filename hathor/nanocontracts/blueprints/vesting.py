@@ -122,7 +122,7 @@ class Vesting(Blueprint):
             raise InvalidIndex("Index out of range")
 
     def _only_admin(self, ctx: Context) -> None:
-        if ctx.address != self.admin:
+        if ctx.caller_id != self.admin:
             raise NCFail("Only admin can call this method")
 
     def _get_single_deposit_action(
@@ -173,7 +173,7 @@ class Vesting(Blueprint):
         self.token_uid = token_uid
         action = self._get_single_deposit_action(ctx, token_uid)
 
-        self.admin = ctx.address
+        self.admin = ctx.caller_id
         self.available_balance = Amount(action.amount)
         self.total_allocated = Amount(0)
         self.is_started = False
@@ -236,7 +236,7 @@ class Vesting(Blueprint):
             raise NCFail("Vesting not started")
 
         beneficiary = self.allocation_addresses[index]
-        if ctx.address != self.admin and ctx.address != beneficiary:
+        if ctx.caller_id != self.admin and ctx.caller_id != beneficiary:
             raise InvalidBeneficiary("Only admin or beneficiary can claim")
 
         action = self._get_single_withdrawal_action(ctx, self.token_uid)
@@ -263,7 +263,7 @@ class Vesting(Blueprint):
             raise AllocationNotConfigured
 
         current_beneficiary = self.allocation_addresses[index]
-        if ctx.address != current_beneficiary:
+        if ctx.caller_id != current_beneficiary:
             raise InvalidBeneficiary("Only current beneficiary can change")
 
         self.allocation_addresses[index] = new_beneficiary

@@ -1,8 +1,6 @@
 import os
-from typing import Any
 from hathor.conf.get_settings import HathorSettings
 from hathor.crypto.util import decode_address
-from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
     NCDepositAction,
@@ -17,17 +15,10 @@ from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
 from hathor.nanocontracts.blueprints.vesting import (
     Vesting,
-    AllocationNotConfigured,
     InsufficientAvailableBalance,
-    InvalidIndex,
-    InvalidTokenDeposit,
-    NoAllocation,
-    InvalidTimelock,
     InsufficientVestedAmount,
     InvalidBeneficiary,
-    MAX_ALLOCATIONS,
     MONTH_IN_SECONDS,
-    PRECISION,
 )
 
 settings = HathorSettings()
@@ -43,7 +34,7 @@ class VestingTestCase(BlueprintTestCase):
         # Set up contract
         self.contract_id = self.gen_random_contract_id()
         self.blueprint_id = self.gen_random_blueprint_id()
-        self.register_blueprint_class(self.blueprint_id, Vesting)
+        self._register_blueprint_class(Vesting,self.blueprint_id) 
 
         # Generate test tokens and addresses
         self.token_uid = self.gen_random_token_uid()

@@ -205,7 +205,7 @@ class DozerTools(Blueprint):
 
     def _only_owner(self, ctx: Context) -> None:
         """Ensure only the contract owner can call this method."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise Unauthorized("Only contract owner can call this method")
 
     def _only_project_dev(self, ctx: Context, token_uid: TokenUid) -> None:
@@ -214,7 +214,7 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Project does not exist")
 
         project_dev = self.project_dev.get(token_uid, Address(b"\x00" * 25))
-        if Address(ctx.address) != project_dev:
+        if Address(ctx.caller_id) != project_dev:
             raise Unauthorized("Only project dev can call this method")
 
     def _validate_token_not_blacklisted(self, token_uid: TokenUid) -> None:
@@ -228,7 +228,7 @@ class DozerTools(Blueprint):
         """Validate permission for legacy tokens."""
         if token_uid in self.legacy_token_permissions:
             authorized_address = self.legacy_token_permissions[token_uid]
-            if Address(ctx.address) != authorized_address:
+            if Address(ctx.caller_id) != authorized_address:
                 raise Unauthorized(
                     "Not authorized to create project for this legacy token"
                 )
@@ -279,7 +279,7 @@ class DozerTools(Blueprint):
             minimum_deposit: Minimum deposit required to enable contract usage
         """
 
-        self.owner = Address(ctx.address)
+        self.owner = Address(ctx.caller_id)
         self.dozer_pool_manager_id = dozer_pool_manager_id
         self.dzr_token_uid = dzr_token_uid
         self.minimum_deposit = minimum_deposit
@@ -369,7 +369,7 @@ class DozerTools(Blueprint):
         self.total_projects_count += 1
         self.project_name[token_uid] = token_name
         self.project_symbol[token_uid] = token_symbol
-        self.project_dev[token_uid] = Address(ctx.address)
+        self.project_dev[token_uid] = Address(ctx.caller_id)
         self.project_created_at[token_uid] = Timestamp(ctx.timestamp)
         self.project_total_supply[token_uid] = total_supply
 
@@ -1235,28 +1235,24 @@ class DozerTools(Blueprint):
         vesting_contract = self.project_vesting_contract[token_uid]
         current_timestamp = 0  # In real usage, this would be ctx.timestamp
 
-        # Call vesting contract to get allocation info
-        try:
-            vesting_info = self.syscall.call_view_method(
-                vesting_contract,
-                "get_vesting_info",
-                allocation_index,
-                current_timestamp,
-            )
+        vesting_info = self.syscall.call_view_method(
+            vesting_contract,
+            "get_vesting_info",
+            allocation_index,
+            current_timestamp,
+        )
 
-            # Convert to string dict for consistency
-            return {
-                "name": str(vesting_info.get("name", "")),
-                "beneficiary": str(vesting_info.get("beneficiary", "")),
-                "amount": str(vesting_info.get("amount", 0)),
-                "cliff_months": str(vesting_info.get("cliff_months", 0)),
-                "vesting_months": str(vesting_info.get("vesting_months", 0)),
-                "withdrawn": str(vesting_info.get("withdrawn", 0)),
-                "vested": str(vesting_info.get("vested", 0)),
-                "claimable": str(vesting_info.get("claimable", 0)),
-            }
-        except Exception:
-            raise InvalidAllocation("Allocation not configured")
+        # Convert to string dict for consistency
+        return {
+            "name": str(vesting_info.get("name", "")),
+            "beneficiary": str(vesting_info.get("beneficiary", "")),
+            "amount": str(vesting_info.get("amount", 0)),
+            "cliff_months": str(vesting_info.get("cliff_months", 0)),
+            "vesting_months": str(vesting_info.get("vesting_months", 0)),
+            "withdrawn": str(vesting_info.get("withdrawn", 0)),
+            "vested": str(vesting_info.get("vested", 0)),
+            "claimable": str(vesting_info.get("claimable", 0)),
+        }
 
     @public
     def configure_project_vesting(
@@ -1371,7 +1367,7 @@ class DozerTools(Blueprint):
                 STAKING_ALLOCATION_INDEX,
                 staking_amount,
                 Address(
-                    ctx.address
+                    ctx.caller_id
                 ),  # DozerTools is beneficiary for special allocations
                 0,  # cliff_months = 0 (unlocked)
                 0,  # vesting_months = 0 (immediately available)
@@ -1387,7 +1383,7 @@ class DozerTools(Blueprint):
                 PUBLIC_SALE_ALLOCATION_INDEX,
                 public_sale_amount,
                 Address(
-                    ctx.address
+                    ctx.caller_id
                 ),  # DozerTools is beneficiary for special allocations
                 0,  # cliff_months = 0 (unlocked)
                 0,  # vesting_months = 0 (immediately available)
@@ -1403,7 +1399,7 @@ class DozerTools(Blueprint):
                 DOZER_POOL_ALLOCATION_INDEX,
                 dozer_pool_amount,
                 Address(
-                    ctx.address
+                    ctx.caller_id
                 ),  # DozerTools is beneficiary for special allocations
                 0,  # cliff_months = 0 (unlocked)
                 0,  # vesting_months = 0 (immediately available)

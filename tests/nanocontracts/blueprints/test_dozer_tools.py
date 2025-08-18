@@ -14,27 +14,20 @@
 
 import os
 import unittest
-from typing import Any, Optional
+from typing import Optional
 
 from hathor.conf import settings
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprints.dozer_tools import (
     DozerTools,
     ProjectNotFound,
-    ProjectAlreadyExists,
     Unauthorized,
     InsufficientCredits,
-    TokenBlacklisted,
-    ContractAlreadyExists,
-    VestingNotConfigured,
     InvalidAllocation,
     VESTING_BLUEPRINT_ID,
     STAKING_BLUEPRINT_ID,
     DAO_BLUEPRINT_ID,
     CROWDSALE_BLUEPRINT_ID,
-    STAKING_ALLOCATION_INDEX,
-    PUBLIC_SALE_ALLOCATION_INDEX,
-    DOZER_POOL_ALLOCATION_INDEX,
 )
 from hathor.nanocontracts.blueprints.dozer_pool_manager import DozerPoolManager
 from hathor.nanocontracts.blueprints.vesting import Vesting
@@ -48,7 +41,6 @@ from hathor.nanocontracts.types import (
     BlueprintId,
     ContractId,
     NCDepositAction,
-    NCWithdrawalAction,
     TokenUid,
     VertexId,
 )
@@ -73,14 +65,13 @@ class DozerToolsTest(BlueprintTestCase):
         self.dozer_tools_nc_id = self.gen_random_contract_id()
 
         # Register all blueprint classes
-        self.register_blueprint_class(self.dozer_tools_blueprint_id, DozerTools)
-        self.register_blueprint_class(VESTING_BLUEPRINT_ID, Vesting)
-        self.register_blueprint_class(STAKING_BLUEPRINT_ID, Stake)
-        self.register_blueprint_class(DAO_BLUEPRINT_ID, DAO)
-        self.register_blueprint_class(CROWDSALE_BLUEPRINT_ID, Crowdsale)
-        self.register_blueprint_class(
-            BlueprintId(VertexId(bytes.fromhex((DOZER_POOL_MANAGER_BLUEPRINT_ID)))),
-            DozerPoolManager,
+        self._register_blueprint_class( DozerTools,self.dozer_tools_blueprint_id)
+        self._register_blueprint_class(Vesting,VESTING_BLUEPRINT_ID)
+        self._register_blueprint_class(Stake,STAKING_BLUEPRINT_ID)
+        self._register_blueprint_class(DAO,DAO_BLUEPRINT_ID)
+        self._register_blueprint_class(Crowdsale,CROWDSALE_BLUEPRINT_ID)
+        self._register_blueprint_class(
+            DozerPoolManager,BlueprintId(VertexId(bytes.fromhex((DOZER_POOL_MANAGER_BLUEPRINT_ID))))
         )
 
         # Create DozerPoolManager for testing
@@ -827,7 +818,7 @@ class DozerToolsTest(BlueprintTestCase):
         user_info = self.runner.call_view_method(
             staking_contract_id, "get_user_info", Address(user_address)
         )
-        self.assertEqual(user_info["deposits"], stake_amount)
+        self.assertEqual(user_info.deposits, stake_amount)
 
         # Advance time by 1 day and calculate expected rewards
         one_day_later = initial_time + (24 * 60 * 60)  # 1 day in seconds
@@ -894,10 +885,10 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # At cliff end, no tokens should be vested yet (cliff period just ended)
-        self.assertEqual(vesting_info["vested"], 0)
-        self.assertEqual(vesting_info["claimable"], 0)
-        self.assertEqual(vesting_info["beneficiary"], self.dev_address)
-        self.assertEqual(vesting_info["name"], "Team")
+        self.assertEqual(vesting_info.vested, 0)
+        self.assertEqual(vesting_info.claimable, 0)
+        self.assertEqual(vesting_info.beneficiary, self.dev_address)
+        self.assertEqual(vesting_info.name, "Team")
 
         # Check vesting info 1 month after cliff (should have some vested tokens)
         one_month_after_cliff = after_cliff_time + month_in_seconds
@@ -910,12 +901,12 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Calculate expected vested amount (1 month out of 36 months vesting)
-        total_team_allocation = vesting_info_after["amount"]  # 70% of total supply
+        total_team_allocation = vesting_info_after.amount  # 70% of total supply
         expected_monthly_vesting = total_team_allocation // vesting_months
 
-        self.assertEqual(vesting_info_after["vested"], expected_monthly_vesting)
-        self.assertEqual(vesting_info_after["claimable"], expected_monthly_vesting)
-        self.assertEqual(vesting_info_after["withdrawn"], 0)
+        self.assertEqual(vesting_info_after.vested, expected_monthly_vesting)
+        self.assertEqual(vesting_info_after.claimable, expected_monthly_vesting)
+        self.assertEqual(vesting_info_after.withdrawn, 0)
 
         # Check vesting info 6 months after cliff
         six_months_after_cliff = after_cliff_time + (6 * month_in_seconds)
@@ -929,9 +920,9 @@ class DozerToolsTest(BlueprintTestCase):
 
         expected_six_months_vesting = (total_team_allocation * 6) // vesting_months
 
-        self.assertEqual(vesting_info_six_months["vested"], expected_six_months_vesting)
+        self.assertEqual(vesting_info_six_months.vested, expected_six_months_vesting)
         self.assertEqual(
-            vesting_info_six_months["claimable"], expected_six_months_vesting
+            vesting_info_six_months.claimable, expected_six_months_vesting
         )
 
     def test_invalid_allocation_percentages(self) -> None:

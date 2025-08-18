@@ -2,7 +2,7 @@ import os
 from hathor.conf.get_settings import HathorSettings
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.context import Context
-from hathor.nanocontracts.types import NCDepositAction, NCWithdrawalAction, Address, Amount, TokenUid
+from hathor.nanocontracts.types import NCDepositAction, NCWithdrawalAction, Address, Amount
 from hathor.wallet.keypair import KeyPair
 from hathor.util import not_none
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
@@ -11,10 +11,6 @@ from hathor.nanocontracts.blueprints.stake import (
     Stake,
     InvalidAmount,
     InvalidTime,
-    InvalidState,
-    InvalidInput,
-    InvalidActions,
-    InvalidTokens,
     InsufficientBalance,
     Unauthorized,
     MIN_STAKE_AMOUNT,
@@ -35,7 +31,7 @@ class StakeTestCase(BlueprintTestCase):
         # Set up contract
         self.contract_id = self.gen_random_contract_id()
         self.blueprint_id = self.gen_random_blueprint_id()
-        self.register_blueprint_class(self.blueprint_id, Stake)
+        self._register_blueprint_class(Stake, self.blueprint_id)
 
         # Generate test tokens and addresses
         self.token_uid = self.gen_random_token_uid()
@@ -68,7 +64,7 @@ class StakeTestCase(BlueprintTestCase):
         ctx = Context(
             [NCDepositAction(token_uid=self.token_uid, amount=Amount(amount))],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
 
@@ -88,7 +84,7 @@ class StakeTestCase(BlueprintTestCase):
         ctx = Context(
             [NCDepositAction(token_uid=self.token_uid, amount=Amount(amount))],
             vertex=self.tx,
-            address=Address(address),
+            caller_id=Address(address),
             timestamp=self.clock.seconds(),
         )
 
@@ -106,7 +102,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
 
@@ -123,7 +119,7 @@ class StakeTestCase(BlueprintTestCase):
         stake_amount = self.base_stake
         ctx = self._stake_tokens(stake_amount)
         user_info = self.runner.call_view_method(
-            self.contract_id, "get_user_info", ctx.address
+            self.contract_id, "get_user_info", ctx.caller_id
         )
 
         contract = self.get_readonly_contract(self.contract_id)
@@ -157,7 +153,7 @@ class StakeTestCase(BlueprintTestCase):
         unstake_ctx = Context(
             [NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
             vertex=self.tx,
-            address=ctx.address,
+            caller_id=ctx.caller_id,
             timestamp=initial_time + DAY_IN_SECONDS,  # Only 1 day passed
         )
         with self.assertRaises(InvalidTime):
@@ -174,7 +170,7 @@ class StakeTestCase(BlueprintTestCase):
         max_withdrawal = self.runner.call_view_method(
             self.contract_id,
             "get_max_withdrawal",
-            ctx.address,
+            ctx.caller_id,
             initial_time + time_passed,
         )
 
@@ -186,14 +182,14 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=ctx.address,
+            caller_id=ctx.caller_id,
             timestamp=initial_time + time_passed,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx)
 
         # Verify user deposits and staked amount are zero after withdrawal
         user_info = self.runner.call_view_method(
-            self.contract_id, "get_user_info", ctx.address
+            self.contract_id, "get_user_info", ctx.caller_id
         )
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Stake)
@@ -215,7 +211,7 @@ class StakeTestCase(BlueprintTestCase):
         )
 
         max_withdrawal = self.runner.call_view_method(
-            self.contract_id, "get_max_withdrawal", ctx.address, one_day_later
+            self.contract_id, "get_max_withdrawal", ctx.caller_id, one_day_later
         )
 
         self.assertEqual(stake_amount + reward_amount, max_withdrawal)
@@ -227,7 +223,7 @@ class StakeTestCase(BlueprintTestCase):
         )
 
         max_withdrawal = self.runner.call_view_method(
-            self.contract_id, "get_max_withdrawal", ctx.address, two_days_later
+            self.contract_id, "get_max_withdrawal", ctx.caller_id, two_days_later
         )
 
         self.assertEqual(max_withdrawal, stake_amount + two_days_reward)
@@ -241,7 +237,7 @@ class StakeTestCase(BlueprintTestCase):
         pause_ctx = Context(
             [],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "pause", pause_ctx)
@@ -253,7 +249,7 @@ class StakeTestCase(BlueprintTestCase):
         emergency_ctx = Context(
             [NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
             vertex=self.tx,
-            address=ctx.address,
+            caller_id=ctx.caller_id,
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(
@@ -268,7 +264,7 @@ class StakeTestCase(BlueprintTestCase):
         unpause_ctx = Context(
             [],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "unpause", unpause_ctx)
@@ -283,7 +279,7 @@ class StakeTestCase(BlueprintTestCase):
         deposit_ctx = Context(
             [NCDepositAction(token_uid=self.token_uid, amount=Amount(deposit_amount))],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "owner_deposit", deposit_ctx)
@@ -300,7 +296,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "owner_withdraw", withdraw_ctx)
@@ -317,7 +313,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=Address(self._get_any_address()[0]),
+            caller_id=Address(self._get_any_address()[0]),
             timestamp=self.clock.seconds(),
         )
         with self.assertRaises(Unauthorized):
@@ -334,7 +330,7 @@ class StakeTestCase(BlueprintTestCase):
         stakers = []
         for _ in range(num_stakers):
             ctx = self._stake_tokens(stake_amount)
-            stakers.append(ctx.address)
+            stakers.append(ctx.caller_id)
 
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Stake)
