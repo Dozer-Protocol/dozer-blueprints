@@ -1265,12 +1265,12 @@ class DozerTools(Blueprint):
         dozer_pool_percentage: int,
         # Staking configuration (required if staking_percentage > 0)
         earnings_per_day: int,
-        # Regular vesting schedules (separate lists)
-        allocation_names: list[str],
-        allocation_percentages: list[int],
-        allocation_beneficiaries: list[Address],
-        allocation_cliff_months: list[int],
-        allocation_vesting_months: list[int],
+        # Regular vesting schedules (comma-separated strings)
+        allocation_names: str,
+        allocation_percentages: str,
+        allocation_beneficiaries: str,
+        allocation_cliff_months: str,
+        allocation_vesting_months: str,
     ) -> None:
         """Configure project vesting with special allocations and regular schedules.
 
@@ -1281,11 +1281,11 @@ class DozerTools(Blueprint):
             public_sale_percentage: Percentage for public sale (0-100, 0 = not used)
             dozer_pool_percentage: Percentage for dozer pool (0-100, 0 = not used)
             earnings_per_day: Daily earnings for staking (required if staking_percentage > 0)
-            allocation_names: Names for regular allocations
-            allocation_percentages: Percentages for regular allocations
-            allocation_beneficiaries: Beneficiary addresses for regular allocations
-            allocation_cliff_months: Cliff periods in months for regular allocations
-            allocation_vesting_months: Vesting durations in months for regular allocations
+            allocation_names: Comma-separated names for regular allocations
+            allocation_percentages: Comma-separated percentages for regular allocations
+            allocation_beneficiaries: Comma-separated beneficiary addresses for regular allocations
+            allocation_cliff_months: Comma-separated cliff periods in months for regular allocations
+            allocation_vesting_months: Comma-separated vesting durations in months for regular allocations
         """
         self._only_project_dev(ctx, token_uid)
         self._charge_fee(ctx, token_uid, "configure_project_vesting")
@@ -1293,11 +1293,18 @@ class DozerTools(Blueprint):
         if self.project_vesting_configured.get(token_uid, False):
             raise InvalidAllocation("Vesting already configured")
 
+        # Parse comma-separated strings into lists
+        parsed_allocation_names = allocation_names.split(",") if allocation_names else []
+        parsed_allocation_percentages = [int(p) for p in allocation_percentages.split(",")] if allocation_percentages else []
+        parsed_allocation_beneficiaries = [Address(bytes.fromhex(addr)) for addr in allocation_beneficiaries.split(",")] if allocation_beneficiaries else []
+        parsed_allocation_cliff_months = [int(m) for m in allocation_cliff_months.split(",")] if allocation_cliff_months else []
+        parsed_allocation_vesting_months = [int(m) for m in allocation_vesting_months.split(",")] if allocation_vesting_months else []
+
         # Validate percentage totals
         total_percentage = (
             staking_percentage + public_sale_percentage + dozer_pool_percentage
         )
-        for percentage in allocation_percentages:
+        for percentage in parsed_allocation_percentages:
             total_percentage += percentage
 
         if total_percentage > 100:
@@ -1305,11 +1312,11 @@ class DozerTools(Blueprint):
 
         # Validate regular allocation lists have same length
         if not (
-            len(allocation_names)
-            == len(allocation_percentages)
-            == len(allocation_beneficiaries)
-            == len(allocation_cliff_months)
-            == len(allocation_vesting_months)
+            len(parsed_allocation_names)
+            == len(parsed_allocation_percentages)
+            == len(parsed_allocation_beneficiaries)
+            == len(parsed_allocation_cliff_months)
+            == len(parsed_allocation_vesting_months)
         ):
             raise InvalidAllocation("All allocation lists must have same length")
 
@@ -1320,11 +1327,11 @@ class DozerTools(Blueprint):
             staking_percentage,
             public_sale_percentage,
             dozer_pool_percentage,
-            allocation_names,
-            allocation_percentages,
-            allocation_beneficiaries,
-            allocation_cliff_months,
-            allocation_vesting_months,
+            parsed_allocation_names,
+            parsed_allocation_percentages,
+            parsed_allocation_beneficiaries,
+            parsed_allocation_cliff_months,
+            parsed_allocation_vesting_months,
         )
         self._start_vesting(ctx, token_uid)
 
