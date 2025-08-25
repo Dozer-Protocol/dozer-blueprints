@@ -24,7 +24,7 @@ class VestingInfo(NamedTuple):
     """Vesting information for a specific allocation."""
     
     name: str
-    beneficiary: Address
+    beneficiary: str
     amount: int
     cliff_months: int
     vesting_months: int
@@ -332,7 +332,7 @@ class Vesting(Blueprint):
 
         return VestingInfo(
             name=self.allocation_names[index],
-            beneficiary=self.allocation_addresses[index],
+            beneficiary=self.allocation_addresses[index].hex(),
             amount=self.allocation_amounts[index],
             cliff_months=self.allocation_cliffs[index],
             vesting_months=self.allocation_durations[index],

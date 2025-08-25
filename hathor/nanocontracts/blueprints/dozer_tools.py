@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
@@ -1296,7 +1297,7 @@ class DozerTools(Blueprint):
         # Parse comma-separated strings into lists
         parsed_allocation_names = allocation_names.split(",") if allocation_names else []
         parsed_allocation_percentages = [int(p) for p in allocation_percentages.split(",")] if allocation_percentages else []
-        parsed_allocation_beneficiaries = [Address(bytes.fromhex(addr)) for addr in allocation_beneficiaries.split(",")] if allocation_beneficiaries else []
+        parsed_allocation_beneficiaries = [Address(decode_address(addr)) for addr in allocation_beneficiaries.split(",")] if allocation_beneficiaries else []
         parsed_allocation_cliff_months = [int(m) for m in allocation_cliff_months.split(",")] if allocation_cliff_months else []
         parsed_allocation_vesting_months = [int(m) for m in allocation_vesting_months.split(",")] if allocation_vesting_months else []
 
