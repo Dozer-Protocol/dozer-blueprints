@@ -17,7 +17,7 @@ import unittest
 from typing import Optional
 
 from hathor.conf import settings
-from hathor.crypto.util import decode_address
+from hathor.crypto.util import decode_address, get_address_b58_from_bytes
 from hathor.nanocontracts.blueprints.dozer_tools import (
     DozerTools,
     ProjectNotFound,
@@ -94,11 +94,11 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Test addresses
-        self.owner_address_bytes, _ = self._get_any_address()
+        self.owner_address_bytes, self.owner_key = self._get_any_address()
         self.owner_address = Address(self.owner_address_bytes)
-        self.dev_address_bytes, _ = self._get_any_address()
+        self.dev_address_bytes, self.dev_key = self._get_any_address()
         self.dev_address = Address(self.dev_address_bytes)
-        self.user_address_bytes, _ = self._get_any_address()
+        self.user_address_bytes, self.user_key = self._get_any_address()
         self.user_address = Address(self.user_address_bytes)
 
         # DZR token parameters (placeholder)
@@ -687,7 +687,7 @@ class DozerToolsTest(BlueprintTestCase):
         # Configure vesting: 20% staking, 10% public sale, 5% dozer pool, 65% regular vesting
         allocation_names = "Team,Advisors"
         allocation_percentages = "40,25"  # 40% team, 25% advisors
-        allocation_beneficiaries = f"{self.dev_address.hex()},{self.user_address.hex()}"
+        allocation_beneficiaries = f"{get_address_b58_from_bytes(self.dev_address_bytes)},{get_address_b58_from_bytes(self.user_address_bytes)}"
         allocation_cliff_months = "12,6"  # 12 months cliff for team, 6 for advisors
         allocation_vesting_months = "36,24"  # 36 months vesting for team, 24 for advisors
 
@@ -766,7 +766,7 @@ class DozerToolsTest(BlueprintTestCase):
             1000,  # earnings_per_day
             "Team",  # allocation_names
             "70",  # allocation_percentages (70% for team)
-            self.dev_address.hex(),  # allocation_beneficiaries
+            get_address_b58_from_bytes(self.dev_address_bytes),  # allocation_beneficiaries
             "12",  # allocation_cliff_months
             "36",  # allocation_vesting_months
         )
@@ -884,7 +884,7 @@ class DozerToolsTest(BlueprintTestCase):
         # At cliff end, no tokens should be vested yet (cliff period just ended)
         self.assertEqual(vesting_info.vested, 0)
         self.assertEqual(vesting_info.claimable, 0)
-        self.assertEqual(vesting_info.beneficiary, self.dev_address)
+        self.assertEqual(vesting_info.beneficiary, self.dev_address.hex())
         self.assertEqual(vesting_info.name, "Team")
 
         # Check vesting info 1 month after cliff (should have some vested tokens)
@@ -947,7 +947,7 @@ class DozerToolsTest(BlueprintTestCase):
                 1000,  # earnings_per_day
                 "Team",
                 "10",  # This makes total 110%
-                self.dev_address.hex(),
+                get_address_b58_from_bytes(self.dev_address_bytes),
                 "12",
                 "36",
             )
