@@ -260,6 +260,8 @@ class ResourcesBuilder:
                 BlueprintSourceCodeResource,
                 NanoContractHistoryResource,
                 NanoContractStateResource,
+                NanoContractStateHistoryResource,
+                NanoContractPriceHistoryResource,
             )
             nc_resource = Resource()
             root.putChild(b'nano_contract', nc_resource)
@@ -271,6 +273,8 @@ class ResourcesBuilder:
             blueprint_resource.putChild(b'source', BlueprintSourceCodeResource(self.manager))
             nc_resource.putChild(b'history', NanoContractHistoryResource(self.manager))
             nc_resource.putChild(b'state', NanoContractStateResource(self.manager))
+            nc_resource.putChild(b'state_history', NanoContractStateHistoryResource(self.manager))
+            nc_resource.putChild(b'price_history', NanoContractPriceHistoryResource(self.manager))
             nc_resource.putChild(b'creation', NCCreationResource(self.manager))
             nc_resource.putChild(b'logs', NCExecLogsResource(self.manager))
 
