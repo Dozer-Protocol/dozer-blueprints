@@ -6,6 +6,7 @@ from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
     Address,
     Amount,
+    ContractId,
     NCDepositAction,
     NCWithdrawalAction,
     TokenUid,
@@ -101,6 +102,7 @@ class Vesting(Blueprint):
     token_uid: TokenUid
     vesting_start: Timestamp
     is_started: bool
+    creator_contract_id: ContractId  # DozerTools contract that created this
 
     # Balance tracking
     available_balance: Amount
@@ -124,6 +126,10 @@ class Vesting(Blueprint):
     def _only_admin(self, ctx: Context) -> None:
         if ctx.caller_id != self.admin:
             raise NCFail("Only admin can call this method")
+    
+    def _only_creator_contract(self, ctx: Context) -> None:
+        if ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only creator contract can call this method")
 
     def _get_single_deposit_action(
         self, ctx: Context, token_uid: TokenUid
@@ -168,7 +174,7 @@ class Vesting(Blueprint):
         return Amount(min(vested_amount, total_amount))
 
     @public(allow_deposit=True)
-    def initialize(self, ctx: Context, token_uid: TokenUid) -> None:
+    def initialize(self, ctx: Context, token_uid: TokenUid, creator_contract_id: ContractId) -> None:
         """Initialize contract with token deposit."""
         self.token_uid = token_uid
         action = self._get_single_deposit_action(ctx, token_uid)
@@ -177,6 +183,8 @@ class Vesting(Blueprint):
         self.available_balance = Amount(action.amount)
         self.total_allocated = Amount(0)
         self.is_started = False
+        # Set creator_contract_id (for DozerTools routing)
+        self.creator_contract_id = creator_contract_id
 
     @public
     def configure_vesting(
@@ -354,5 +362,52 @@ class Vesting(Blueprint):
                 i for i in range(MAX_ALLOCATIONS) if self.is_configured.get(i, False)
             ],
         )
+
+    # Routing methods for DozerTools integration
+    @public(allow_withdrawal=True)
+    def routed_claim_allocation(self, ctx: Context, user_address: Address, index: int) -> None:
+        """Claim vested tokens for an allocation via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        self._validate_index(index)
+
+        if not self.is_configured.get(index, False):
+            raise AllocationNotConfigured
+
+        if not self.is_started:
+            raise NCFail("Vesting not started")
+
+        beneficiary = self.allocation_addresses[index]
+        if user_address != self.admin and user_address != beneficiary:
+            raise InvalidBeneficiary("Only admin or beneficiary can claim")
+
+        action = self._get_single_withdrawal_action(ctx, self.token_uid)
+
+        vested = self._calculate_vested_amount(index, Timestamp(ctx.timestamp))
+        withdrawn = self.allocation_withdrawn[index]
+        claimable = vested - withdrawn
+
+        if action.amount > claimable:
+            raise InsufficientVestedAmount
+
+        self.allocation_withdrawn[index] = Amount(
+            self.allocation_withdrawn[index] + action.amount
+        )
+
+    @public
+    def routed_change_beneficiary(
+        self, ctx: Context, user_address: Address, index: int, new_beneficiary: Address
+    ) -> None:
+        """Change beneficiary address for allocation via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        self._validate_index(index)
+
+        if not self.is_configured.get(index, False):
+            raise AllocationNotConfigured
+
+        current_beneficiary = self.allocation_addresses[index]
+        if user_address != current_beneficiary:
+            raise InvalidBeneficiary("Only current beneficiary can change")
+
+        self.allocation_addresses[index] = new_beneficiary
 
 __blueprint__ = Vesting

@@ -2,7 +2,7 @@ import os
 from hathor.conf.get_settings import HathorSettings
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.context import Context
-from hathor.nanocontracts.types import NCDepositAction, NCWithdrawalAction, Address, Amount
+from hathor.nanocontracts.types import NCDepositAction, NCWithdrawalAction, Address, Amount, ContractId, VertexId
 from hathor.wallet.keypair import KeyPair
 from hathor.util import not_none
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
@@ -56,7 +56,7 @@ class StakeTestCase(BlueprintTestCase):
         address_bytes = decode_address(not_none(address_b58))
         return address_bytes, key
 
-    def _initialize_contract(self, amount: int | None = None) -> None:
+    def _initialize_contract(self, amount: int | None = None, creator_contract_id: ContractId | None = None) -> None:
         """Initialize contract with token deposit."""
         if amount is None:
             amount = self.initial_deposit
@@ -68,13 +68,24 @@ class StakeTestCase(BlueprintTestCase):
             timestamp=self.clock.seconds(),
         )
 
-        self.runner.create_contract(
-            self.contract_id,
-            self.blueprint_id,
-            ctx,
-            self.earnings_per_day,
-            self.token_uid,
-        )
+        # Pass creator_contract_id if provided
+        if creator_contract_id is not None:
+            self.runner.create_contract(
+                self.contract_id,
+                self.blueprint_id,
+                ctx,
+                self.earnings_per_day,
+                self.token_uid,
+                creator_contract_id,
+            )
+        else:
+            self.runner.create_contract(
+                self.contract_id,
+                self.blueprint_id,
+                ctx,
+                self.earnings_per_day,
+                self.token_uid,
+            )
 
     def _stake_tokens(self, amount: int, address: bytes | None = None) -> Context:
         """Helper to stake tokens."""
@@ -362,3 +373,123 @@ class StakeTestCase(BlueprintTestCase):
         self.assertEqual(api_data.owner_balance, self.initial_deposit)
         self.assertEqual(api_data.total_staked, stake_amount)
         self.assertFalse(api_data.paused)
+
+    def test_routing_authorization_pattern(self):
+        """Test that routing methods work with creator contract authorization."""
+        # Recreate contract with creator_contract_id
+        creator_contract_id = ContractId(VertexId(b"\x01" * 32))
+        self._initialize_contract(creator_contract_id=creator_contract_id)
+        
+        # Test routed staking (should work when called from creator contract)
+        stake_amount = self.base_stake
+        user_address = self._get_any_address()[0]
+        
+        ctx = Context(
+            [NCDepositAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
+            vertex=self.tx,
+            caller_id=creator_contract_id,  # Called from creator contract
+            timestamp=self.clock.seconds(),
+        )
+        
+        # Should work since creator contract is calling on behalf of user
+        self.runner.call_public_method(
+            self.contract_id, "routed_stake", ctx, Address(user_address)
+        )
+        
+        # Verify staking was successful
+        user_info = self.runner.call_view_method(
+            self.contract_id, "get_user_info", Address(user_address)
+        )
+        self.assertEqual(user_info.deposits, stake_amount)
+
+    def test_routing_unauthorized_caller(self):
+        """Test that routing methods reject unauthorized callers."""
+        # Recreate contract with creator_contract_id
+        creator_contract_id = ContractId(VertexId(b"\x01" * 32))
+        self._initialize_contract(creator_contract_id=creator_contract_id)
+        
+        # Test routed staking from wrong contract (should fail)
+        wrong_contract_id = ContractId(VertexId(b"\x02" * 32))
+        stake_amount = self.base_stake
+        user_address = self._get_any_address()[0]
+        
+        ctx = Context(
+            [NCDepositAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
+            vertex=self.tx,
+            caller_id=wrong_contract_id,  # Wrong creator contract
+            timestamp=self.clock.seconds(),
+        )
+        
+        # Should fail due to authorization check
+        from hathor.nanocontracts.exception import NCFail
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.contract_id, "routed_stake", ctx, Address(user_address)
+            )
+
+    def test_routing_unstake_operations(self):
+        """Test routing unstake functionality."""
+        # Recreate contract with creator_contract_id
+        creator_contract_id = ContractId(VertexId(b"\x01" * 32))
+        self._initialize_contract(creator_contract_id=creator_contract_id)
+        
+        # First stake tokens through routing
+        stake_amount = self.base_stake
+        user_address = self._get_any_address()[0]
+        
+        stake_ctx = Context(
+            [NCDepositAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
+            vertex=self.tx,
+            caller_id=creator_contract_id,
+            timestamp=self.clock.seconds(),
+        )
+        
+        self.runner.call_public_method(
+            self.contract_id, "routed_stake", stake_ctx, Address(user_address)
+        )
+        
+        # Advance time past minimum staking period
+        future_time = self.clock.seconds() + (MIN_PERIOD_DAYS * DAY_IN_SECONDS + 1)
+        unstake_amount = Amount(stake_amount // 2)  # Unstake half
+        
+        unstake_ctx = Context(
+            [NCWithdrawalAction(token_uid=self.token_uid, amount=unstake_amount)],
+            vertex=self.tx,
+            caller_id=creator_contract_id,
+            timestamp=future_time,
+        )
+        
+        # Should work since creator contract is calling on behalf of user
+        self.runner.call_public_method(
+            self.contract_id, "routed_unstake", unstake_ctx, Address(user_address)
+        )
+        
+        # Verify unstaking worked (deposits should be reduced)
+        user_info = self.runner.call_view_method(
+            self.contract_id, "get_user_info", Address(user_address)
+        )
+        self.assertLess(user_info.deposits, stake_amount)
+
+    def test_no_creator_contract_fallback(self):
+        """Test that contract works normally when no creator_contract_id is provided."""
+        # Contract is already initialized without creator_contract_id in setUp
+        
+        # Normal staking should still work
+        stake_amount = self.base_stake
+        user_address = self._get_any_address()[0]
+        
+        ctx = Context(
+            [NCDepositAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
+            vertex=self.tx,
+            caller_id=Address(user_address),
+            timestamp=self.clock.seconds(),
+        )
+        
+        # Should work with normal stake method
+        self.runner.call_public_method(self.contract_id, "stake", ctx)
+        
+        # Verify staking was successful
+        user_info = self.runner.call_view_method(
+            self.contract_id, "get_user_info", Address(user_address)
+        )
+        self.assertEqual(user_info.deposits, stake_amount)

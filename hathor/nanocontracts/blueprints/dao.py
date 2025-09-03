@@ -101,6 +101,7 @@ class DAO(Blueprint):
     voting_period_seconds: int
     quorum_percentage: int
     proposal_threshold: Amount
+    creator_contract_id: ContractId  # DozerTools contract that created this
 
     # Proposal data
     proposal_count: int
@@ -131,6 +132,7 @@ class DAO(Blueprint):
         voting_period_days: int,
         quorum_percentage: int,
         proposal_threshold: Amount,
+        creator_contract_id: ContractId,
     ) -> None:
         """Initialize DAO with configuration."""
         if voting_period_days <= 0 or voting_period_days > MAX_VOTING_PERIOD_DAYS:
@@ -148,6 +150,8 @@ class DAO(Blueprint):
         self.quorum_percentage = quorum_percentage
         self.proposal_threshold = proposal_threshold
         self.proposal_count = 0
+        # Set creator_contract_id (for DozerTools routing)
+        self.creator_contract_id = creator_contract_id
 
     @public
     def create_proposal(self, ctx: Context, title: str, description: str) -> int:
@@ -210,6 +214,10 @@ class DAO(Blueprint):
             self.proposal_total_staked[proposal_id] * self.quorum_percentage
         ) // 100
         self.proposal_quorum_reached[proposal_id] = total_votes >= min_votes
+
+    def _only_creator_contract(self, ctx: Context) -> None:
+        if ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only creator contract can call this method")
 
     def _get_voting_power(self, ctx: Context, address: bytes) -> Amount:
         """Get voting power from staking contract."""
@@ -336,5 +344,72 @@ class DAO(Blueprint):
         ]
         votes.sort(key=lambda x: x.timestamp)
         return votes[skip : skip + limit]
+
+    # Routing methods for DozerTools integration
+    @public
+    def routed_create_proposal(self, ctx: Context, user_address: Address, title: str, description: str) -> int:
+        """Create new proposal via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        
+        staked = self._get_voting_power(ctx, user_address)
+        if staked < self.proposal_threshold:
+            raise NCFail("Insufficient staked tokens")
+
+        proposal_id = self.proposal_count + 1
+        total_staked = self._get_total_staked(ctx)
+
+        self.proposal_titles[proposal_id] = title
+        self.proposal_descriptions[proposal_id] = description
+        self.proposal_creators[proposal_id] = user_address
+        self.proposal_start_times[proposal_id] = ctx.timestamp
+        self.proposal_end_times[proposal_id] = (
+            ctx.timestamp + self.voting_period_seconds
+        )
+        self.proposal_for_votes[proposal_id] = Amount(0)
+        self.proposal_against_votes[proposal_id] = Amount(0)
+        self.proposal_total_staked[proposal_id] = total_staked
+        self.proposal_quorum_reached[proposal_id] = False
+        self.proposal_total_voters[proposal_id] = 0
+
+        self.proposal_count = proposal_id
+        return proposal_id
+
+    @public
+    def routed_cast_vote(self, ctx: Context, user_address: Address, proposal_id: int, support: bool) -> None:
+        """Cast vote via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        
+        if proposal_id not in self.proposal_titles:
+            raise NCFail("Proposal does not exist")
+        if ctx.timestamp >= self.proposal_end_times[proposal_id]:
+            raise NCFail("Voting period ended")
+
+        vote_key = (proposal_id, user_address)
+        if vote_key in self.vote_support:
+            raise NCFail("Already voted")
+
+        power = self._get_voting_power(ctx, user_address)
+        if power == 0:
+            raise NCFail("No voting power")
+
+        self.vote_support[vote_key] = support
+        self.vote_power[vote_key] = power
+        self.vote_timestamp[vote_key] = ctx.timestamp
+
+        if support:
+            self.proposal_for_votes[proposal_id] = Amount(self.proposal_for_votes[proposal_id] + power)
+        else:
+            self.proposal_against_votes[proposal_id] = Amount(self.proposal_against_votes[proposal_id] + power)
+
+        self.proposal_total_voters[proposal_id] += 1
+
+        total_votes = (
+            self.proposal_for_votes[proposal_id]
+            + self.proposal_against_votes[proposal_id]
+        )
+        min_votes = (
+            self.proposal_total_staked[proposal_id] * self.quorum_percentage
+        ) // 100
+        self.proposal_quorum_reached[proposal_id] = total_votes >= min_votes
 
 __blueprint__ = DAO

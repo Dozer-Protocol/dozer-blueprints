@@ -41,6 +41,7 @@ from hathor.nanocontracts.types import (
     BlueprintId,
     ContractId,
     NCDepositAction,
+    NCWithdrawalAction,
     TokenUid,
     VertexId,
 )
@@ -950,6 +951,346 @@ class DozerToolsTest(BlueprintTestCase):
                 get_address_b58_from_bytes(self.dev_address_bytes),
                 "12",
                 "36",
+            )
+
+    def test_routing_vesting_claim_allocation(self) -> None:
+        """Test routing vesting claim allocation through DozerTools."""
+        # Create project with vesting configuration
+        token_uid = self._create_test_project("RoutingToken", "ROUTE")
+        
+        # Configure vesting with team allocation
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            0,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            0,  # earnings_per_day (not needed)
+            "Team",  # allocation_names
+            "100",  # allocation_percentages (100% for team)
+            get_address_b58_from_bytes(self.dev_address_bytes),  # allocation_beneficiaries
+            "0",  # allocation_cliff_months (no cliff)
+            "0",  # allocation_vesting_months (immediately available)
+        )
+
+        # Get vesting contract info
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        vesting_contract_hex = contracts["vesting_contract"]
+        vesting_contract_id = ContractId(VertexId(bytes.fromhex(vesting_contract_hex)))
+
+        # Team allocation is at index 3 (after special allocations)
+        allocation_index = 3
+        
+        # Check vesting info shows tokens are available (cliff=0, vesting=0)
+        vesting_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            allocation_index,
+            self.get_current_timestamp(),
+        )
+        self.assertGreater(vesting_info.claimable, 0)  # Should have claimable tokens
+        
+        # Try to claim allocation through DozerTools routing
+        claim_amount = Amount(1000_00)  # Claim 1000 tokens
+        tx = self._get_any_tx()
+        context = Context(
+            [NCWithdrawalAction(token_uid=token_uid, amount=claim_amount)],
+            tx,
+            self.dev_address,  # Must be project dev
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # This should work since dev is both project dev and beneficiary
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "vesting_claim_allocation",
+            context,
+            allocation_index,
+        )
+
+        # Verify tokens were withdrawn
+        updated_vesting_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            allocation_index,
+            self.get_current_timestamp(),
+        )
+        self.assertEqual(updated_vesting_info.withdrawn, claim_amount)
+
+    def test_routing_staking_operations(self) -> None:
+        """Test routing staking operations through DozerTools."""
+        # Create project with staking configured
+        token_uid = self._create_test_project("StakeRouteToken", "SRT")
+        
+        # Configure vesting with staking allocation
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            30,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            1000,  # earnings_per_day
+            "Team",  # allocation_names
+            "70",  # allocation_percentages (70% for team)
+            get_address_b58_from_bytes(self.dev_address_bytes),  # allocation_beneficiaries
+            "0",  # allocation_cliff_months
+            "0",  # allocation_vesting_months
+        )
+
+        # Get staking contract info
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        self.assertNotEqual(contracts["staking_contract"], "")
+        
+        # Test staking through DozerTools routing
+        stake_amount = Amount(1000_00)  # Stake 1000 tokens
+        tx = self._get_any_tx()
+        context = Context(
+            [NCDepositAction(token_uid=token_uid, amount=stake_amount)],
+            tx,
+            self.user_address,  # Different user
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Stake through routing
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "staking_stake",
+            context,
+            token_uid,
+        )
+
+        # Verify staking worked through the routing
+        staking_contract_id = ContractId(VertexId(bytes.fromhex(contracts["staking_contract"])))
+        user_info = self.runner.call_view_method(
+            staking_contract_id, "get_user_info", self.user_address
+        )
+        self.assertEqual(user_info.deposits, stake_amount)
+
+        # Test unstaking after minimum period (we need to advance time)
+        future_time = self.get_current_timestamp() + (31 * 24 * 60 * 60)  # 31 days later
+        unstake_amount = Amount(500_00)  # Unstake 500 tokens
+        
+        tx = self._get_any_tx()
+        context = Context(
+            [NCWithdrawalAction(token_uid=token_uid, amount=unstake_amount)],
+            tx,
+            self.user_address,
+            timestamp=future_time,
+        )
+
+        # Unstake through routing
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "staking_unstake",
+            context,
+            token_uid,
+        )
+
+        # Verify unstaking worked
+        updated_user_info = self.runner.call_view_method(
+            staking_contract_id, "get_user_info", self.user_address
+        )
+        # Should have original amount - unstaked amount + any rewards
+        self.assertLess(updated_user_info.deposits, stake_amount)
+
+    def test_routing_dao_operations(self) -> None:
+        """Test routing DAO operations through DozerTools."""
+        # Create project with DAO
+        token_uid = self._create_test_project("DAORouteToken", "DRT")
+        
+        # First configure vesting and create staking (DAO requires staking)
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            1000,  # earnings_per_day
+            "Team",  # allocation_names
+            "80",  # allocation_percentages
+            get_address_b58_from_bytes(self.dev_address_bytes),  # allocation_beneficiaries
+            "0",  # allocation_cliff_months
+            "0",  # allocation_vesting_months
+        )
+
+        # Create DAO contract
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        dao_contract_id = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_dao_contract",
+            context,
+            token_uid,
+            "TestDAO",  # name
+            "Test DAO for routing",  # description
+            7,  # voting_period_days
+            51,  # quorum_percentage
+            Amount(100_00),  # proposal_threshold
+        )
+
+        # First stake tokens so dev has voting power for proposals
+        stake_amount = Amount(1000_00)  # Stake enough tokens for proposals
+        tx = self._get_any_tx()
+        stake_context = Context(
+            [NCDepositAction(token_uid=token_uid, amount=stake_amount)],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        
+        # Stake through routing to ensure user has voting power
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "staking_stake",
+            stake_context,
+            token_uid,
+        )
+
+        # Test creating proposal through routing
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,  # Now has voting power from staking
+            timestamp=self.get_current_timestamp(),
+        )
+
+        proposal_id = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "dao_create_proposal",
+            context,
+            token_uid,
+            "Test Proposal",
+            "This is a test proposal created through routing",
+        )
+
+        # Verify proposal was created
+        self.assertIsInstance(proposal_id, int)
+        self.assertGreater(proposal_id, 0)
+
+        # Test voting through routing
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "dao_cast_vote",
+            context,
+            token_uid,
+            proposal_id,
+            True,  # Vote yes
+        )
+
+        # Verify vote was cast by checking proposal info
+        proposal_info = self.runner.call_view_method(
+            dao_contract_id, "get_proposal", proposal_id
+        )
+        self.assertGreater(proposal_info.for_votes, 0)
+
+    def test_routing_unauthorized_access(self) -> None:
+        """Test that routing methods properly enforce authorization."""
+        token_uid = self._create_test_project("AuthTestToken", "ATT")
+
+        # Try to use vesting routing with non-project-dev
+        tx = self._get_any_tx()
+        context = Context(
+            [NCWithdrawalAction(token_uid=token_uid, amount=Amount(1000))],
+            tx,
+            self.user_address,  # Not project dev
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "vesting_claim_allocation",
+                context,
+                0,
+            )
+
+    def test_routing_contract_not_exists(self) -> None:
+        """Test routing methods when child contracts don't exist."""
+        token_uid = self._create_test_project("NoContractsToken", "NCT")
+
+        # Try to stake when no staking contract exists
+        tx = self._get_any_tx()
+        context = Context(
+            [NCDepositAction(token_uid=token_uid, amount=Amount(1000))],
+            tx,
+            self.user_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(ProjectNotFound):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "staking_stake",
+                context,
+                token_uid,
+            )
+
+        # Try to create DAO proposal when no DAO contract exists
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(ProjectNotFound):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "dao_create_proposal",
+                context,
+                token_uid,
+                "Test Proposal",
+                "Description",
             )
 
 

@@ -3,7 +3,7 @@ from typing import NamedTuple
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
-from hathor.nanocontracts.types import Amount, TokenUid, Timestamp, Address, NCDepositAction, NCWithdrawalAction, public, view
+from hathor.nanocontracts.types import Amount, TokenUid, Timestamp, Address, ContractId, NCDepositAction, NCWithdrawalAction, public, view
 
 # Constants
 DAY_IN_SECONDS: int = 60 * 60 * 24
@@ -50,6 +50,7 @@ class Stake(Blueprint):
     # Owner
     owner_balance: Amount
     owner_address: bytes
+    creator_contract_id: ContractId  # DozerTools contract that created this
 
     # User
     user_deposits: dict[Address, Amount]
@@ -104,6 +105,10 @@ class Stake(Blueprint):
         """Validate owner authorization"""
         if ctx.caller_id != self.owner_address:
             raise Unauthorized("Unauthorized")
+    
+    def _only_creator_contract(self, ctx: Context) -> None:
+        if ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only creator contract can call this method")
 
     def _safe_pay(self, amount: int, address: Address) -> None:
         """Safe payment handling"""
@@ -140,7 +145,7 @@ class Stake(Blueprint):
 
     @public(allow_deposit=True)
     def initialize(
-        self, ctx: Context, earnings_per_day: int, token_uid: TokenUid
+        self, ctx: Context, earnings_per_day: int, token_uid: TokenUid, creator_contract_id: ContractId
     ) -> None:
         self.token_uid = token_uid
         action = self._get_single_deposit_action(ctx)
@@ -153,6 +158,8 @@ class Stake(Blueprint):
         self.last_reward = 0
         self.rewards_per_share = 0
         self.paused = False
+        # Set creator_contract_id (for DozerTools routing)
+        self.creator_contract_id = creator_contract_id
         self._validate_state()
 
     @public
@@ -303,6 +310,77 @@ class Stake(Blueprint):
             rewards_per_share=self.rewards_per_share,
             paused=self.paused,
         )
+
+    # Routing methods for DozerTools integration
+    @public(allow_deposit=True)
+    def routed_stake(self, ctx: Context, user_address: Address) -> None:
+        """Stake tokens via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        
+        if self.paused:
+            raise InvalidState("Contract is paused")
+        if user_address == self.owner_address:
+            raise Unauthorized("admin, please use other address to stake")
+        
+        action = self._get_single_deposit_action(ctx)
+        amount = Amount(action.amount)
+        self._validate_stake_amount(amount)
+        self._validate_address(user_address)
+
+        # update pool parameters
+        self._update_pool(ctx)
+        # update rewards if user already have balance in pool
+        pending = self._pending_rewards(user_address)
+        # create entries for newcomers
+        if pending == 0:
+            if user_address not in self.user_deposits:
+                self.user_deposits[user_address] = Amount(0)
+            self.user_stake_timestamp[user_address] = int(ctx.timestamp)
+
+        self._safe_pay(pending, user_address)
+        self.user_deposits[user_address] = Amount(self.user_deposits[user_address] + amount)
+        self.total_staked = Amount(self.total_staked + amount + pending)
+        self.user_debit[user_address] = (
+            self.user_deposits[user_address] * self.rewards_per_share
+        ) // PRECISION
+        self._validate_state()
+
+    @public(allow_withdrawal=True)
+    def routed_unstake(self, ctx: Context, user_address: Address) -> None:
+        """Unstake tokens via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        
+        if self.paused:
+            raise InvalidState("Contract is paused")
+        
+        action = self._get_single_withdrawal_action(ctx)
+        if user_address not in self.user_deposits:
+            raise Unauthorized("user not staked")
+
+        self._validate_unstake_time(ctx, user_address)
+        amount = action.amount
+
+        self._update_pool(ctx)
+        pending = self._pending_rewards(user_address)
+        if amount > (self.user_deposits[user_address] + pending):
+            raise InsufficientBalance("insufficient funds")
+
+        # First update total staked
+        self.total_staked = Amount(
+            max(0, self.total_staked - self.user_deposits[user_address])
+        )
+        # Then set user's deposit to zero before updating with pending rewards
+        self.user_deposits[user_address] = Amount(0)
+        # Add pending rewards
+        if pending > 0:
+            self._safe_pay(pending, user_address)
+        # Finally process withdrawal
+        self.user_deposits[user_address] = Amount(
+            max(0, self.user_deposits[user_address] - amount)
+        )
+        self.user_debit[user_address] = 0
+
+        self._validate_state()
 
 
 class Unauthorized(NCFail):

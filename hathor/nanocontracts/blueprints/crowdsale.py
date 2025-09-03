@@ -6,6 +6,7 @@ from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
     Address,
     Amount,
+    ContractId,
     TokenUid,
     Timestamp,
     NCDepositAction,
@@ -112,6 +113,7 @@ class Crowdsale(Blueprint):
     # Access control
     owner: bytes  # Project owner
     platform: Address  # Platform fee recipient
+    creator_contract_id: ContractId  # DozerTools contract that created this
 
     # Participant tracking
     deposits: dict[Address, Amount]  # HTR deposits per address
@@ -134,6 +136,7 @@ class Crowdsale(Blueprint):
         start_time: Timestamp,
         end_time: Timestamp,
         platform_fee: Amount,
+        creator_contract_id: ContractId,
     ) -> None:
         """Initialize the sale contract with configuration parameters."""
         # Validate parameters
@@ -177,6 +180,9 @@ class Crowdsale(Blueprint):
         # Set control addresses
         self.owner = ctx.caller_id
         self.platform = Address(ctx.caller_id)  # TODO: Configure platform address
+        
+        # Set creator_contract_id (for DozerTools routing)
+        self.creator_contract_id = creator_contract_id
 
         # Initialize tracking
         # Note: deposits and claimed dictionaries are automatically initialized as empty
@@ -358,6 +364,10 @@ class Crowdsale(Blueprint):
 
         self.state = SaleState.ACTIVE
 
+    def _only_creator_contract(self, ctx: Context) -> None:
+        if ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only creator contract can call this method")
+
     def _activate_if_started(self, ctx: Context) -> None:
         """Activate the sale (anyone)"""
         if self.state != SaleState.PENDING:
@@ -463,6 +473,104 @@ class Crowdsale(Blueprint):
             is_withdrawn=self.owner_withdrawn,
             can_withdraw=can_withdraw,
         )
+
+    # Routing methods for DozerTools integration
+    @public(allow_deposit=True)
+    def routed_participate(self, ctx: Context, user_address: Address) -> None:
+        """Participate in the sale via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        self._validate_sale_active(ctx)
+
+        # Validate HTR deposit
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCDepositAction):
+            raise NCFail("Expected deposit action")
+
+        amount = Amount(action.amount)
+        if amount < self.min_deposit:
+            raise NCFail(CrowdsaleErrors.BELOW_MIN)
+
+        # Check hard cap
+        if self.total_raised + amount > self.hard_cap:
+            raise NCFail(CrowdsaleErrors.ABOVE_MAX)
+
+        # Update participant tracking
+        if user_address not in self.deposits:
+            self.participants_count += 1
+
+        # Update state
+        self.deposits[user_address] = Amount(
+            self.deposits.get(user_address, Amount(0)) + amount
+        )
+        self.total_raised = Amount(self.total_raised + amount)
+        self.total_sold = Amount(self.total_sold + self._calculate_tokens(amount))
+        self.htr_balance = Amount(self.htr_balance + amount)
+
+        # Check if soft cap reached
+        if self.total_raised >= self.soft_cap:
+            self.state = SaleState.SUCCESS
+
+    @public(allow_withdrawal=True)
+    def routed_claim_tokens(self, ctx: Context, user_address: Address) -> None:
+        """Claim tokens after successful sale via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        
+        if self.state != SaleState.SUCCESS:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+
+        if self.claimed.get(user_address, False):
+            raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
+
+        deposit = self.deposits.get(user_address, Amount(0))
+        if deposit == Amount(0):
+            raise NCFail("No tokens to claim")
+
+        tokens_due = self._calculate_tokens(deposit)
+
+        # Validate token withdrawal
+        action = ctx.get_single_action(self.token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
+        if action.amount != tokens_due:
+            raise NCFail("Invalid withdrawal amount")
+
+        self.deposits[user_address] = Amount(
+            self.deposits[user_address] - deposit
+        )
+
+        # Mark as claimed and update balance
+        self.claimed[user_address] = True
+        self.sale_token_balance = Amount(self.sale_token_balance - tokens_due)
+
+    @public(allow_withdrawal=True)
+    def routed_claim_refund(self, ctx: Context, user_address: Address) -> None:
+        """Claim refund if sale failed via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        
+        if self.state != SaleState.FAILED:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+
+        if self.claimed.get(user_address, False):
+            raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
+
+        deposit = self.deposits.get(user_address, Amount(0))
+        if deposit == Amount(0):
+            raise NCFail("No refund available")
+
+        # Validate HTR withdrawal
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
+        if action.amount != deposit:
+            raise NCFail("Invalid withdrawal amount")
+
+        self.deposits[user_address] = Amount(
+            self.deposits[user_address] - deposit
+        )
+
+        # Mark as claimed and update balance
+        self.claimed[user_address] = True
+        self.htr_balance = Amount(self.htr_balance - deposit)
 
 
 __blueprint__ = Crowdsale

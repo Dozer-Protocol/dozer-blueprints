@@ -8,6 +8,8 @@ from hathor.nanocontracts.types import (
     Address,
     Amount,
     Timestamp,
+    ContractId,
+    VertexId,
 )
 from hathor.wallet.keypair import KeyPair
 from hathor.util import not_none
@@ -55,7 +57,7 @@ class VestingTestCase(BlueprintTestCase):
         address_bytes = decode_address(not_none(address_b58))
         return Address(address_bytes), key
 
-    def _initialize_contract(self, amount: int | None = None) -> None:
+    def _initialize_contract(self, amount: int | None = None, creator_contract_id: ContractId | None = None) -> None:
         """Initialize contract with token deposit."""
         if amount is None:
             amount = self.initial_deposit
@@ -68,9 +70,15 @@ class VestingTestCase(BlueprintTestCase):
         )
 
         # Use runner.create_contract to create and initialize the contract
-        self.runner.create_contract(
-            self.contract_id, self.blueprint_id, ctx, self.token_uid
-        )
+        # Pass creator_contract_id if provided
+        if creator_contract_id is not None:
+            self.runner.create_contract(
+                self.contract_id, self.blueprint_id, ctx, self.token_uid, creator_contract_id
+            )
+        else:
+            self.runner.create_contract(
+                self.contract_id, self.blueprint_id, ctx, self.token_uid
+            )
 
     def _configure_vesting(
         self,
@@ -421,3 +429,140 @@ class VestingTestCase(BlueprintTestCase):
     #         self.contract_id, "get_vesting_info", 0, Timestamp(claim_time)
     #     )
     #     self.assertEqual(info.withdrawn, expected_vested)
+
+    def test_routing_authorization_pattern(self):
+        """Test that routing methods work with creator contract authorization."""
+        # Create a mock creator contract ID
+        creator_contract_id = ContractId(VertexId(b"\x01" * 32))
+        
+        # Initialize contract with creator_contract_id
+        self._initialize_contract(creator_contract_id=creator_contract_id)
+        
+        # Configure vesting allocation
+        amount = 100_000_00
+        beneficiary = self._configure_vesting(0, amount, cliff_months=0, vesting_months=0)  # Immediately available
+        
+        # Start vesting
+        ctx = self.create_context(
+            address=self.admin_address,
+            timestamp=self.now,
+        )
+        self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
+        
+        # Test routed claim allocation (should work when called from creator contract)
+        claim_amount = Amount(50_000_00)
+        ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=claim_amount)],
+            address=creator_contract_id,  # Called from creator contract
+            timestamp=self.now,
+        )
+        
+        # Should work since creator contract is calling on behalf of beneficiary
+        self.runner.call_public_method(
+            self.contract_id, "routed_claim_allocation", ctx, beneficiary, 0
+        )
+        
+        # Verify withdrawal was successful
+        info = self.runner.call_view_method(
+            self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
+        )
+        self.assertEqual(info.withdrawn, claim_amount)
+
+    def test_routing_unauthorized_caller(self):
+        """Test that routing methods reject unauthorized callers."""
+        # Create a mock creator contract ID
+        creator_contract_id = ContractId(VertexId(b"\x01" * 32))
+        
+        # Initialize contract with creator_contract_id
+        self._initialize_contract(creator_contract_id=creator_contract_id)
+        
+        # Configure vesting allocation
+        amount = 100_000_00
+        beneficiary = self._configure_vesting(0, amount, cliff_months=0, vesting_months=0)
+        
+        # Start vesting
+        ctx = self.create_context(
+            address=self.admin_address,
+            timestamp=self.now,
+        )
+        self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
+        
+        # Test routed claim allocation from wrong contract (should fail)
+        wrong_contract_id = ContractId(VertexId(b"\x02" * 32))
+        claim_amount = Amount(50_000_00)
+        ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=claim_amount)],
+            address=wrong_contract_id,  # Wrong creator contract
+            timestamp=self.now,
+        )
+        
+        # Should fail due to authorization check
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.contract_id, "routed_claim_allocation", ctx, beneficiary, 0
+            )
+
+    def test_routing_change_beneficiary(self):
+        """Test routing change beneficiary functionality."""
+        # Create a mock creator contract ID
+        creator_contract_id = ContractId(VertexId(b"\x01" * 32))
+        
+        # Initialize contract with creator_contract_id
+        self._initialize_contract(creator_contract_id=creator_contract_id)
+        
+        # Configure vesting allocation
+        amount = 100_000_00
+        old_beneficiary = self._configure_vesting(0, amount)
+        new_beneficiary = self._get_any_address()[0]
+        
+        # Test routed change beneficiary (should work when called from creator contract)
+        ctx = self.create_context(
+            address=creator_contract_id,  # Called from creator contract
+            timestamp=self.now,
+        )
+        
+        # Should work since creator contract is calling on behalf of current beneficiary
+        self.runner.call_public_method(
+            self.contract_id, "routed_change_beneficiary", ctx, old_beneficiary, 0, new_beneficiary
+        )
+        
+        # Verify beneficiary was changed
+        info = self.runner.call_view_method(
+            self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
+        )
+        self.assertEqual(info.beneficiary, new_beneficiary)
+
+    def test_no_creator_contract_fallback(self):
+        """Test that contract works normally when no creator_contract_id is provided."""
+        # Initialize contract without creator_contract_id (should use null contract)
+        self._initialize_contract()
+        
+        # Configure vesting allocation
+        amount = 100_000_00
+        beneficiary = self._configure_vesting(0, amount, cliff_months=0, vesting_months=0)
+        
+        # Start vesting
+        ctx = self.create_context(
+            address=self.admin_address,
+            timestamp=self.now,
+        )
+        self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
+        
+        # Normal claim should still work
+        claim_amount = Amount(50_000_00)
+        ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=claim_amount)],
+            address=beneficiary,
+            timestamp=self.now,
+        )
+        
+        # Should work with normal claim_allocation method
+        self.runner.call_public_method(
+            self.contract_id, "claim_allocation", ctx, 0
+        )
+        
+        # Verify withdrawal was successful
+        info = self.runner.call_view_method(
+            self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
+        )
+        self.assertEqual(info.withdrawn, claim_amount)
