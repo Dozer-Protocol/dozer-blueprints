@@ -203,6 +203,9 @@ class DozerTools(Blueprint):
 
     # Vesting configuration status
     project_vesting_configured: dict[TokenUid, bool]  # token_uid -> is_configured
+    
+    # Melt authority tracking
+    project_melt_authority_acquired: dict[TokenUid, bool]  # token_uid -> melt_authority_acquired
 
     def _only_owner(self, ctx: Context) -> None:
         """Ensure only the contract owner can call this method."""
@@ -422,6 +425,9 @@ class DozerTools(Blueprint):
 
         # Initialize vesting configuration status
         self.project_vesting_configured[token_uid] = False
+
+        # Initialize melt authority tracking
+        self.project_melt_authority_acquired[token_uid] = False
 
         # Initialize credit balances
         self.project_htr_balance[token_uid] = Amount(0)
@@ -801,6 +807,10 @@ class DozerTools(Blueprint):
         self._only_project_dev(ctx, token_uid)
         self._charge_fee(ctx, token_uid, "get_melt_authority")
 
+        # Check if melt authority was already acquired
+        if self.project_melt_authority_acquired.get(token_uid, False):
+            raise Unauthorized("Melt authority was already acquired for this project")
+
         # Check if the contract still has melt authority
         if not self.syscall.can_melt(token_uid):
             raise Unauthorized("Contract does not have melt authority for this token")
@@ -819,6 +829,9 @@ class DozerTools(Blueprint):
         
         # Transfer melt authority to the caller by acquiring it from the contract
         # This will transfer the authority from the contract to the transaction caller
+        
+        # Mark melt authority as acquired for this project
+        self.project_melt_authority_acquired[token_uid] = True
 
     # Admin Methods
 
@@ -936,6 +949,7 @@ class DozerTools(Blueprint):
             "github": self.project_github.get(token_uid, ""),
             "category": self.project_category.get(token_uid, ""),
             "whitepaper_url": self.project_whitepaper_url.get(token_uid, ""),
+            "melt_authority_acquired": str(self.project_melt_authority_acquired.get(token_uid, False)).lower(),
         }
 
         return project_info

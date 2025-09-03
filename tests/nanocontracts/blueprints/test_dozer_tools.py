@@ -236,6 +236,7 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertEqual(project_info["description"], "A test token project")
         self.assertEqual(project_info["website"], "https://test.com")
         self.assertEqual(project_info["category"], "DeFi")
+        self.assertEqual(project_info["melt_authority_acquired"], "false")  # Initially false
 
         # Verify project appears in all projects
         all_projects = self.runner.call_view_method(
@@ -1402,7 +1403,7 @@ class DozerToolsTest(BlueprintTestCase):
             )
 
     def test_get_melt_authority_multiple_calls(self) -> None:
-        """Test that method can be called multiple times since authority isn't revoked."""
+        """Test that method can only be called once per project (prevents multiple acquisitions)."""
         token_uid = self._create_test_project("MultiCallToken", "MCT")
 
         # Deposit credits to cover fees for multiple calls
@@ -1438,7 +1439,7 @@ class DozerToolsTest(BlueprintTestCase):
         updated_storage = self.runner.get_storage(self.dozer_tools_nc_id)
         self.assertTrue(updated_storage.get_balance(token_uid).can_melt)
 
-        # Second call to get_melt_authority (should also succeed)
+        # Second call to get_melt_authority (should fail - already acquired)
         tx2 = self._get_any_tx()
         context2 = Context(
             [NCAcquireAuthorityAction(token_uid=token_uid, mint=False, melt=True)],
@@ -1447,10 +1448,19 @@ class DozerToolsTest(BlueprintTestCase):
             timestamp=self.get_current_timestamp(),
         )
 
-        # This should succeed since the contract still has melt authority
-        self.runner.call_public_method(
-            self.dozer_tools_nc_id, "get_melt_authority", context2, token_uid
+        # This should fail since melt authority was already acquired
+        with self.assertRaises(Unauthorized) as cm:
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "get_melt_authority", context2, token_uid
+            )
+        
+        self.assertIn("already acquired", str(cm.exception))
+        
+        # Verify that project info shows melt authority as acquired
+        project_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_info", token_uid
         )
+        self.assertEqual(project_info["melt_authority_acquired"], "true")
 
     def test_get_melt_authority_wrong_action_type(self) -> None:
         """Test that method fails with wrong action type."""
