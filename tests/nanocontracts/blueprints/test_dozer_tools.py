@@ -17,7 +17,7 @@ import unittest
 from typing import Optional
 
 from hathor.conf import settings
-from hathor.crypto.util import decode_address, get_address_b58_from_bytes
+from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprints.dozer_tools import (
     DozerTools,
     ProjectNotFound,
@@ -688,11 +688,11 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Configure vesting: 20% staking, 10% public sale, 5% dozer pool, 65% regular vesting
-        allocation_names = "Team,Advisors"
-        allocation_percentages = "40,25"  # 40% team, 25% advisors
-        allocation_beneficiaries = f"{get_address_b58_from_bytes(self.dev_address_bytes)},{get_address_b58_from_bytes(self.user_address_bytes)}"
-        allocation_cliff_months = "12,6"  # 12 months cliff for team, 6 for advisors
-        allocation_vesting_months = "36,24"  # 36 months vesting for team, 24 for advisors
+        allocation_names = ["Team", "Advisors"]
+        allocation_percentages = [40, 25]  # 40% team, 25% advisors
+        allocation_beneficiaries = [self.dev_address, self.user_address]
+        allocation_cliff_months = [12, 6]  # 12 months cliff for team, 6 for advisors
+        allocation_vesting_months = [36, 24]  # 36 months vesting for team, 24 for advisors
 
         self.runner.call_public_method(
             self.dozer_tools_nc_id,
@@ -767,11 +767,11 @@ class DozerToolsTest(BlueprintTestCase):
             0,  # public_sale_percentage
             0,  # dozer_pool_percentage
             1000,  # earnings_per_day
-            "Team",  # allocation_names
-            "70",  # allocation_percentages (70% for team)
-            get_address_b58_from_bytes(self.dev_address_bytes),  # allocation_beneficiaries
-            "12",  # allocation_cliff_months
-            "36",  # allocation_vesting_months
+            ["Team"],  # allocation_names
+            [70],  # allocation_percentages (70% for team)
+            [self.dev_address],  # allocation_beneficiaries
+            [12],  # allocation_cliff_months
+            [36],  # allocation_vesting_months
         )
 
         # Verify staking contract was automatically created during vesting configuration
@@ -948,11 +948,11 @@ class DozerToolsTest(BlueprintTestCase):
                 30,  # public_sale_percentage
                 20,  # dozer_pool_percentage
                 1000,  # earnings_per_day
-                "Team",
-                "10",  # This makes total 110%
-                get_address_b58_from_bytes(self.dev_address_bytes),
-                "12",
-                "36",
+                ["Team"],
+                [10],  # This makes total 110%
+                [self.dev_address],
+                [12],
+                [36],
             )
 
     def test_routing_vesting_claim_allocation(self) -> None:
@@ -978,11 +978,11 @@ class DozerToolsTest(BlueprintTestCase):
             0,  # public_sale_percentage
             0,  # dozer_pool_percentage
             0,  # earnings_per_day (not needed)
-            "Team",  # allocation_names
-            "100",  # allocation_percentages (100% for team)
-            get_address_b58_from_bytes(self.dev_address_bytes),  # allocation_beneficiaries
-            "0",  # allocation_cliff_months (no cliff)
-            "0",  # allocation_vesting_months (immediately available)
+            ["Team"],  # allocation_names
+            [100],  # allocation_percentages (100% for team)
+            [self.dev_address],  # allocation_beneficiaries
+            [0],  # allocation_cliff_months (no cliff)
+            [0],  # allocation_vesting_months (immediately available)
         )
 
         # Get vesting contract info
@@ -1054,11 +1054,11 @@ class DozerToolsTest(BlueprintTestCase):
             0,  # public_sale_percentage
             0,  # dozer_pool_percentage
             1000,  # earnings_per_day
-            "Team",  # allocation_names
-            "70",  # allocation_percentages (70% for team)
-            get_address_b58_from_bytes(self.dev_address_bytes),  # allocation_beneficiaries
-            "0",  # allocation_cliff_months
-            "0",  # allocation_vesting_months
+            ["Team"],  # allocation_names
+            [70],  # allocation_percentages (70% for team)
+            [self.dev_address],  # allocation_beneficiaries
+            [0],  # allocation_cliff_months
+            [0],  # allocation_vesting_months
         )
 
         # Get staking contract info
@@ -1142,11 +1142,11 @@ class DozerToolsTest(BlueprintTestCase):
             0,  # public_sale_percentage
             0,  # dozer_pool_percentage
             1000,  # earnings_per_day
-            "Team",  # allocation_names
-            "80",  # allocation_percentages
-            get_address_b58_from_bytes(self.dev_address_bytes),  # allocation_beneficiaries
-            "0",  # allocation_cliff_months
-            "0",  # allocation_vesting_months
+            ["Team"],  # allocation_names
+            [80],  # allocation_percentages
+            [self.dev_address],  # allocation_beneficiaries
+            [0],  # allocation_cliff_months
+            [0],  # allocation_vesting_months
         )
 
         # Create DAO contract
