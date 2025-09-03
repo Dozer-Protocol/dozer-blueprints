@@ -40,11 +40,13 @@ from hathor.nanocontracts.types import (
     Amount,
     BlueprintId,
     ContractId,
+    NCAcquireAuthorityAction,
     NCDepositAction,
     NCWithdrawalAction,
     TokenUid,
     VertexId,
 )
+from hathor.nanocontracts.exception import NCForbiddenAction, NCInvalidAction
 from hathor.transaction.base_transaction import BaseTransaction
 from hathor.util import not_none
 from hathor.wallet.keypair import KeyPair
@@ -1291,6 +1293,248 @@ class DozerToolsTest(BlueprintTestCase):
                 token_uid,
                 "Test Proposal",
                 "Description",
+            )
+
+    def test_get_melt_authority_success(self) -> None:
+        """Test successful melt authority transfer to project dev."""
+        # Create a test project
+        token_uid = self._create_test_project("MeltAuthToken", "MAT")
+
+        # Deposit credits first to cover fee
+        tx = self._get_any_tx()
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        htr_deposit_amount = Amount(10_00_000)  # 10 HTR to cover fees
+        
+        deposit_context = Context(
+            [NCDepositAction(token_uid=htr_uid, amount=htr_deposit_amount)],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "deposit_credits", deposit_context, token_uid
+        )
+
+        # Verify contract has melt authority before transfer
+        initial_balance = self.dozer_tools_storage.get_balance(token_uid)
+        print(f"DEBUG: Initial balance for token {token_uid.hex()}: value={initial_balance.value}, can_mint={initial_balance.can_mint}, can_melt={initial_balance.can_melt}")
+        self.assertTrue(initial_balance.can_melt)
+
+        # Transfer melt authority to dev
+        tx = self._get_any_tx()
+        context = Context(
+            [NCAcquireAuthorityAction(token_uid=token_uid, mint=False, melt=True)],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "get_melt_authority", context, token_uid
+        )
+
+        # Refresh storage reference after method call
+        updated_storage = self.runner.get_storage(self.dozer_tools_nc_id)
+        final_balance = updated_storage.get_balance(token_uid)
+        
+        # Verify contract still has melt authority (authority is transferred, not revoked)
+        self.assertTrue(final_balance.can_melt)
+        
+        # Note: The developer receives melt authority through the NCAcquireAuthorityAction
+        # in the transaction context, which allows them to melt tokens in their transactions
+
+    def test_get_melt_authority_unauthorized_user(self) -> None:
+        """Test that only project dev can transfer melt authority."""
+        token_uid = self._create_test_project("UnauthorizedToken", "UAT")
+
+        # Try to get melt authority from non-dev address
+        tx = self._get_any_tx()
+        context = Context(
+            [NCAcquireAuthorityAction(token_uid=token_uid, mint=False, melt=True)],
+            tx,
+            self.user_address,  # Not the project dev
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "get_melt_authority", context, token_uid
+            )
+
+    def test_get_melt_authority_insufficient_credits(self) -> None:
+        """Test that method fails without sufficient credits for fees."""
+        token_uid = self._create_test_project("InsufficientToken", "IT")
+
+        # Set fees for get_melt_authority method (as owner)
+        tx = self._get_any_tx()
+        fee_context = Context(
+            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+        )
+
+        method_name = "get_melt_authority"
+        htr_fee = Amount(1_00_000)  # 1 HTR
+        dzr_fee = Amount(0)  # No DZR fee
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_method_fees",
+            fee_context,
+            method_name,
+            htr_fee,
+            dzr_fee,
+        )
+
+        # Don't deposit any credits - project starts with 0 credits after creation
+
+        # Try to get melt authority without sufficient credits
+        tx = self._get_any_tx()
+        context = Context(
+            [NCAcquireAuthorityAction(token_uid=token_uid, mint=False, melt=True)],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(InsufficientCredits):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "get_melt_authority", context, token_uid
+            )
+
+    def test_get_melt_authority_multiple_calls(self) -> None:
+        """Test that method can be called multiple times since authority isn't revoked."""
+        token_uid = self._create_test_project("MultiCallToken", "MCT")
+
+        # Deposit credits to cover fees for multiple calls
+        tx = self._get_any_tx()
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        htr_deposit_amount = Amount(20_00_000)  # Enough for multiple calls
+        
+        deposit_context = Context(
+            [NCDepositAction(token_uid=htr_uid, amount=htr_deposit_amount)],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "deposit_credits", deposit_context, token_uid
+        )
+
+        # First call to get_melt_authority (should succeed)
+        tx1 = self._get_any_tx()
+        context1 = Context(
+            [NCAcquireAuthorityAction(token_uid=token_uid, mint=False, melt=True)],
+            tx1,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "get_melt_authority", context1, token_uid
+        )
+
+        # Verify contract still has melt authority
+        updated_storage = self.runner.get_storage(self.dozer_tools_nc_id)
+        self.assertTrue(updated_storage.get_balance(token_uid).can_melt)
+
+        # Second call to get_melt_authority (should also succeed)
+        tx2 = self._get_any_tx()
+        context2 = Context(
+            [NCAcquireAuthorityAction(token_uid=token_uid, mint=False, melt=True)],
+            tx2,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # This should succeed since the contract still has melt authority
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "get_melt_authority", context2, token_uid
+        )
+
+    def test_get_melt_authority_wrong_action_type(self) -> None:
+        """Test that method fails with wrong action type."""
+        token_uid = self._create_test_project("WrongActionToken", "WAT")
+
+        # Deposit credits to cover fees
+        tx = self._get_any_tx()
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        htr_deposit_amount = Amount(10_00_000)
+        
+        deposit_context = Context(
+            [NCDepositAction(token_uid=htr_uid, amount=htr_deposit_amount)],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "deposit_credits", deposit_context, token_uid
+        )
+
+        # Try with deposit action instead of acquire authority action
+        tx = self._get_any_tx()
+        context = Context(
+            [NCDepositAction(token_uid=token_uid, amount=Amount(1))],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(NCForbiddenAction):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "get_melt_authority", context, token_uid
+            )
+
+    def test_get_melt_authority_acquire_mint_authority(self) -> None:
+        """Test that method fails when trying to acquire mint authority."""
+        token_uid = self._create_test_project("MintAuthToken", "MIT")
+
+        # Deposit credits to cover fees
+        tx = self._get_any_tx()
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        htr_deposit_amount = Amount(10_00_000)
+        
+        deposit_context = Context(
+            [NCDepositAction(token_uid=htr_uid, amount=htr_deposit_amount)],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "deposit_credits", deposit_context, token_uid
+        )
+
+        # Try to acquire mint authority (should fail)
+        tx = self._get_any_tx()
+        context = Context(
+            [NCAcquireAuthorityAction(token_uid=token_uid, mint=True, melt=False)],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "get_melt_authority", context, token_uid
+            )
+
+    def test_get_melt_authority_nonexistent_project(self) -> None:
+        """Test that method fails for non-existent projects."""
+        fake_token_uid = TokenUid(VertexId(b"\x99" * 32))
+
+        tx = self._get_any_tx()
+        context = Context(
+            [NCAcquireAuthorityAction(token_uid=fake_token_uid, mint=False, melt=True)],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(NCInvalidAction):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "get_melt_authority", context, fake_token_uid
             )
 
 

@@ -813,10 +813,13 @@ class DozerTools(Blueprint):
         if isinstance(action, NCAcquireAuthorityAction):
             if action.mint:
                 raise Unauthorized("Contract cannot acquire mint authority for this token")
+            if not action.melt:
+                raise Unauthorized("Must request melt authority acquisition")
         else:
             raise Unauthorized("Only acquire authority action is allowed")
         
-                
+        # Transfer melt authority to the caller by acquiring it from the contract
+        # This will transfer the authority from the contract to the transaction caller
 
     # Admin Methods
 
