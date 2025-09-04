@@ -14,10 +14,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING
 
 from hathor.daa import DifficultyAdjustmentAlgorithm
-from hathor.feature_activation.feature import Feature
 from hathor.feature_activation.feature_service import FeatureService
 from hathor.profiler import get_cpu_profiler
 from hathor.reward_lock import get_spent_reward_locked_info
@@ -117,8 +116,6 @@ class TransactionVerifier:
 
     def verify_inputs(self, tx: Transaction, *, skip_script: bool = False) -> None:
         """Verify inputs signatures and ownership and all inputs actually exist"""
-        from hathor.transaction.storage.exceptions import TransactionDoesNotExist
-
         spent_outputs: set[tuple[VertexId, int]] = set()
         for input_tx in tx.inputs:
             if len(input_tx.data) > self._settings.MAX_INPUT_DATA_SIZE:
@@ -126,13 +123,8 @@ class TransactionVerifier:
                     len(input_tx.data), self._settings.MAX_INPUT_DATA_SIZE
                 ))
 
-            try:
-                spent_tx = tx.get_spent_tx(input_tx)
-                if input_tx.index >= len(spent_tx.outputs):
-                    raise InexistentInput('Output spent by this input does not exist: {} index {}'.format(
-                        input_tx.tx_id.hex(), input_tx.index))
-            except TransactionDoesNotExist:
-                raise InexistentInput('Input tx does not exist: {}'.format(input_tx.tx_id.hex()))
+            spent_tx = tx.get_spent_tx(input_tx)
+            assert input_tx.index < len(spent_tx.outputs)
 
             if tx.timestamp <= spent_tx.timestamp:
                 raise TimestampError('tx={} timestamp={}, spent_tx={} timestamp={}'.format(
@@ -274,22 +266,14 @@ class TransactionVerifier:
 
     def verify_version(self, tx: Transaction) -> None:
         """Verify that the vertex version is valid."""
-        from hathor.conf.settings import NanoContractsSetting
+        from hathor.nanocontracts.utils import is_nano_active
         allowed_tx_versions = {
             TxVersion.REGULAR_TRANSACTION,
             TxVersion.TOKEN_CREATION_TRANSACTION,
         }
 
-        match self._settings.ENABLE_NANO_CONTRACTS:
-            case NanoContractsSetting.DISABLED:
-                pass
-            case NanoContractsSetting.ENABLED:
-                allowed_tx_versions.add(TxVersion.ON_CHAIN_BLUEPRINT)
-            case NanoContractsSetting.FEATURE_ACTIVATION:
-                if self._feature_service.is_feature_active(vertex=tx, feature=Feature.NANO_CONTRACTS):
-                    allowed_tx_versions.add(TxVersion.ON_CHAIN_BLUEPRINT)
-            case _ as unreachable:
-                assert_never(unreachable)
+        if is_nano_active(self._settings, tx, self._feature_service):
+            allowed_tx_versions.add(TxVersion.ON_CHAIN_BLUEPRINT)
 
         if tx.version not in allowed_tx_versions:
             raise InvalidVersionError(f'invalid vertex version: {tx.version}')
