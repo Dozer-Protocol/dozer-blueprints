@@ -17,9 +17,10 @@ from hathor.nanocontracts.blueprints.dozer_pool_manager import (
 )
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
+from hathor.nanocontracts.vertex_data import VertexData, BlockData
 
 from hathor.nanocontracts.nc_types.nc_type import NCType
-from hathor.nanocontracts.types import Address, Amount, NCAction, NCActionType, NCDepositAction, NCWithdrawalAction
+from hathor.nanocontracts.types import Address, Amount, NCAction, NCActionType, NCDepositAction, NCWithdrawalAction, VertexId
 from hathor.transaction.base_transaction import BaseTransaction
 from hathor.types import TokenUid
 from hathor.util import not_none
@@ -70,8 +71,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def _initialize_contract(self):
         """Initialize the DozerPoolManager contract"""
         tx = self._get_any_tx()
-        context = Context(
-            [], tx, Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp()
         )
         self.runner.create_contract(
             self.nc_id,
@@ -122,10 +126,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             NCDepositAction(token_uid=token_a, amount=reserve_a),
             NCDepositAction(token_uid=token_b, amount=reserve_b),
         ]
-        context = Context(
-            actions,  # type: ignore
-            tx,
-            Address(self._get_any_address()[0]),
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(self._get_any_address()[0]),
             timestamp=self.get_current_timestamp(),
         )
         pool_key = self.runner.call_public_method(
@@ -148,8 +152,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             NCDepositAction(token_uid=token_b, amount=amount_b),
         ]
         address_bytes, _ = self._get_any_address()
-        context = Context(
-            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp() # type: ignore
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(address_bytes),
+            timestamp=self.get_current_timestamp()
         ) 
         result = self.runner.call_public_method(
             self.nc_id, "add_liquidity", context, fee
@@ -205,8 +212,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             address_bytes, _ = self._get_any_address()
         else:
             address_bytes = address
-        context = Context(
-            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp()  # type: ignore
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(address_bytes),
+            timestamp=self.get_current_timestamp()
         )
         result = self.runner.call_public_method(
             self.nc_id, "remove_liquidity", context, fee
@@ -221,8 +231,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             NCWithdrawalAction(token_uid=token_out, amount=amount_out),
         ]
         address_bytes, _ = self._get_any_address()
-        return Context(
-            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp()
+        return self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(address_bytes),
+            timestamp=self.get_current_timestamp()
         )
 
     def _swap_exact_tokens_for_tokens(
@@ -287,10 +300,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             NCDepositAction(token_uid=self.token_a, amount=1000_00),
             NCDepositAction(token_uid=self.token_b, amount=1000_00),
         ]
-        context = Context(
-            actions,  # type: ignore
-            tx,
-            Address(self._get_any_address()[0]),
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(self._get_any_address()[0]),
             timestamp=self.get_current_timestamp(),
         )
         with self.assertRaises(PoolExists):
@@ -691,7 +704,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Create context with owner address
         tx = self._get_any_tx()
         context = Context(
-            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+            caller_id=self.owner_address,
+            vertex_data=VertexData.create_from_vertex(tx),
+            block_data=BlockData(hash=VertexId(b''), timestamp=self.get_current_timestamp(), height=0),
+            actions=Context.__group_actions__([]),
         )
 
         # Change protocol fee
@@ -708,8 +724,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(updated_contract.default_protocol_fee, new_fee)
 
         # Try to change protocol fee with non-owner address
-        non_owner_context = Context(
-            [], tx, Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+        non_owner_context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp()
         )
 
         # Should fail with Unauthorized
@@ -727,8 +746,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Get pools for token_a
         tx = self._get_any_tx()
-        context = Context(
-            [], tx, Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp()
         )
 
         token_a_pools = self.runner.call_view_method(
@@ -764,8 +786,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Get pool info
         tx = self._get_any_tx()
-        context = Context(
-            [], tx, Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp()
         )
 
         pool_info = self.runner.call_view_method(
@@ -803,7 +828,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Set the HTR-USD pool with owner address
         tx = self._get_any_tx()
         owner_context = Context(
-            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+            caller_id=self.owner_address,
+            vertex_data=VertexData.create_from_vertex(tx),
+            block_data=BlockData(hash=VertexId(b''), timestamp=self.get_current_timestamp(), height=0),
+            actions=Context.__group_actions__([]),
         )
 
         self.runner.call_public_method(
@@ -816,8 +844,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Try to set the HTR-USD pool with non-owner address (should fail)
         non_owner_address, _ = self._get_any_address()
-        non_owner_context = Context(
-            [], tx, Address(non_owner_address), timestamp=self.get_current_timestamp()
+        non_owner_context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(non_owner_address),
+            timestamp=self.get_current_timestamp()
         )
 
         with self.assertRaises(Unauthorized):
@@ -907,7 +938,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Set the HTR-USD pool
         tx = self._get_any_tx()
         owner_context = Context(
-            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+            caller_id=self.owner_address,
+            vertex_data=VertexData.create_from_vertex(tx),
+            block_data=BlockData(hash=VertexId(b''), timestamp=self.get_current_timestamp(), height=0),
+            actions=Context.__group_actions__([]),
         )
 
         self.runner.call_public_method(
@@ -1024,7 +1058,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Create context with owner address
         tx = self._get_any_tx()
         context = Context(
-            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+            caller_id=self.owner_address,
+            vertex_data=VertexData.create_from_vertex(tx),
+            block_data=BlockData(hash=VertexId(b''), timestamp=self.get_current_timestamp(), height=0),
+            actions=Context.__group_actions__([]),
         )
 
         # Add the signer
@@ -1040,8 +1077,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Try to add a signer with non-owner address (should fail)
         non_owner_address, _ = self._get_any_address()
-        non_owner_context = Context(
-            [], tx, Address(non_owner_address), timestamp=self.get_current_timestamp()
+        non_owner_context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(non_owner_address),
+            timestamp=self.get_current_timestamp()
         )
 
         with self.assertRaises(Unauthorized):
@@ -1060,7 +1100,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Add the signer
         tx = self._get_any_tx()
         owner_context = Context(
-            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+            caller_id=self.owner_address,
+            vertex_data=VertexData.create_from_vertex(tx),
+            block_data=BlockData(hash=VertexId(b''), timestamp=self.get_current_timestamp(), height=0),
+            actions=Context.__group_actions__([]),
         )
 
         self.runner.call_public_method(
@@ -1095,8 +1138,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Try to remove a signer with non-owner address (should fail)
         non_owner_address, _ = self._get_any_address()
-        non_owner_context = Context(
-            [], tx, Address(non_owner_address), timestamp=self.get_current_timestamp()
+        non_owner_context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(non_owner_address),
+            timestamp=self.get_current_timestamp()
         )
 
         with self.assertRaises(Unauthorized):
@@ -1115,7 +1161,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Sign the pool with owner address
         tx = self._get_any_tx()
         owner_context = Context(
-            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+            caller_id=self.owner_address,
+            vertex_data=VertexData.create_from_vertex(tx),
+            block_data=BlockData(hash=VertexId(b''), timestamp=self.get_current_timestamp(), height=0),
+            actions=Context.__group_actions__([]),
         )
 
         self.runner.call_public_method(
@@ -1134,8 +1183,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Try to sign a pool with unauthorized address (should fail)
         unauthorized_address, _ = self._get_any_address()
-        unauthorized_context = Context(
-            [], tx, Address(unauthorized_address), timestamp=self.get_current_timestamp()
+        unauthorized_context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(unauthorized_address),
+            timestamp=self.get_current_timestamp()
         )
 
         with self.assertRaises(Unauthorized):
@@ -1158,8 +1210,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         pool_key2, _ = self._create_pool(self.token_a, self.token_c)
 
         # Sign the second pool with the new signer
-        signer_context = Context(
-            [], tx, Address(signer_address), timestamp=self.get_current_timestamp()
+        signer_context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(signer_address),
+            timestamp=self.get_current_timestamp()
         )
 
         self.runner.call_public_method(
@@ -1185,7 +1240,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Create a new authorized signer
         tx = self._get_any_tx()
         owner_context = Context(
-            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+            caller_id=self.owner_address,
+            vertex_data=VertexData.create_from_vertex(tx),
+            block_data=BlockData(hash=VertexId(b''), timestamp=self.get_current_timestamp(), height=0),
+            actions=Context.__group_actions__([]),
         )
 
         signer_address, _ = self._get_any_address()
@@ -1194,8 +1252,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
 
         # Sign the pool with the signer
-        signer_context = Context(
-            [], tx, Address(signer_address), timestamp=self.get_current_timestamp()
+        signer_context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(signer_address),
+            timestamp=self.get_current_timestamp()
         )
 
         self.runner.call_public_method(
@@ -1237,8 +1298,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Try to unsign with unauthorized address (should fail)
         unauthorized_address, _ = self._get_any_address()
-        unauthorized_context = Context(
-            [], tx, Address(unauthorized_address), timestamp=self.get_current_timestamp()
+        unauthorized_context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(unauthorized_address),
+            timestamp=self.get_current_timestamp()
         )
 
         # Sign the pool first
@@ -1834,8 +1898,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             actions.append(NCWithdrawalAction(token_uid=token_out, amount=amount_out))
 
         address_bytes, _ = self._get_any_address()
-        return Context(
-            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp()
+        return self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(address_bytes),
+            timestamp=self.get_current_timestamp()
         )
 
     def test_invalid_swap_parameters(self):
@@ -1896,13 +1963,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(len(user_pools), 0)
 
         # Add liquidity to the first pool
-        context = Context(
-            [
+        context = self.create_context(
+            actions=[
                 NCDepositAction(token_uid=self.token_a, amount=500_00),
                 NCDepositAction(token_uid=self.token_b, amount=500_00),
             ],
-            self._get_any_tx(),
-            Address(user_address),
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
             timestamp=self.get_current_timestamp(),
         )
         self.runner.call_public_method(self.nc_id, "add_liquidity", context, 3)
@@ -1914,13 +1981,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(len(user_pools), 1)
         self.assertEqual(user_pools[0], pool_key1)
         # Add liquidity to the third pool
-        context = Context(
-            [
+        context = self.create_context(
+            actions=[
                 NCDepositAction(token_uid=self.token_b, amount=500_00),
                 NCDepositAction(token_uid=self.token_c, amount=500_00),
             ],
-            self._get_any_tx(),
-            Address(user_address),
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
             timestamp=self.get_current_timestamp(),
         )
         self.runner.call_public_method(self.nc_id, "add_liquidity", context, 10)
@@ -1953,13 +2020,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(len(positions), 0)
 
         # Add liquidity to the first pool
-        context = Context(
-            [
+        context = self.create_context(
+            actions=[
                 NCDepositAction(token_uid=self.token_a, amount=500_00),
                 NCDepositAction(token_uid=self.token_b, amount=1000_00),
             ],
-            self._get_any_tx(),
-            Address(user_address),
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
             timestamp=self.get_current_timestamp(),
         )
         self.runner.call_public_method(self.nc_id, "add_liquidity", context, 3)
@@ -1982,13 +2049,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Note: UserPosition doesn't include fee field
 
         # Add liquidity to the second pool
-        context = Context(
-            [
+        context = self.create_context(
+            actions=[
                 NCDepositAction(token_uid=self.token_a, amount=750_00),
                 NCDepositAction(token_uid=self.token_c, amount=750_00),
             ],
-            self._get_any_tx(),
-            Address(user_address),
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
             timestamp=self.get_current_timestamp(),
         )
         self.runner.call_public_method(self.nc_id, "add_liquidity", context, 5)
@@ -2101,13 +2168,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 )
 
                 # Add liquidity
-                context = Context(
-                    [
+                context = self.create_context(
+                    actions=[
                         NCDepositAction(token_uid=self.token_a, amount=amount_a),
                         NCDepositAction(token_uid=self.token_b, amount=amount_b),
                     ],
-                    self._get_any_tx(),
-                    Address(address_bytes),
+                    vertex=self._get_any_tx(),
+                    caller_id=Address(address_bytes),
                     timestamp=self.get_current_timestamp(),
                 )
                 result = self.runner.call_public_method(
@@ -2213,13 +2280,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                     all_users.add(address_bytes)
 
                     # Execute swap
-                    context = Context(
-                        [
+                    context = self.create_context(
+                        actions=[
                             NCDepositAction(token_uid=self.token_a, amount=swap_amount_a),
                             NCWithdrawalAction(token_uid=self.token_b, amount=expected_amount_b),
                         ],
-                        self._get_any_tx(),
-                        Address(address_bytes),
+                        vertex=self._get_any_tx(),
+                        caller_id=Address(address_bytes),
                         timestamp=self.get_current_timestamp(),
                     )
                     result = self.runner.call_public_method(
@@ -2261,13 +2328,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                     all_users.add(address_bytes)
 
                     # Execute swap
-                    context = Context(
-                        [
+                    context = self.create_context(
+                        actions=[
                             NCDepositAction(token_uid=self.token_b, amount=swap_amount_b),
                             NCWithdrawalAction(token_uid=self.token_a, amount=expected_amount_a),
                         ],
-                        self._get_any_tx(),
-                        Address(address_bytes),
+                        vertex=self._get_any_tx(),
+                        caller_id=Address(address_bytes),
                         timestamp=self.get_current_timestamp(),
                     )
 
