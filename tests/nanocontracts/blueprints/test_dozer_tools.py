@@ -24,10 +24,6 @@ from hathor.nanocontracts.blueprints.dozer_tools import (
     Unauthorized,
     InsufficientCredits,
     InvalidAllocation,
-    VESTING_BLUEPRINT_ID,
-    STAKING_BLUEPRINT_ID,
-    DAO_BLUEPRINT_ID,
-    CROWDSALE_BLUEPRINT_ID,
 )
 from hathor.nanocontracts.blueprints.dozer_pool_manager import DozerPoolManager
 from hathor.nanocontracts.blueprints.vesting import Vesting
@@ -54,6 +50,36 @@ from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
 DOZER_POOL_MANAGER_BLUEPRINT_ID = (
     "d6c09caa2f1f7ef6a6f416301c2b665e041fa819a792e53b8409c9c1aed2c89a"
+)
+
+# Blueprint IDs for testing (moved from dozer_tools.py)
+VESTING_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "42e7f272b6b966f26576a5c1d0c9637f456168c85e18a3e86c0c60e909a93275"
+        )
+    )
+)
+STAKING_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "ac6bf4f6a89a34e81a21a6e07e24f07739af5c3d6f4c15e16c5ae4e4108aaa48"
+        )
+    )
+)
+DAO_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "6cfdd13e8b9c689b8d87bb8100b4e580e0e9d20ee75a8c5aee9e7bef51e0b1a0"
+        )
+    )
+)
+CROWDSALE_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "7b3ae18c763b2254baf8b9801bc0dcd3e77db57d7de7fd34cc62b526aa91d9fb"
+        )
+    )
 )
 
 
@@ -110,6 +136,9 @@ class DozerToolsTest(BlueprintTestCase):
 
         # Initialize DozerTools
         self._initialize_dozer_tools()
+        
+        # Configure blueprint IDs after initialization
+        self._configure_blueprint_ids()
 
     def _get_any_tx(self) -> BaseTransaction:
         genesis = self.manager.tx_storage.get_all_genesis()
@@ -148,6 +177,27 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         self.dozer_tools_storage = self.runner.get_storage(self.dozer_tools_nc_id)
+
+    def _configure_blueprint_ids(self):
+        """Configure blueprint IDs for testing."""
+        tx = self._get_any_tx()
+        context = Context(
+            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+        )
+
+        # Configure all blueprint IDs as owner
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_vesting_blueprint_id", context, VESTING_BLUEPRINT_ID
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_staking_blueprint_id", context, STAKING_BLUEPRINT_ID
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_dao_blueprint_id", context, DAO_BLUEPRINT_ID
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_crowdsale_blueprint_id", context, CROWDSALE_BLUEPRINT_ID
+        )
 
     def test_initialize_dozer_tools(self) -> None:
         """Test DozerTools initialization."""
@@ -1546,6 +1596,70 @@ class DozerToolsTest(BlueprintTestCase):
             self.runner.call_public_method(
                 self.dozer_tools_nc_id, "get_melt_authority", context, fake_token_uid
             )
+
+
+    def test_blueprint_configuration_methods(self) -> None:
+        """Test blueprint configuration methods."""
+        # Test setting blueprint IDs as owner
+        tx = self._get_any_tx()
+        context = Context(
+            [], tx, self.owner_address, timestamp=self.get_current_timestamp()
+        )
+        
+        # Create new blueprint IDs for testing
+        new_vesting_id = BlueprintId(VertexId(b"\x11" * 32))
+        new_staking_id = BlueprintId(VertexId(b"\x22" * 32))
+        new_dao_id = BlueprintId(VertexId(b"\x33" * 32))
+        new_crowdsale_id = BlueprintId(VertexId(b"\x44" * 32))
+
+        # Set new blueprint IDs
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_vesting_blueprint_id", context, new_vesting_id
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_staking_blueprint_id", context, new_staking_id
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_dao_blueprint_id", context, new_dao_id
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_crowdsale_blueprint_id", context, new_crowdsale_id
+        )
+
+        # Verify blueprint IDs were updated by checking they work for contract creation
+        # (We can't directly read the blueprint IDs, but we can test their effects)
+        # Just test that no errors are thrown - the blueprint IDs were set successfully
+
+    def test_blueprint_configuration_unauthorized(self) -> None:
+        """Test that only owner can configure blueprint IDs."""
+        tx = self._get_any_tx()
+        context = Context(
+            [], tx, self.dev_address, timestamp=self.get_current_timestamp()  # Not owner
+        )
+
+        new_blueprint_id = BlueprintId(VertexId(b"\x99" * 32))
+
+        # All blueprint configuration methods should fail for non-owner
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "set_vesting_blueprint_id", context, new_blueprint_id
+            )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "set_staking_blueprint_id", context, new_blueprint_id
+            )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "set_dao_blueprint_id", context, new_blueprint_id
+            )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "set_crowdsale_blueprint_id", context, new_blueprint_id
+            )
+
 
 
 if __name__ == "__main__":

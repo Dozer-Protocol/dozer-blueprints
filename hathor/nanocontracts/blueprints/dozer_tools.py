@@ -32,35 +32,6 @@ from hathor.nanocontracts.types import (
     NCActionType,
 )
 
-# Blueprint IDs from nano_testnet.yml
-VESTING_BLUEPRINT_ID = BlueprintId(
-    VertexId(
-        bytes.fromhex(
-            "42e7f272b6b966f26576a5c1d0c9637f456168c85e18a3e86c0c60e909a93275"
-        )
-    )
-)
-STAKING_BLUEPRINT_ID = BlueprintId(
-    VertexId(
-        bytes.fromhex(
-            "ac6bf4f6a89a34e81a21a6e07e24f07739af5c3d6f4c15e16c5ae4e4108aaa48"
-        )
-    )
-)
-DAO_BLUEPRINT_ID = BlueprintId(
-    VertexId(
-        bytes.fromhex(
-            "6cfdd13e8b9c689b8d87bb8100b4e580e0e9d20ee75a8c5aee9e7bef51e0b1a0"
-        )
-    )
-)
-CROWDSALE_BLUEPRINT_ID = BlueprintId(
-    VertexId(
-        bytes.fromhex(
-            "7b3ae18c763b2254baf8b9801bc0dcd3e77db57d7de7fd34cc62b526aa91d9fb"
-        )
-    )
-)
 
 # Special allocation indices for vesting contract
 STAKING_ALLOCATION_INDEX = 0  # "Staking" - for staking contract
@@ -126,6 +97,12 @@ class VestingNotConfigured(DozerToolsError):
     pass
 
 
+class FeatureNotAvailable(DozerToolsError):
+    """Raised when trying to use a feature that is not configured/available."""
+
+    pass
+
+
 class InvalidAllocation(DozerToolsError):
     """Raised when allocation percentages are invalid."""
 
@@ -144,6 +121,12 @@ class DozerTools(Blueprint):
     owner: Address
     dozer_pool_manager_id: ContractId
     dzr_token_uid: TokenUid
+    
+    # Configurable blueprint IDs
+    vesting_blueprint_id: BlueprintId
+    staking_blueprint_id: BlueprintId
+    dao_blueprint_id: BlueprintId
+    crowdsale_blueprint_id: BlueprintId
 
     # Legacy token permissions (admin-controlled)
     legacy_token_permissions: dict[TokenUid, Address]  # token -> authorized_creator
@@ -287,6 +270,13 @@ class DozerTools(Blueprint):
         self.dozer_pool_manager_id = dozer_pool_manager_id
         self.dzr_token_uid = dzr_token_uid
         self.minimum_deposit = minimum_deposit
+        
+        # Initialize blueprint IDs as unset (NULL_CONTRACT_ID equivalent)
+        null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
+        self.vesting_blueprint_id = null_blueprint
+        self.staking_blueprint_id = null_blueprint
+        self.dao_blueprint_id = null_blueprint
+        self.crowdsale_blueprint_id = null_blueprint
 
         # Initialize all fees to 0 (free initially)
         # self.method_fees_htr = {}
@@ -403,8 +393,9 @@ class DozerTools(Blueprint):
             NCDepositAction(token_uid=token_uid, amount=total_supply)
         ]
 
+        self._ensure_vesting_blueprint_configured()
         vesting_id, _ = self.syscall.create_contract(
-            VESTING_BLUEPRINT_ID,
+            self.vesting_blueprint_id,
             vesting_salt,
             vesting_actions,
             token_uid,  # Initialize vesting with the token
@@ -545,8 +536,9 @@ class DozerTools(Blueprint):
             NCDepositAction(token_uid=token_uid, amount=staking_amount)
         ]
 
+        self._ensure_staking_blueprint_configured()
         staking_id, _ = self.syscall.create_contract(
-            STAKING_BLUEPRINT_ID, salt, staking_actions, earnings_per_day, token_uid, self.syscall.get_contract_id()
+            self.staking_blueprint_id, salt, staking_actions, earnings_per_day, token_uid, self.syscall.get_contract_id()
         )
 
         self.project_staking_contract[token_uid] = staking_id
@@ -595,8 +587,9 @@ class DozerTools(Blueprint):
         # Generate salt and create DAO contract
         salt = self._generate_salt(ctx, token_uid, "dao")
 
+        self._ensure_dao_blueprint_configured()
         dao_id, _ = self.syscall.create_contract(
-            DAO_BLUEPRINT_ID,
+            self.dao_blueprint_id,
             salt,
             [],
             name,
@@ -707,8 +700,9 @@ class DozerTools(Blueprint):
             NCDepositAction(token_uid=token_uid, amount=public_sale_amount)
         ]
 
+        self._ensure_crowdsale_blueprint_configured()
         crowdsale_id, _ = self.syscall.create_contract(
-            CROWDSALE_BLUEPRINT_ID,
+            self.crowdsale_blueprint_id,
             salt,
             crowdsale_actions,
             token_uid,
@@ -832,6 +826,92 @@ class DozerTools(Blueprint):
         
         # Mark melt authority as acquired for this project
         self.project_melt_authority_acquired[token_uid] = True
+
+    # Blueprint Configuration Methods (Admin Only)
+
+    @public
+    def set_vesting_blueprint_id(
+        self,
+        ctx: Context,
+        blueprint_id: BlueprintId,
+    ) -> None:
+        """Admin method to set the vesting blueprint ID.
+
+        Args:
+            ctx: Transaction context
+            blueprint_id: Blueprint ID for vesting contracts
+        """
+        self._only_owner(ctx)
+        self.vesting_blueprint_id = blueprint_id
+
+    @public
+    def set_staking_blueprint_id(
+        self,
+        ctx: Context,
+        blueprint_id: BlueprintId,
+    ) -> None:
+        """Admin method to set the staking blueprint ID.
+
+        Args:
+            ctx: Transaction context
+            blueprint_id: Blueprint ID for staking contracts
+        """
+        self._only_owner(ctx)
+        self.staking_blueprint_id = blueprint_id
+
+    @public
+    def set_dao_blueprint_id(
+        self,
+        ctx: Context,
+        blueprint_id: BlueprintId,
+    ) -> None:
+        """Admin method to set the DAO blueprint ID.
+
+        Args:
+            ctx: Transaction context
+            blueprint_id: Blueprint ID for DAO contracts
+        """
+        self._only_owner(ctx)
+        self.dao_blueprint_id = blueprint_id
+
+    @public
+    def set_crowdsale_blueprint_id(
+        self,
+        ctx: Context,
+        blueprint_id: BlueprintId,
+    ) -> None:
+        """Admin method to set the crowdsale blueprint ID.
+
+        Args:
+            ctx: Transaction context
+            blueprint_id: Blueprint ID for crowdsale contracts
+        """
+        self._only_owner(ctx)
+        self.crowdsale_blueprint_id = blueprint_id
+
+    def _ensure_vesting_blueprint_configured(self) -> None:
+        """Ensure vesting blueprint is configured."""
+        null_blueprint = BlueprintId(VertexId(b"\\x00" * 32))
+        if self.vesting_blueprint_id == null_blueprint:
+            raise FeatureNotAvailable("Vesting feature not available")
+
+    def _ensure_staking_blueprint_configured(self) -> None:
+        """Ensure staking blueprint is configured."""
+        null_blueprint = BlueprintId(VertexId(b"\\x00" * 32))
+        if self.staking_blueprint_id == null_blueprint:
+            raise FeatureNotAvailable("Staking feature not available")
+
+    def _ensure_dao_blueprint_configured(self) -> None:
+        """Ensure DAO blueprint is configured."""
+        null_blueprint = BlueprintId(VertexId(b"\\x00" * 32))
+        if self.dao_blueprint_id == null_blueprint:
+            raise FeatureNotAvailable("DAO feature not available")
+
+    def _ensure_crowdsale_blueprint_configured(self) -> None:
+        """Ensure crowdsale blueprint is configured."""
+        null_blueprint = BlueprintId(VertexId(b"\\x00" * 32))
+        if self.crowdsale_blueprint_id == null_blueprint:
+            raise FeatureNotAvailable("Crowdsale feature not available")
 
     # Admin Methods
 
