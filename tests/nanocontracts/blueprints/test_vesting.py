@@ -70,15 +70,13 @@ class VestingTestCase(BlueprintTestCase):
         )
 
         # Use runner.create_contract to create and initialize the contract
-        # Pass creator_contract_id if provided
-        if creator_contract_id is not None:
-            self.runner.create_contract(
-                self.contract_id, self.blueprint_id, ctx, self.token_uid, creator_contract_id
-            )
-        else:
-            self.runner.create_contract(
-                self.contract_id, self.blueprint_id, ctx, self.token_uid
-            )
+        # Use null contract ID if not provided
+        if creator_contract_id is None:
+            creator_contract_id = ContractId(VertexId(b"\x00" * 32))
+            
+        self.runner.create_contract(
+            self.contract_id, self.blueprint_id, ctx, self.token_uid, creator_contract_id
+        )
 
     def _configure_vesting(
         self,
@@ -157,7 +155,7 @@ class VestingTestCase(BlueprintTestCase):
             self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
         )
 
-        self.assertEqual(info.beneficiary, beneficiary)
+        self.assertEqual(info.beneficiary, beneficiary.hex())
         self.assertEqual(info.amount, amount)
         self.assertEqual(info.withdrawn, 0)
         self.assertEqual(info.vested, 0)
@@ -256,7 +254,7 @@ class VestingTestCase(BlueprintTestCase):
         info = self.runner.call_view_method(
             self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
         )
-        self.assertEqual(info.beneficiary, new_beneficiary)
+        self.assertEqual(info.beneficiary, new_beneficiary.hex())
 
         # Test unauthorized change
         unauthorized_ctx = self.create_context(
@@ -530,7 +528,7 @@ class VestingTestCase(BlueprintTestCase):
         info = self.runner.call_view_method(
             self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
         )
-        self.assertEqual(info.beneficiary, new_beneficiary)
+        self.assertEqual(info.beneficiary, new_beneficiary.hex())
 
     def test_no_creator_contract_fallback(self):
         """Test that contract works normally when no creator_contract_id is provided."""
