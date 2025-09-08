@@ -136,6 +136,9 @@ class DozerTools(Blueprint):
     project_exists: dict[TokenUid, bool]  # token_uid -> exists
     all_projects: list[TokenUid]  # Ordered list of all project tokens
     total_projects_count: int  # Total number of projects created
+    
+    # Symbol blocking - once used, symbols are permanently reserved
+    used_symbols: dict[str, bool]  # symbol -> used (prevents reuse)
 
     # Project basic information
     project_name: dict[TokenUid, str]  # token_uid -> name
@@ -284,6 +287,10 @@ class DozerTools(Blueprint):
 
         # Initialize project counter
         self.total_projects_count = 0
+        
+        # Initialize used symbols registry
+        # This dictionary tracks all symbols that have ever been used
+        # Once a symbol is used, it cannot be reused even after project cancellation
 
     @public(allow_deposit=True, allow_acquire_authority=True)
     def create_project(
@@ -341,6 +348,10 @@ class DozerTools(Blueprint):
         else:
             raise InsufficientCredits("HTR deposit required for token creation")
 
+        # Check if symbol has ever been used (before creating token)
+        if self.symbol_exists(token_symbol):
+            raise ProjectAlreadyExists(f"Token symbol '{token_symbol}' has already been used and cannot be reused")
+
         # Create the token
         token_uid = self.syscall.create_token(
             token_name,
@@ -366,6 +377,9 @@ class DozerTools(Blueprint):
         self.project_dev[token_uid] = Address(ctx.caller_id)
         self.project_created_at[token_uid] = Timestamp(ctx.timestamp)
         self.project_total_supply[token_uid] = total_supply
+        
+        # Mark symbol as permanently used to prevent future reuse
+        self.used_symbols[token_symbol.upper().strip()] = True
 
         # Store optional metadata (only if provided and not empty)
         if description != "":
@@ -827,6 +841,238 @@ class DozerTools(Blueprint):
         # Mark melt authority as acquired for this project
         self.project_melt_authority_acquired[token_uid] = True
 
+    @public(allow_withdrawal=True)
+    def cancel_project(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Cancel project and return deposited HTR (only if vesting not configured).
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+
+        This method can only be called:
+        - By the project dev
+        - When vesting is not yet configured
+        - Will melt all token supply and return HTR deposit
+        - Symbol becomes permanently reserved and cannot be reused
+        """
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "cancel_project")
+
+        # Check that vesting is not configured yet
+        if self.project_vesting_configured.get(token_uid, False):
+            raise InvalidAllocation("Cannot cancel project after vesting is configured")
+
+        # Check if we have the withdrawal action for HTR
+        if len(ctx.actions) != 1:
+            raise InsufficientCredits("Exactly one HTR withdrawal action required")
+
+        htr_action = ctx.get_single_action(TokenUid(HTR_UID))
+        if htr_action.type != NCActionType.WITHDRAWAL:
+            raise InsufficientCredits("HTR withdrawal action required")
+
+        # Get the total supply to calculate HTR refund
+        total_supply = self.project_total_supply[token_uid]
+        htr_refund = total_supply // 100  # 1% of total supply
+
+        # Validate withdrawal amount
+        if isinstance(htr_action, NCWithdrawalAction):
+            if htr_action.amount != htr_refund:
+                raise InsufficientCredits(
+                    f"HTR withdrawal amount must be exactly {htr_refund} (1% of total supply)"
+                )
+        else:
+            raise InsufficientCredits("HTR withdrawal action required")
+
+        # Melt all token supply (contract has melt authority)
+        if self.syscall.can_melt(token_uid):
+            # Get vesting contract that holds all tokens
+            vesting_contract = self.project_vesting_contract[token_uid]
+            
+            # Withdraw all tokens from vesting contract to this contract first
+            withdraw_all_actions: list[NCAction] = [
+                NCWithdrawalAction(token_uid=token_uid, amount=total_supply)
+            ]
+            
+            # Call vesting contract to get all tokens back
+            self.syscall.call_public_method(
+                vesting_contract, "withdraw_available", withdraw_all_actions
+            )
+            
+            # Now melt all tokens that are in this contract
+            self.syscall.melt_tokens(token_uid, total_supply)
+
+        # Remove project from all dictionaries and lists
+        # Basic information
+        if token_uid in self.project_exists:
+            del self.project_exists[token_uid]
+        if token_uid in self.project_name:
+            del self.project_name[token_uid]
+        if token_uid in self.project_symbol:
+            del self.project_symbol[token_uid]
+        if token_uid in self.project_dev:
+            del self.project_dev[token_uid]
+        if token_uid in self.project_created_at:
+            del self.project_created_at[token_uid]
+        if token_uid in self.project_total_supply:
+            del self.project_total_supply[token_uid]
+
+        # Optional metadata
+        if token_uid in self.project_description:
+            del self.project_description[token_uid]
+        if token_uid in self.project_website:
+            del self.project_website[token_uid]
+        if token_uid in self.project_logo_url:
+            del self.project_logo_url[token_uid]
+        if token_uid in self.project_twitter:
+            del self.project_twitter[token_uid]
+        if token_uid in self.project_telegram:
+            del self.project_telegram[token_uid]
+        if token_uid in self.project_discord:
+            del self.project_discord[token_uid]
+        if token_uid in self.project_github:
+            del self.project_github[token_uid]
+        if token_uid in self.project_category:
+            del self.project_category[token_uid]
+        if token_uid in self.project_whitepaper_url:
+            del self.project_whitepaper_url[token_uid]
+
+        # Credit balances
+        if token_uid in self.project_htr_balance:
+            del self.project_htr_balance[token_uid]
+        if token_uid in self.project_dzr_balance:
+            del self.project_dzr_balance[token_uid]
+
+        # Contract references
+        if token_uid in self.project_vesting_contract:
+            del self.project_vesting_contract[token_uid]
+        if token_uid in self.project_staking_contract:
+            del self.project_staking_contract[token_uid]
+        if token_uid in self.project_dao_contract:
+            del self.project_dao_contract[token_uid]
+        if token_uid in self.project_crowdsale_contract:
+            del self.project_crowdsale_contract[token_uid]
+        if token_uid in self.project_pools:
+            del self.project_pools[token_uid]
+
+        # Allocation percentages
+        if token_uid in self.project_staking_percentage:
+            del self.project_staking_percentage[token_uid]
+        if token_uid in self.project_public_sale_percentage:
+            del self.project_public_sale_percentage[token_uid]
+        if token_uid in self.project_dozer_pool_percentage:
+            del self.project_dozer_pool_percentage[token_uid]
+
+        # Vesting status
+        if token_uid in self.project_vesting_configured:
+            del self.project_vesting_configured[token_uid]
+
+        # Melt authority tracking
+        if token_uid in self.project_melt_authority_acquired:
+            del self.project_melt_authority_acquired[token_uid]
+
+        # Mark project as deleted in all_projects list
+        # Note: We can't actually remove from lists in public methods due to iteration restrictions
+        # The project will be filtered out in view methods
+
+        # Decrease project count
+        self.total_projects_count -= 1
+
+    @public
+    def transfer_dev_authority(
+        self, ctx: Context, token_uid: TokenUid, new_dev: Address
+    ) -> None:
+        """Transfer project dev authority to another address.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            new_dev: New developer address
+        """
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "transfer_dev_authority")
+
+        # Update dev address
+        self.project_dev[token_uid] = new_dev
+
+    @public
+    def update_project_metadata(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        description: str,
+        website: str,
+        logo_url: str,
+        twitter: str,
+        telegram: str,
+        discord: str,
+        github: str,
+        category: str,
+        whitepaper_url: str,
+    ) -> None:
+        """Update project metadata.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            description: Project description (empty string to remove)
+            website: Official website (empty string to remove)
+            logo_url: Logo image URL (empty string to remove)
+            twitter: Twitter handle (empty string to remove)
+            telegram: Telegram link (empty string to remove)
+            discord: Discord link (empty string to remove)
+            github: GitHub link (empty string to remove)
+            category: Project category (empty string to remove)
+            whitepaper_url: Whitepaper link (empty string to remove)
+        """
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "update_project_metadata")
+
+        # Update metadata (store empty strings as deletion from dict)
+        if description != "":
+            self.project_description[token_uid] = description
+        elif token_uid in self.project_description:
+            del self.project_description[token_uid]
+
+        if website != "":
+            self.project_website[token_uid] = website
+        elif token_uid in self.project_website:
+            del self.project_website[token_uid]
+
+        if logo_url != "":
+            self.project_logo_url[token_uid] = logo_url
+        elif token_uid in self.project_logo_url:
+            del self.project_logo_url[token_uid]
+
+        if twitter != "":
+            self.project_twitter[token_uid] = twitter
+        elif token_uid in self.project_twitter:
+            del self.project_twitter[token_uid]
+
+        if telegram != "":
+            self.project_telegram[token_uid] = telegram
+        elif token_uid in self.project_telegram:
+            del self.project_telegram[token_uid]
+
+        if discord != "":
+            self.project_discord[token_uid] = discord
+        elif token_uid in self.project_discord:
+            del self.project_discord[token_uid]
+
+        if github != "":
+            self.project_github[token_uid] = github
+        elif token_uid in self.project_github:
+            del self.project_github[token_uid]
+
+        if category != "":
+            self.project_category[token_uid] = category
+        elif token_uid in self.project_category:
+            del self.project_category[token_uid]
+
+        if whitepaper_url != "":
+            self.project_whitepaper_url[token_uid] = whitepaper_url
+        elif token_uid in self.project_whitepaper_url:
+            del self.project_whitepaper_url[token_uid]
+
     # Blueprint Configuration Methods (Admin Only)
 
     @public
@@ -891,25 +1137,25 @@ class DozerTools(Blueprint):
 
     def _ensure_vesting_blueprint_configured(self) -> None:
         """Ensure vesting blueprint is configured."""
-        null_blueprint = BlueprintId(VertexId(b"\\x00" * 32))
+        null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
         if self.vesting_blueprint_id == null_blueprint:
             raise FeatureNotAvailable("Vesting feature not available")
 
     def _ensure_staking_blueprint_configured(self) -> None:
         """Ensure staking blueprint is configured."""
-        null_blueprint = BlueprintId(VertexId(b"\\x00" * 32))
+        null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
         if self.staking_blueprint_id == null_blueprint:
             raise FeatureNotAvailable("Staking feature not available")
 
     def _ensure_dao_blueprint_configured(self) -> None:
         """Ensure DAO blueprint is configured."""
-        null_blueprint = BlueprintId(VertexId(b"\\x00" * 32))
+        null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
         if self.dao_blueprint_id == null_blueprint:
             raise FeatureNotAvailable("DAO feature not available")
 
     def _ensure_crowdsale_blueprint_configured(self) -> None:
         """Ensure crowdsale blueprint is configured."""
-        null_blueprint = BlueprintId(VertexId(b"\\x00" * 32))
+        null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
         if self.crowdsale_blueprint_id == null_blueprint:
             raise FeatureNotAvailable("Crowdsale feature not available")
 
@@ -996,7 +1242,9 @@ class DozerTools(Blueprint):
         """
         projects = {}
         for token_uid in self.all_projects:
-            if not self.blacklisted_tokens.get(token_uid, False):
+            # Only include projects that still exist and are not blacklisted
+            if (self.project_exists.get(token_uid, False) and 
+                not self.blacklisted_tokens.get(token_uid, False)):
                 projects[token_uid.hex()] = self.project_name.get(token_uid, "")
         return projects
 
@@ -1107,7 +1355,9 @@ class DozerTools(Blueprint):
         """
         projects = {}
         for token_uid in self.all_projects:
-            if not self.blacklisted_tokens.get(token_uid, False):
+            # Only include projects that still exist and are not blacklisted
+            if (self.project_exists.get(token_uid, False) and 
+                not self.blacklisted_tokens.get(token_uid, False)):
                 project_category = self.project_category.get(token_uid, "")
                 if project_category == category:
                     projects[token_uid.hex()] = self.project_name.get(token_uid, "")
@@ -1125,7 +1375,9 @@ class DozerTools(Blueprint):
         """
         projects = {}
         for token_uid in self.all_projects:
-            if not self.blacklisted_tokens.get(token_uid, False):
+            # Only include projects that still exist and are not blacklisted
+            if (self.project_exists.get(token_uid, False) and 
+                not self.blacklisted_tokens.get(token_uid, False)):
                 project_dev = self.project_dev.get(token_uid, Address(b"\x00" * 25))
                 if project_dev == dev_address:
                     projects[token_uid.hex()] = self.project_name.get(token_uid, "")
@@ -1160,6 +1412,38 @@ class DozerTools(Blueprint):
             True if blacklisted, False otherwise
         """
         return self.blacklisted_tokens.get(token_uid, False)
+
+    @view
+    def symbol_exists(self, symbol: str) -> bool:
+        """Check if a token symbol has ever been used.
+        
+        Once a symbol is used by any project (active or cancelled), it becomes
+        permanently reserved and cannot be reused by any future projects.
+
+        Args:
+            symbol: Token symbol to check
+
+        Returns:
+            True if symbol has ever been used, False otherwise
+        """
+        symbol_upper = symbol.upper().strip()
+        return self.used_symbols.get(symbol_upper, False)
+
+
+    @view
+    def can_cancel_project(self, token_uid: TokenUid) -> bool:
+        """Check if a project can be cancelled.
+
+        Args:
+            token_uid: Project token UID
+
+        Returns:
+            True if project can be cancelled (exists and vesting not configured), False otherwise
+        """
+        if not self.project_exists.get(token_uid, False):
+            return False
+        
+        return not self.project_vesting_configured.get(token_uid, False)
 
     @view
     def get_contract_info(self) -> dict[str, str]:

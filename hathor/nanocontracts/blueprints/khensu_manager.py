@@ -2,8 +2,8 @@ from typing import NamedTuple
 
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.types import (
-    Address,
     Amount,
+    CallerId,
     NCAction,
     NCDepositAction,
     NCWithdrawalAction,
@@ -62,6 +62,13 @@ class TokenInfo(NamedTuple):
     """NamedTuple with data from a specific registered token"""
 
     creator: str
+    token_name: str
+    token_symbol: str
+    description: str
+    twitter: str
+    telegram: str
+    website: str
+    url_logo: str
     virtual_pool: Amount
     curve_constant: Amount
     initial_virtual_pool: Amount
@@ -82,7 +89,7 @@ class KhensuManager(Blueprint):
     """Singleton manager for Khensu token bonding curves."""
 
     # Administrative state
-    admin_address: Address
+    admin_address: CallerId
     dozer_pool_manager_id: ContractId
     buy_fee_rate: int
     sell_fee_rate: int
@@ -97,7 +104,7 @@ class KhensuManager(Blueprint):
     all_tokens: list[TokenUid]  # List of all registered tokens
 
     # Token admin data
-    token_creators: dict[TokenUid, Address]  # Token creator addresses
+    token_creators: dict[TokenUid, CallerId]  # Token creator addresses
 
     # Token Bounding Curve
     token_curve_constant: dict[TokenUid, Amount]  # Curve Constant during Token creation
@@ -123,7 +130,16 @@ class KhensuManager(Blueprint):
     token_last_activities: dict[TokenUid, Timestamp]  # Last activity timestamps
 
     # User balances that comes from slippage
-    token_user_balances: dict[TokenUid, dict[Address, Amount]]
+    token_user_balances: dict[TokenUid, dict[CallerId, Amount]]
+
+    # Token metadata
+    token_names: dict[TokenUid, str]  # Token names
+    token_symbols: dict[TokenUid, str]  # Token symbols  
+    token_descriptions: dict[TokenUid, str]  # Token description
+    token_twitters: dict[TokenUid, str]  # Token twitter url
+    token_telegrams: dict[TokenUid, str]  # Token telegram url
+    token_websites: dict[TokenUid, str]  # Token website url
+    token_logos: dict[TokenUid, str]  # Token logo URLs
 
     # Platform statistics
     total_tokens_created: int
@@ -147,7 +163,7 @@ class KhensuManager(Blueprint):
         graduation_fee: Amount,
     ) -> None:
         """Initialize the KhensuManager contract."""
-        self.admin_address = ctx.address
+        self.admin_address = ctx.caller_id
         self.dozer_pool_manager_id = dozer_pool_manager_id
 
         # Default parameters for new tokens
@@ -167,7 +183,7 @@ class KhensuManager(Blueprint):
         self.collected_sell_fees = Amount(0)
         self.collected_graduation_fees = Amount(0)
 
-    def _get_token(self, token_uid: TokenUid) -> dict[str, TokenInfo]:
+    def _get_token(self, token_uid: TokenUid) -> TokenInfo:
         """Get the token data for a given token uid as a dictionary."""
         if token_uid not in self.all_tokens:
             raise TokenNotFound(f"Token does not exist: {token_uid.hex()}")
@@ -175,6 +191,13 @@ class KhensuManager(Blueprint):
         # Build token data structure
         return TokenInfo(
             self.token_creators.get(token_uid).hex(),
+            self.token_names.get(token_uid),
+            self.token_symbols.get(token_uid),
+            self.token_descriptions.get(token_uid),
+            self.token_twitters.get(token_uid),
+            self.token_telegrams.get(token_uid),
+            self.token_websites.get(token_uid),
+            self.token_logos.get(token_uid),
             self.token_virtual_pools.get(token_uid),
             self.token_curve_constant.get(token_uid),
             self.token_initial_virtual_pool.get(token_uid),
@@ -197,7 +220,7 @@ class KhensuManager(Blueprint):
 
     def _only_admin(self, ctx: Context) -> None:
         """Validate that the caller is the platform admin."""
-        if ctx.address != self.admin_address:
+        if ctx.caller_id != self.admin_address:
             raise Unauthorized("Only admin can call this method")
 
     def _validate_not_migrated(self, token_uid: TokenUid) -> None:
@@ -379,7 +402,7 @@ class KhensuManager(Blueprint):
         return max(0, min(impact, 10000))
 
     def _update_balance(
-        self, token_uid: TokenUid, address: Address, amount: Amount
+        self, token_uid: TokenUid, address: CallerId, amount: Amount
     ) -> None:
         """Update user balance for a token."""
         if token_uid not in self.token_user_balances:
@@ -404,47 +427,45 @@ class KhensuManager(Blueprint):
         if virtual_pool < target_market_cap:
             raise InvalidState("Market cap threshold not reached")
 
-        try:
-            # Validate balances
-            if token_reserve == 0:
-                raise NCFail("No tokens to migrate")
-            if virtual_pool < liquidity_amount + self.graduation_fee:
-                raise NCFail("Insufficient HTR for migration")
+        # Validate balances
+        if token_reserve == 0:
+            raise NCFail("No tokens to migrate")
+        if virtual_pool < liquidity_amount + self.graduation_fee:
+            raise NCFail("Insufficient HTR for migration")
+        # Add liquidity to Dozer pool
+        # TODO: Check if it is token_reserve or if it shuold be minted.
+        actions = [
+            NCDepositAction(token_uid=HTR_UID, amount=liquidity_amount),
+            NCDepositAction(token_uid=token_uid, amount=token_reserve),
+        ]
+        # Call Dozer Pool Manager to create pool
+        # TODO: check FEES
+        pool_key = self.syscall.call_public_method(
+            self.dozer_pool_manager_id, "create_pool", actions, FEE
+        )
+        self.token_migrated[token_uid] = True
+        # Store the pool key
+        self.token_pools[token_uid] = pool_key
 
-            # Set migration state before calling external contract
-            self.token_migrated[token_uid] = True
-
-            # Add liquidity to Dozer pool
-            # TODO: Check if it is token_reserve or if it shuold be minted.
-            actions = [
-                NCDepositAction(token_uid=HTR_UID, amount=liquidity_amount),
-                NCDepositAction(token_uid=token_uid, amount=token_reserve),
-            ]
-
-            # Call Dozer Pool Manager to create pool
-            # TODO: check FEES
-            pool_key = self.syscall.call_public_method(
-                self.dozer_pool_manager_id, "create_pool", actions, FEE
-            )
-            # Store the pool key
-            self.token_pools[token_uid] = pool_key
-
-            # Update collected graduation fees
-            # (Prevents trapping residual money due to rounding on transactions)
-            # TODO: Check if it is token_reserve or if it shuold be minted.
-            self.collected_graduation_fees += virtual_pool - liquidity_amount
-            # Update platform statistics
-            self.total_tokens_migrated += 1
-
-        except Exception as e:
-            # If something fails, revert migration state
-            self.token_migrated[token_uid] = False
-            raise MigrationFailed(f"Migration failed: {str(e)}")
+        # Update collected graduation fees
+        # (Prevents trapping residual money due to rounding on transactions)
+        # TODO: Check if it is token_reserve or if it shuold be minted.
+        self.collected_graduation_fees += virtual_pool - liquidity_amount
+        # Update platform statistics
+        self.total_tokens_migrated += 1
 
     # TODO: Remove once deposit of htr is not required anymore
     @public(allow_deposit=True)
     def register_token(
-        self, ctx: Context, token_name: str, token_symbol: str
+        self,
+        ctx: Context,
+        token_name: str,
+        token_symbol: str,
+        description: str,
+        twitter: str,
+        telegram: str,
+        website: str,
+        url_logo: str,
     ) -> TokenUid:
         """Create a new token with the manager."""
 
@@ -458,7 +479,26 @@ class KhensuManager(Blueprint):
 
         # Register token in all dictionaries
         # Admin data
-        self.token_creators[token_uid] = Address(ctx.address)
+        self.token_creators[token_uid] = ctx.caller_id
+
+        # Token metadata
+        self.token_names[token_uid] = token_name
+        self.token_symbols[token_uid] = token_symbol
+        self.token_descriptions[token_uid] = description
+
+        if twitter != "" and not twitter.startswith("https://"):
+            twitter = ""
+        if telegram != "" and not telegram.startswith("https://"):
+            telegram = ""
+        if website != "" and not website.startswith("https://"):
+            website = ""
+        if url_logo != "" and not url_logo.startswith("https://"):
+            url_logo = ""
+
+        self.token_twitters[token_uid] = twitter
+        self.token_telegrams[token_uid] = telegram
+        self.token_websites[token_uid] = website
+        self.token_logos[token_uid] = url_logo
 
         # Core state
         self.token_virtual_pools[token_uid] = self.token_initial_virtual_pool[
@@ -484,8 +524,6 @@ class KhensuManager(Blueprint):
         self.token_last_activities[token_uid] = ctx.timestamp
 
         # Register token in the list
-        if not hasattr(self, "all_tokens") or self.all_tokens is None:
-            self.all_tokens = []
         self.all_tokens.append(token_uid)
 
         # Initialize user balances
@@ -542,7 +580,7 @@ class KhensuManager(Blueprint):
         # Handle slippage return if user requested less than available
         slippage = tokens_out - action_out.amount
         if slippage > 0:
-            self._update_balance(token_uid, ctx.address, slippage)
+            self._update_balance(token_uid, ctx.caller_id, slippage)
 
         # Update collected fees
         self.collected_buy_fees += fee_amount
@@ -601,7 +639,7 @@ class KhensuManager(Blueprint):
         # Handle slippage return if user requested less than available
         slippage = net_amount - action_out.amount
         if slippage > 0:
-            self._update_balance(HTR_UID, ctx.address, slippage)
+            self._update_balance(HTR_UID, ctx.caller_id, slippage)
 
         # Update token state
         self.token_virtual_pools[token_uid] -= htr_out
@@ -708,13 +746,13 @@ class KhensuManager(Blueprint):
         self.default_token_total_supply = default_token_total_supply
 
     @public
-    def transfer_admin(self, ctx: Context, new_admin: Address) -> None:
+    def transfer_admin(self, ctx: Context, new_admin: CallerId) -> None:
         """Transfers admin rights to a new address."""
         self._only_admin(ctx)
         self.admin_address = new_admin
 
     @view
-    def get_token_info(self, token_uid: TokenUid) -> dict[str, TokenInfo]:
+    def get_token_info(self, token_uid: TokenUid) -> TokenInfo:
         """Get detailed information about a token."""
         return self._get_token(token_uid)
 
@@ -728,7 +766,7 @@ class KhensuManager(Blueprint):
         return " ".join(map(str, last_tokens))
 
     @view
-    def get_user_balance(self, address: Address, token_uid: TokenUid) -> Amount:
+    def get_user_balance(self, address: CallerId, token_uid: TokenUid) -> Amount:
         """Get the balance of a user for a specific token."""
         if not token_uid == HTR_UID:
             self._validate_token_exists(token_uid)
@@ -880,3 +918,6 @@ class KhensuManager(Blueprint):
             token_out,
             FEE,
         )
+
+
+__blueprint__ = KhensuManager
