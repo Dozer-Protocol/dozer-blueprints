@@ -385,20 +385,29 @@ class KhensuManager(Blueprint):
         return action_in, action_out
 
     def _calculate_price_impact(
-        self, token_uid: TokenUid, amount_in: Amount, amount_out: Amount
+        self, token_uid: TokenUid, theoretical_amount: Amount, actual_amount: Amount
     ) -> int:
-        """Calculate price impact percentage."""
-        if amount_out == 0:
+        """Calculate price impact percentage using standard AMM formula.
+        
+        Args:
+            token_uid: The token identifier
+            theoretical_amount: Expected amount without fees/slippage
+            actual_amount: Actual amount the user receives
+            
+        Returns:
+            Price impact as basis points (e.g., 250 = 2.5%)
+        """
+        if actual_amount == 0 or theoretical_amount == 0:
             return 0
 
         self._validate_token_exists(token_uid)
-        virtual_pool = self.token_virtual_pools.get(token_uid)
 
-        # Calculate expected output without impact
-        expected_out = (amount_in * virtual_pool) // (virtual_pool + amount_in)
-
-        # Calculate impact percentage
-        impact = 10000 * (expected_out - amount_out) // amount_out
+        # Standard AMM price impact formula: (theoretical - actual) / theoretical * 10000
+        # This follows the same approach as Dozer and other AMMs
+        if theoretical_amount <= actual_amount:
+            return 0  # No negative impact
+            
+        impact = 10000 * (theoretical_amount - actual_amount) // theoretical_amount
         return max(0, min(impact, 10000))
 
     def _update_balance(
@@ -804,13 +813,17 @@ class KhensuManager(Blueprint):
             denominator = BASIS_POINTS - self.buy_fee_rate
             recommended_htr_amount = (numerator + denominator - 1) // denominator
 
+            # Calculate theoretical tokens without fees
+            tokens_theoretical = self._calculate_tokens_out(token_uid, recommended_htr_amount)
             price_impact = self._calculate_price_impact(
-                token_uid, recommended_htr_amount, tokens_out
+                token_uid, tokens_theoretical, tokens_out
             )
         else:
             tokens_out = self._calculate_tokens_out(token_uid, net_amount)
+            # Calculate theoretical tokens without fees  
+            tokens_theoretical = self._calculate_tokens_out(token_uid, htr_amount)
             price_impact = self._calculate_price_impact(
-                token_uid, htr_amount, tokens_out
+                token_uid, tokens_theoretical, tokens_out
             )
             recommended_htr_amount = htr_amount
 
@@ -840,7 +853,7 @@ class KhensuManager(Blueprint):
         fee_amount = (htr_out * self.sell_fee_rate + BASIS_POINTS - 1) // BASIS_POINTS
         net_amount = htr_out - fee_amount
 
-        price_impact = self._calculate_price_impact(token_uid, token_amount, net_amount)
+        price_impact = self._calculate_price_impact(token_uid, htr_out, net_amount)
 
         return {"amount_out": net_amount, "price_impact": price_impact}
 
