@@ -339,7 +339,7 @@ class DozerTools(Blueprint):
             raise ProjectAlreadyExists(f"Token symbol '{token_symbol}' has already been used and cannot be reused")
 
         # Create the token
-        token_uid = self.syscall.create_token(
+        token_uid = self.syscall.create_deposit_token(
             token_name,
             token_symbol,
             total_supply,

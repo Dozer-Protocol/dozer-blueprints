@@ -64,11 +64,11 @@ class TokenInfo(NamedTuple):
     creator: str
     token_name: str
     token_symbol: str
+    image_link: str
     description: str
     twitter: str
     telegram: str
     website: str
-    url_logo: str
     virtual_pool: Amount
     curve_constant: Amount
     initial_virtual_pool: Amount
@@ -102,6 +102,7 @@ class KhensuManager(Blueprint):
 
     # Token registry
     all_tokens: list[TokenUid]  # List of all registered tokens
+    symbol_dict: dict[str, TokenUid]  # Symbol -> TokenUid
 
     # Token admin data
     token_creators: dict[TokenUid, CallerId]  # Token creator addresses
@@ -139,7 +140,7 @@ class KhensuManager(Blueprint):
     token_twitters: dict[TokenUid, str]  # Token twitter url
     token_telegrams: dict[TokenUid, str]  # Token telegram url
     token_websites: dict[TokenUid, str]  # Token website url
-    token_logos: dict[TokenUid, str]  # Token logo URLs
+    token_image_links: dict[TokenUid, str]  # Token image IPFS hash
 
     # Platform statistics
     total_tokens_created: int
@@ -193,11 +194,11 @@ class KhensuManager(Blueprint):
             self.token_creators.get(token_uid).hex(),
             self.token_names.get(token_uid),
             self.token_symbols.get(token_uid),
+            self.token_image_links.get(token_uid),
             self.token_descriptions.get(token_uid),
             self.token_twitters.get(token_uid),
             self.token_telegrams.get(token_uid),
             self.token_websites.get(token_uid),
-            self.token_logos.get(token_uid),
             self.token_virtual_pools.get(token_uid),
             self.token_curve_constant.get(token_uid),
             self.token_initial_virtual_pool.get(token_uid),
@@ -474,7 +475,7 @@ class KhensuManager(Blueprint):
         twitter: str,
         telegram: str,
         website: str,
-        url_logo: str,
+        image_link: str,
     ) -> TokenUid:
         """Create a new token with the manager."""
 
@@ -487,6 +488,8 @@ class KhensuManager(Blueprint):
         # TODO: Validate no actions(but currently, it needs deposit of 1% HTR)
 
         # Register token in all dictionaries
+        self.symbol_dict[token_symbol] = token_uid
+
         # Admin data
         self.token_creators[token_uid] = ctx.caller_id
 
@@ -501,13 +504,16 @@ class KhensuManager(Blueprint):
             telegram = ""
         if website != "" and not website.startswith("https://"):
             website = ""
-        if url_logo != "" and not url_logo.startswith("https://"):
-            url_logo = ""
 
         self.token_twitters[token_uid] = twitter
         self.token_telegrams[token_uid] = telegram
         self.token_websites[token_uid] = website
-        self.token_logos[token_uid] = url_logo
+
+        # Store image hash if provided
+        if image_link != "" and len(image_link) >= 32:
+            self.token_image_links[token_uid] = image_link
+        else:
+            self.token_image_links[token_uid] = ""
 
         # Core state
         self.token_virtual_pools[token_uid] = self.token_initial_virtual_pool[
@@ -761,6 +767,13 @@ class KhensuManager(Blueprint):
         self.admin_address = new_admin
 
     @view
+    def get_token_uid(self, token_symbol: str) -> str:
+        """Get the token UID for a given symbol."""
+        if token_symbol not in self.symbol_dict:
+            raise TokenNotFound(f"No token found for the symbol {token_symbol}")
+        return self.symbol_dict.get(token_symbol).hex()
+
+    @view
     def get_token_info(self, token_uid: TokenUid) -> TokenInfo:
         """Get detailed information about a token."""
         return self._get_token(token_uid)
@@ -813,14 +826,14 @@ class KhensuManager(Blueprint):
             denominator = BASIS_POINTS - self.buy_fee_rate
             recommended_htr_amount = (numerator + denominator - 1) // denominator
 
-            # Calculate theoretical tokens without fees
-            tokens_theoretical = self._calculate_tokens_out(token_uid, recommended_htr_amount)
+            # Calculate theoretical tokens without fees (full HTR amount)
+            tokens_theoretical = self._calculate_tokens_out(token_uid, max_net_amount + fee_amount)
             price_impact = self._calculate_price_impact(
                 token_uid, tokens_theoretical, tokens_out
             )
         else:
             tokens_out = self._calculate_tokens_out(token_uid, net_amount)
-            # Calculate theoretical tokens without fees  
+            # Calculate theoretical tokens without fees (full HTR amount, no fee deduction)
             tokens_theoretical = self._calculate_tokens_out(token_uid, htr_amount)
             price_impact = self._calculate_price_impact(
                 token_uid, tokens_theoretical, tokens_out
@@ -853,6 +866,7 @@ class KhensuManager(Blueprint):
         fee_amount = (htr_out * self.sell_fee_rate + BASIS_POINTS - 1) // BASIS_POINTS
         net_amount = htr_out - fee_amount
 
+        # Calculate price impact: theoretical (before fees) vs actual (after fees)
         price_impact = self._calculate_price_impact(token_uid, htr_out, net_amount)
 
         return {"amount_out": net_amount, "price_impact": price_impact}
