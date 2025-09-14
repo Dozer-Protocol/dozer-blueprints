@@ -19,12 +19,12 @@ from hathor.nanocontracts.blueprints.crowdsale import Crowdsale
 from hathor.nanocontracts.blueprints.dao import DAO
 from hathor.nanocontracts.blueprints.dozer_tools import DozerTools
 from hathor.nanocontracts.blueprints.dozer_pool_manager import DozerPoolManager
-from hathor.nanocontracts.blueprints.dozer_pool_v1 import Dozer_Pool_v1
-from hathor.nanocontracts.blueprints.dozer_pool_v1_1 import Dozer_Pool_v1_1
-from hathor.nanocontracts.blueprints.khensu import Khensu
+# from hathor.nanocontracts.blueprints.dozer_pool_v1 import Dozer_Pool_v1
+# from hathor.nanocontracts.blueprints.dozer_pool_v1_1 import Dozer_Pool_v1_1
+# from hathor.nanocontracts.blueprints.khensu import Khensu
 from hathor.nanocontracts.blueprints.oasis import Oasis
 from hathor.nanocontracts.blueprints.stake import Stake
-from hathor.nanocontracts.blueprints.token_manager import TokenManager
+# from hathor.nanocontracts.blueprints.token_manager import TokenManager
 from hathor.nanocontracts.blueprints.vesting import Vesting
 from hathor.nanocontracts.blueprints.khensu_manager import KhensuManager
 
@@ -34,14 +34,14 @@ if TYPE_CHECKING:
 
 _blueprints_mapper: dict[str, Type["Blueprint"]] = {
     # "Bet": Bet,
-    "Dozer_Pool_v1_1": Dozer_Pool_v1_1,
-    "Dozer_Pool_v1": Dozer_Pool_v1,
+    # "Dozer_Pool_v1_1": Dozer_Pool_v1_1,
+    # "Dozer_Pool_v1": Dozer_Pool_v1,
     "Oasis": Oasis,
     "Crowdsale": Crowdsale,
     "Dao": DAO,
-    "Khensu": Khensu,
+    # "Khensu": Khensu,
     "Stake": Stake,
-    "TokenManager": TokenManager,
+    # "TokenManager": TokenManager,
     "Vesting": Vesting,
     "DozerPoolManager": DozerPoolManager,
     "DozerTools": DozerTools,
@@ -50,16 +50,16 @@ _blueprints_mapper: dict[str, Type["Blueprint"]] = {
 
 __all__ = [
     # "Bet",
-    "Dozer_Pool_v1",
-    "Dozer_Pool_v1_1",
+    # "Dozer_Pool_v1",
+    # "Dozer_Pool_v1_1",
     "DozerPoolManager",
     "DozerTools",
     "Oasis",
     "Crowdsale",
     "DAO",
-    "Khensu",
+    # "Khensu",
     "Stake",
-    "TokenManager",
+    # "TokenManager",
     "Vesting",
     "KhensuManager",
 ]

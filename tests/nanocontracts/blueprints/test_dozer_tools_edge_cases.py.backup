@@ -1,0 +1,745 @@
+# Copyright 2025 Hathor Labs
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Comprehensive edge case tests for DozerTools contract.
+
+This module contains advanced test scenarios focusing on:
+- Boundary conditions and edge cases
+- Error recovery and resilience
+- Complex multi-step workflows
+- Authorization edge cases
+- Mathematical precision and overflow scenarios
+"""
+
+import os
+import unittest
+from typing import List
+
+from hathor.conf import settings
+from hathor.crypto.util import decode_address
+from hathor.nanocontracts.blueprints.dozer_tools import (
+    DozerTools,
+    ProjectNotFound,
+    ProjectAlreadyExists,
+    Unauthorized,
+    InsufficientCredits,
+    InvalidAllocation,
+    ContractAlreadyExists,
+    VestingNotConfigured,
+    FeatureNotAvailable,
+    TokenBlacklisted,
+    DozerToolsError,
+)
+from hathor.nanocontracts.blueprints.dozer_pool_manager import DozerPoolManager
+from hathor.nanocontracts.blueprints.vesting import Vesting
+from hathor.nanocontracts.blueprints.stake import Stake
+from hathor.nanocontracts.blueprints.dao import DAO
+from hathor.nanocontracts.blueprints.crowdsale import Crowdsale
+from hathor.nanocontracts.context import Context
+from hathor.nanocontracts.types import (
+    Address,
+    Amount,
+    BlueprintId,
+    ContractId,
+    NCAcquireAuthorityAction,
+    NCDepositAction,
+    NCWithdrawalAction,
+    TokenUid,
+    VertexId,
+)
+from hathor.nanocontracts.exception import NCForbiddenAction, NCInvalidAction
+from hathor.transaction.base_transaction import BaseTransaction
+from hathor.util import not_none
+from hathor.wallet.keypair import KeyPair
+from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
+from tests.nanocontracts.blueprints.test_utilities import (
+    DozerToolsTestFixture,
+    TestConstants,
+    EdgeCaseGenerator,
+    TestAssertions,
+    expect_failure,
+    create_deposit_action,
+    create_withdrawal_action,
+    create_authority_action,
+)
+
+# Blueprint IDs for testing
+DOZER_POOL_MANAGER_BLUEPRINT_ID = (
+    "d6c09caa2f1f7ef6a6f416301c2b665e041fa819a792e53b8409c9c1aed2c89a"
+)
+
+VESTING_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "42e7f272b6b966f26576a5c1d0c9637f456168c85e18a3e86c0c60e909a93275"
+        )
+    )
+)
+STAKING_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "ac6bf4f6a89a34e81a21a6e07e24f07739af5c3d6f4c15e16c5ae4e4108aaa48"
+        )
+    )
+)
+DAO_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "6cfdd13e8b9c689b8d87bb8100b4e580e0e9d20ee75a8c5aee9e7bef51e0b1a0"
+        )
+    )
+)
+CROWDSALE_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "7b3ae18c763b2254baf8b9801bc0dcd3e77db57d7de7fd34cc62b526aa91d9fb"
+        )
+    )
+)
+
+
+class DozerToolsEdgeCasesTest(BlueprintTestCase):
+    """Comprehensive edge case testing for DozerTools contract."""
+
+    def setUp(self) -> None:
+        super().setUp()
+
+        # Setup test fixture
+        self.fixture = DozerToolsTestFixture(self)
+
+        # Generate blueprint and contract IDs
+        self.dozer_tools_blueprint_id = self.gen_random_blueprint_id()
+        self.dozer_tools_nc_id = self.gen_random_contract_id()
+
+        # Register all blueprint classes
+        self._register_blueprint_class(DozerTools, self.dozer_tools_blueprint_id)
+        self._register_blueprint_class(Vesting, VESTING_BLUEPRINT_ID)
+        self._register_blueprint_class(Stake, STAKING_BLUEPRINT_ID)
+        self._register_blueprint_class(DAO, DAO_BLUEPRINT_ID)
+        self._register_blueprint_class(Crowdsale, CROWDSALE_BLUEPRINT_ID)
+        self._register_blueprint_class(
+            DozerPoolManager,
+            BlueprintId(VertexId(bytes.fromhex(DOZER_POOL_MANAGER_BLUEPRINT_ID)))
+        )
+
+        # Create DozerPoolManager for testing
+        self.pool_manager_nc_id = self.gen_random_contract_id()
+        self.pool_manager_blueprint_id = BlueprintId(
+            VertexId(bytes.fromhex(DOZER_POOL_MANAGER_BLUEPRINT_ID))
+        )
+
+        # Initialize DozerPoolManager
+        pool_manager_context = self.create_context(
+            actions=[],
+            caller_id=self.fixture.owner.address,
+            timestamp=self.now,
+        )
+        self.runner.create_contract(
+            self.pool_manager_nc_id,
+            self.pool_manager_blueprint_id,
+            pool_manager_context,
+        )
+
+        # DZR token parameters
+        self.dzr_token_uid = TokenUid(VertexId(b"\x01" * 32))
+        self.minimum_deposit = Amount(100)  # 1 HTR
+
+        # Initialize DozerTools
+        self._initialize_dozer_tools()
+        self._configure_blueprint_ids()
+
+    def _get_any_tx(self) -> BaseTransaction:
+        genesis = self.manager.tx_storage.get_all_genesis()
+        tx = [t for t in genesis if t.is_transaction][0]
+        return tx
+
+    def _initialize_dozer_tools(self):
+        """Initialize the DozerTools contract"""
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            caller_id=self.fixture.owner.address,
+            timestamp=self.now,
+        )
+
+        self.runner.create_contract(
+            self.dozer_tools_nc_id,
+            self.dozer_tools_blueprint_id,
+            context,
+            self.pool_manager_nc_id,
+            self.dzr_token_uid,
+            self.minimum_deposit,
+        )
+
+        self.dozer_tools_storage = self.runner.get_storage(self.dozer_tools_nc_id)
+
+    def _configure_blueprint_ids(self):
+        """Configure blueprint IDs for testing."""
+        context = self.create_context(
+            actions=[],
+            caller_id=self.fixture.owner.address,
+            timestamp=self.now
+        )
+
+        # Configure all blueprint IDs as owner
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_vesting_blueprint_id", context, VESTING_BLUEPRINT_ID
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_staking_blueprint_id", context, STAKING_BLUEPRINT_ID
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_dao_blueprint_id", context, DAO_BLUEPRINT_ID
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "set_crowdsale_blueprint_id", context, CROWDSALE_BLUEPRINT_ID
+        )
+
+    def test_project_creation_boundary_conditions(self) -> None:
+        """Test project creation with boundary value conditions."""
+        # Test with minimum possible values
+        min_project = self.fixture.create_test_project(
+            name="A",  # Single character
+            symbol="A",  # Single character
+            total_supply=Amount(1),  # Minimum supply
+        )
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        required_htr = min_project.total_supply // 100  # Will be 0
+
+        # This should fail because required HTR is 0
+        context = self.create_context(
+            actions=[create_deposit_action(htr_uid, required_htr)],
+            caller_id=min_project.dev.address,
+            timestamp=self.now,
+        )
+
+        with self.assertRaises(InsufficientCredits):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "create_project",
+                context,
+                min_project.name,
+                min_project.symbol,
+                min_project.total_supply,
+                "", "", "", "", "", "", "", "", ""  # Empty metadata
+            )
+
+        # Test with maximum reasonable values
+        max_project = self.fixture.create_test_project(
+            name="X" * 100,  # Long name
+            symbol="VERYLONGSYM",  # Long symbol
+            total_supply=Amount(2**63 - 1),  # Very large supply
+        )
+        required_htr_max = max_project.total_supply // 100
+
+        context_max = self.create_context(
+            actions=[create_deposit_action(htr_uid, required_htr_max)],
+            caller_id=max_project.dev.address,
+            timestamp=self.now,
+        )
+
+        # This should succeed
+        token_uid = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context_max,
+            max_project.name,
+            max_project.symbol,
+            max_project.total_supply,
+            "Long description " * 10,  # Long description
+            "https://very-long-website-url.com/with/many/paths",
+            "", "", "", "", "", "", ""
+        )
+
+        # Verify the project was created
+        project_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_info", token_uid
+        )
+        self.assertEqual(project_info["name"], max_project.name)
+        self.assertEqual(project_info["symbol"], max_project.symbol)
+
+    def test_symbol_collision_edge_cases(self) -> None:
+        """Test edge cases around symbol uniqueness and collision."""
+        base_symbol = "TEST"
+        projects = []
+
+        # Create initial project
+        project1 = self.fixture.create_test_project(symbol=base_symbol)
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        required_htr = project1.total_supply // 100
+
+        context1 = self.create_context(
+            actions=[create_deposit_action(htr_uid, required_htr)],
+            caller_id=project1.dev.address,
+            timestamp=self.now,
+        )
+
+        token_uid1 = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context1,
+            project1.name, project1.symbol, project1.total_supply,
+            "", "", "", "", "", "", "", "", ""
+        )
+        projects.append(token_uid1)
+
+        # Test variations that should all fail
+        symbol_variations = [
+            base_symbol,  # Exact match
+            base_symbol.lower(),  # Case difference
+            " " + base_symbol,  # Leading space
+            base_symbol + " ",  # Trailing space
+            " " + base_symbol + " ",  # Both spaces
+        ]
+
+        for variant in symbol_variations:
+            project = self.fixture.create_test_project(
+                name=f"Project{variant}",
+                symbol=variant
+            )
+            context = self.create_context(
+                actions=[create_deposit_action(htr_uid, required_htr)],
+                caller_id=project.dev.address,
+                timestamp=self.now,
+            )
+
+            with self.assertRaises(ProjectAlreadyExists) as cm:
+                self.runner.call_public_method(
+                    self.dozer_tools_nc_id,
+                    "create_project",
+                    context,
+                    project.name, project.symbol, project.total_supply,
+                    "", "", "", "", "", "", "", "", ""
+                )
+            self.assertIn("already been used", str(cm.exception))
+
+    def test_vesting_allocation_overflow_scenarios(self) -> None:
+        """Test vesting configuration with allocation overflow scenarios."""
+        # Create a project first
+        project = self.fixture.create_test_project()
+        token_uid = self._create_test_project_helper(project)
+
+        context = self.create_context(
+            actions=[],
+            caller_id=project.dev.address,
+            timestamp=self.now,
+        )
+
+        # Test scenario 1: Total allocations exactly 100%
+        allocation_names = ["Team", "Advisors", "Public"]
+        allocation_percentages = [50, 30, 20]  # Exactly 100%
+        allocation_beneficiaries = [
+            project.dev.address,
+            self.fixture.create_test_user().address,
+            self.fixture.create_test_user().address
+        ]
+        allocation_cliff_months = [12, 6, 0]
+        allocation_vesting_months = [36, 24, 12]
+
+        # This should succeed
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            0, 0, 0,  # No special allocations
+            0,  # earnings_per_day (not needed)
+            allocation_names,
+            allocation_percentages,
+            allocation_beneficiaries,
+            allocation_cliff_months,
+            allocation_vesting_months,
+        )
+
+    def test_vesting_allocation_overflow_failure(self) -> None:
+        """Test vesting configuration that should fail due to overflow."""
+        project = self.fixture.create_test_project()
+        token_uid = self._create_test_project_helper(project)
+
+        context = self.create_context(
+            actions=[],
+            caller_id=project.dev.address,
+            timestamp=self.now,
+        )
+
+        # Test scenario 2: Total allocations over 100%
+        allocation_names = ["Team", "Advisors", "Public", "Marketing"]
+        allocation_percentages = [40, 30, 25, 10]  # Total 105%
+        allocation_beneficiaries = [
+            project.dev.address,
+            self.fixture.create_test_user().address,
+            self.fixture.create_test_user().address,
+            self.fixture.create_test_user().address
+        ]
+        allocation_cliff_months = [12, 6, 0, 3]
+        allocation_vesting_months = [36, 24, 12, 18]
+
+        with self.assertRaises(InvalidAllocation):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "configure_project_vesting",
+                context,
+                token_uid,
+                0, 0, 0,  # No special allocations
+                0,  # earnings_per_day (not needed)
+                allocation_names,
+                allocation_percentages,
+                allocation_beneficiaries,
+                allocation_cliff_months,
+                allocation_vesting_months,
+            )
+
+    def test_fee_calculation_precision_edge_cases(self) -> None:
+        """Test fee calculation edge cases and precision issues."""
+        # Set up very specific fees that might cause precision issues
+        context = self.create_context(
+            actions=[],
+            caller_id=self.fixture.owner.address,
+            timestamp=self.now
+        )
+
+        # Set fees with odd values that might cause rounding issues
+        method_name = "create_project"
+        htr_fee = Amount(333)  # Odd number
+        dzr_fee = Amount(777)  # Odd number
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_method_fees",
+            context,
+            method_name,
+            htr_fee,
+            dzr_fee,
+        )
+
+        # Create a project and deposit exactly enough credits
+        project = self.fixture.create_test_project()
+        token_uid = self._create_test_project_helper(project)
+
+        # Deposit exact HTR amount
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        deposit_context = self.create_context(
+            actions=[create_deposit_action(htr_uid, htr_fee)],
+            caller_id=project.dev.address,
+            timestamp=self.now,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "deposit_credits", deposit_context, token_uid
+        )
+
+        # Try to call a method that costs exactly what we deposited
+        try:
+            # This call should work as we have exact HTR amount
+            project_info = self.runner.call_view_method(
+                self.dozer_tools_nc_id, "get_project_info", token_uid
+            )
+            # If we get here, fee wasn't charged for view method (which is expected)
+        except InsufficientCredits:
+            # This would indicate fee was charged for view method (unexpected)
+            self.fail("Fee was charged for view method")
+
+    def test_melt_authority_edge_scenarios(self) -> None:
+        """Test melt authority transfer edge cases."""
+        project = self.fixture.create_test_project()
+        token_uid = self._create_test_project_helper(project)
+
+        # Test 1: Multiple rapid acquisition attempts
+        contexts = []
+        for i in range(3):
+            context = self.create_context(
+                actions=[create_authority_action(token_uid, melt=True)],
+                caller_id=project.dev.address,
+                timestamp=self.now + i,  # Slightly different timestamps
+            )
+            contexts.append(context)
+
+        # First call should succeed
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "get_melt_authority", contexts[0], token_uid
+        )
+
+        # Subsequent calls should fail
+        for i in range(1, 3):
+            with self.assertRaises(Unauthorized) as cm:
+                self.runner.call_public_method(
+                    self.dozer_tools_nc_id, "get_melt_authority", contexts[i], token_uid
+                )
+            self.assertIn("already acquired", str(cm.exception))
+
+    def test_routing_method_failure_scenarios(self) -> None:
+        """Test routing method failures and error handling."""
+        project = self.fixture.create_test_project()
+        token_uid = self._create_test_project_helper(project)
+
+        # Configure vesting with staking
+        context = self.create_context(
+            actions=[],
+            caller_id=project.dev.address,
+            timestamp=self.now,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20, 0, 0,  # 20% staking allocation
+            1000,  # earnings_per_day
+            ["Team"], [80], [project.dev.address], [12], [36]  # 80% team allocation
+        )
+
+        # Test staking with invalid amount (should fail validation in staking contract)
+        invalid_stake_amount = Amount(1)  # Below minimum stake
+        stake_context = self.create_context(
+            actions=[create_deposit_action(token_uid, invalid_stake_amount)],
+            caller_id=self.fixture.create_test_user().address,
+            timestamp=self.now,
+        )
+
+        # This should fail due to stake amount validation
+        with self.assertRaises(Exception):  # Could be various exceptions depending on validation
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "staking_stake",
+                stake_context,
+                token_uid,
+            )
+
+    def test_blacklist_during_operations(self) -> None:
+        """Test blacklisting tokens during various operations."""
+        project = self.fixture.create_test_project()
+        token_uid = self._create_test_project_helper(project)
+
+        # Blacklist token as owner
+        blacklist_context = self.create_context(
+            actions=[],
+            caller_id=self.fixture.owner.address,
+            timestamp=self.now
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "blacklist_token", blacklist_context, token_uid
+        )
+
+        # Try to configure vesting on blacklisted token (should still work for dev)
+        vesting_context = self.create_context(
+            actions=[],
+            caller_id=project.dev.address,
+            timestamp=self.now,
+        )
+
+        # The token is blacklisted from UI but dev operations should still work
+        try:
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "configure_project_vesting",
+                vesting_context,
+                token_uid,
+                0, 0, 0, 0,  # No special allocations
+                ["Team"], [100], [project.dev.address], [0], [0]
+            )
+        except TokenBlacklisted:
+            # If this fails, it means blacklist affects dev operations
+            pass
+
+        # Verify token doesn't appear in public listings
+        all_projects = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_all_projects"
+        )
+        self.assertNotIn(token_uid.hex(), all_projects)
+
+    def test_complex_workflow_state_consistency(self) -> None:
+        """Test complex workflows maintain state consistency."""
+        project = self.fixture.create_test_project()
+        token_uid = self._create_test_project_helper(project)
+
+        # Step 1: Configure complex vesting
+        context = self.create_context(
+            actions=[],
+            caller_id=project.dev.address,
+            timestamp=self.now,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20, 15, 10,  # Complex special allocations
+            500,  # earnings_per_day
+            ["Team", "Advisors"],
+            [30, 25],  # 55% total regular allocations
+            [project.dev.address, self.fixture.create_test_user().address],
+            [12, 6],
+            [36, 24]
+        )
+
+        # Verify vesting was configured correctly
+        vesting_overview = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_vesting_overview", token_uid
+        )
+        self.assertEqual(vesting_overview["vesting_configured"], "true")
+        self.assertEqual(vesting_overview["staking_status"], "active")
+
+        # Step 2: Create additional contracts
+        dao_context = self.create_context(
+            actions=[],
+            caller_id=project.dev.address,
+            timestamp=self.now,
+        )
+
+        dao_id = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_dao_contract",
+            dao_context,
+            token_uid,
+            "Test DAO",
+            "Test DAO Description",
+            7,  # voting_period_days
+            51,  # quorum_percentage
+            Amount(100_00),  # proposal_threshold
+        )
+
+        # Verify all contracts are tracked correctly
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+
+        self.assertNotEqual(contracts["vesting_contract"], "")
+        self.assertNotEqual(contracts["staking_contract"], "")
+        self.assertNotEqual(contracts["dao_contract"], "")
+        self.assertEqual(contracts["crowdsale_contract"], "")  # Not created
+        self.assertEqual(contracts["liquidity_pool"], "")  # Not created
+
+        # Verify token distribution is correct
+        distribution = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_token_distribution", token_uid
+        )
+
+        self.assertEqual(distribution["staking_deployed"], "true")
+        self.assertEqual(distribution["crowdsale_deployed"], "false")
+        self.assertEqual(distribution["pool_deployed"], "false")
+
+    def _create_test_project_helper(self, project) -> TokenUid:
+        """Helper method to create a test project."""
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        required_htr = project.total_supply // 100
+
+        context = self.create_context(
+            actions=[create_deposit_action(htr_uid, required_htr)],
+            caller_id=project.dev.address,
+            timestamp=self.now,
+        )
+
+        return self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context,
+            project.name,
+            project.symbol,
+            project.total_supply,
+            project.description,
+            project.website,
+            "", "", "", "", "",  # Other metadata
+            project.category,
+            "",  # whitepaper_url
+        )
+
+    def test_concurrent_operations_simulation(self) -> None:
+        """Simulate concurrent operations on the same project."""
+        project = self.fixture.create_test_project()
+        token_uid = self._create_test_project_helper(project)
+
+        # Create multiple contexts with same timestamp (simulating concurrency)
+        timestamp = self.now
+        contexts = []
+
+        # Multiple users trying to deposit credits simultaneously
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        for i in range(3):
+            user = self.fixture.create_test_user(f"User{i}")
+            context = self.create_context(
+                actions=[create_deposit_action(htr_uid, Amount(1000))],
+                caller_id=user.address,
+                timestamp=timestamp,
+            )
+            contexts.append((user, context))
+
+        # Only the project dev should be able to deposit credits
+        for user, context in contexts:
+            if user.address == project.dev.address:
+                # This should succeed
+                self.runner.call_public_method(
+                    self.dozer_tools_nc_id, "deposit_credits", context, token_uid
+                )
+            else:
+                # This should fail
+                with self.assertRaises(Unauthorized):
+                    self.runner.call_public_method(
+                        self.dozer_tools_nc_id, "deposit_credits", context, token_uid
+                    )
+
+    def test_maximum_projects_stress_test(self) -> None:
+        """Stress test with maximum reasonable number of projects."""
+        projects_created = []
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+
+        # Create many projects to test system limits
+        for i in range(10):  # Limited to 10 for test performance
+            try:
+                project = self.fixture.create_test_project(
+                    name=f"StressProject{i}",
+                    symbol=f"STRESS{i}",
+                    total_supply=TestConstants.MEDIUM_AMOUNT
+                )
+
+                required_htr = project.total_supply // 100
+                context = self.create_context(
+                    actions=[create_deposit_action(htr_uid, required_htr)],
+                    caller_id=project.dev.address,
+                    timestamp=self.now + i,  # Different timestamps
+                )
+
+                token_uid = self.runner.call_public_method(
+                    self.dozer_tools_nc_id,
+                    "create_project",
+                    context,
+                    project.name, project.symbol, project.total_supply,
+                    f"Description {i}", "", "", "", "", "", "", "", ""
+                )
+                projects_created.append(token_uid)
+
+            except Exception as e:
+                # If we hit any limits, that's expected behavior
+                break
+
+        # Verify all created projects are accessible
+        contract_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_contract_info"
+        )
+        self.assertEqual(int(contract_info["total_projects"]), len(projects_created))
+
+        # Verify we can query each project
+        for token_uid in projects_created:
+            project_info = self.runner.call_view_method(
+                self.dozer_tools_nc_id, "get_project_info", token_uid
+            )
+            self.assertIsNotNone(project_info)
+            self.assertNotEqual(project_info["name"], "")
+
+
+if __name__ == "__main__":
+    unittest.main()
