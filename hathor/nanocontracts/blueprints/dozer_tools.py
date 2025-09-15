@@ -339,7 +339,7 @@ class DozerTools(Blueprint):
             raise ProjectAlreadyExists(f"Token symbol '{token_symbol}' has already been used and cannot be reused")
 
         # Create the token
-        token_uid = self.syscall.create_deposit_token(
+        token_uid = self.syscall.create_token(
             token_name,
             token_symbol,
             total_supply,
@@ -1827,8 +1827,6 @@ class DozerTools(Blueprint):
             raise DozerToolsError("Withdrawal action required")
         
         token_uid = action.token_uid
-        
-        self._only_project_dev(ctx, token_uid)
         
         vesting_contract = self.project_vesting_contract.get(token_uid, NULL_CONTRACT_ID)
         if vesting_contract == NULL_CONTRACT_ID:
