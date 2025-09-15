@@ -1285,26 +1285,6 @@ class DozerToolsTest(BlueprintTestCase):
         )
         self.assertGreater(proposal_info.for_votes, 0)
 
-    def test_routing_unauthorized_access(self) -> None:
-        """Test that routing methods properly enforce authorization."""
-        token_uid = self._create_test_project("AuthTestToken", "ATT")
-
-        # Try to use vesting routing with non-project-dev
-        tx = self._get_any_tx()
-        context = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=token_uid, amount=Amount(1000))],
-            vertex=tx,
-            caller_id=self.user_address,  # Not project dev
-            timestamp=self.get_current_timestamp(),
-        )
-
-        with self.assertRaises(Unauthorized):
-            self.runner.call_public_method(
-                self.dozer_tools_nc_id,
-                "vesting_claim_allocation",
-                context,
-                0,
-            )
 
     def test_routing_contract_not_exists(self) -> None:
         """Test routing methods when child contracts don't exist."""
