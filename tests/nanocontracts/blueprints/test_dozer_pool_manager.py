@@ -2898,3 +2898,236 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
     #     self._check_balance()
 
+    def test_user_profit_tracking(self):
+        """Test user profit tracking functionality"""
+        # Create a pool
+        pool_key, creator_address = self._create_pool(self.token_a, self.token_b)
+
+        # Add liquidity with a new user
+        result, add_context = self._add_liquidity(
+            self.token_a, self.token_b, 3, 500_00
+        )
+
+        # Check profit info immediately after adding liquidity
+        profit_info = self.runner.call_view_method(
+            self.nc_id, "get_user_profit_info", add_context.address, pool_key
+        )
+
+        # Initially, profit should be zero (or very small due to rounding)
+        self.assertGreaterEqual(profit_info.current_value_usd, 0)
+        self.assertGreaterEqual(profit_info.initial_value_usd, 0)
+        self.assertEqual(profit_info.profit_amount_usd, 0)
+        self.assertEqual(profit_info.profit_percentage, 0)
+        self.assertGreater(profit_info.last_action_timestamp, 0)
+
+        self._check_balance()
+
+    def test_add_liquidity_single_token(self):
+        """Test adding liquidity with a single token"""
+        # Create a pool with initial liquidity
+        pool_key, creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        # Test single token liquidity addition
+        tx = self._get_any_tx()
+        amount_in = 1000_00
+        actions = [NCDepositAction(token_uid=self.token_a, amount=amount_in)]
+
+        address_bytes, _ = self._get_any_address()
+        context = Context(
+            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp()
+        )
+
+        # Add liquidity with single token
+        result = self.runner.call_public_method(
+            self.nc_id, "add_liquidity_single_token", context, self.token_b, 3
+        )
+
+        # Verify the operation succeeded
+        self.assertIsNotNone(result)
+
+        # Check that user now has liquidity
+        user_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", context.address, pool_key
+        )
+        self.assertGreater(user_liquidity, 0)
+
+        self._check_balance()
+
+    def test_quote_add_liquidity_single_token(self):
+        """Test quoting single token liquidity addition"""
+        # Create a pool
+        pool_key, _ = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        # Get quote for single token addition
+        amount_in = 1000_00
+        quote = self.runner.call_view_method(
+            self.nc_id, "quote_add_liquidity_single_token",
+            self.token_a, amount_in, self.token_b, 3
+        )
+
+        # Verify quote contains expected fields (named tuple)
+        self.assertTrue(hasattr(quote, "liquidity_amount"))
+        self.assertTrue(hasattr(quote, "token_a_used"))
+        self.assertTrue(hasattr(quote, "token_b_used"))
+        self.assertTrue(hasattr(quote, "excess_token"))
+        self.assertTrue(hasattr(quote, "excess_amount"))
+        self.assertTrue(hasattr(quote, "swap_amount"))
+        self.assertTrue(hasattr(quote, "swap_output"))
+
+        # Verify values are reasonable
+        self.assertGreater(quote.liquidity_amount, 0)
+        self.assertGreater(quote.token_a_used, 0)
+        self.assertGreater(quote.token_b_used, 0)
+        self.assertGreater(quote.swap_amount, 0)
+        self.assertGreater(quote.swap_output, 0)
+
+    def test_remove_liquidity_single_token(self):
+        """Test removing liquidity to receive a single token"""
+        # Create a pool
+        pool_key, creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        # Add liquidity first with the creator
+        result, add_context = self._add_liquidity(
+            self.token_a, self.token_b, 3, 1000_00
+        )
+
+        # Remove liquidity to get single token
+        tx = self._get_any_tx()
+        context = Context(
+            [], tx, add_context.address, timestamp=self.get_current_timestamp()
+        )
+
+        # Remove liquidity for single token
+        amount_out = self.runner.call_public_method(
+            self.nc_id, "remove_liquidity_single_token", context, self.token_a, 3
+        )
+
+        # Verify we got some tokens back
+        self.assertGreater(amount_out, 0)
+
+        # Check that user's liquidity is now zero
+        user_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", add_context.address, pool_key
+        )
+        self.assertEqual(user_liquidity, 0)
+
+        self._check_balance()
+
+    def test_quote_remove_liquidity_single_token(self):
+        """Test quoting single token liquidity removal"""
+        # Create a pool and add liquidity
+        pool_key, creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        result, add_context = self._add_liquidity(
+            self.token_a, self.token_b, 3, 1000_00
+        )
+
+        # Get quote for single token removal
+        quote = self.runner.call_view_method(
+            self.nc_id, "quote_remove_liquidity_single_token",
+            add_context.address, self.token_a, self.token_b, self.token_a, 3
+        )
+
+        # Verify quote contains expected fields (named tuple)
+        self.assertTrue(hasattr(quote, "amount_out"))
+        self.assertTrue(hasattr(quote, "token_a_withdrawn"))
+        self.assertTrue(hasattr(quote, "token_b_withdrawn"))
+        self.assertTrue(hasattr(quote, "swap_amount"))
+        self.assertTrue(hasattr(quote, "swap_output"))
+        self.assertTrue(hasattr(quote, "user_liquidity"))
+
+        # Verify values are reasonable
+        self.assertGreater(quote.amount_out, 0)
+        self.assertGreater(quote.token_a_withdrawn, 0)
+        self.assertGreater(quote.token_b_withdrawn, 0)
+        self.assertGreater(quote.user_liquidity, 0)
+
+    def test_profit_tracking_edge_cases(self):
+        """Test profit tracking with various edge cases"""
+        # Create a pool
+        pool_key, creator_address = self._create_pool(self.token_a, self.token_b)
+
+        # Test profit info for user with no liquidity
+        empty_address, _ = self._get_any_address()
+        profit_info = self.runner.call_view_method(
+            self.nc_id, "get_user_profit_info", empty_address, pool_key
+        )
+
+        # Should return zero values
+        self.assertEqual(profit_info.current_value_usd, 0)
+        self.assertEqual(profit_info.initial_value_usd, 0)
+        self.assertEqual(profit_info.profit_amount_usd, 0)
+        self.assertEqual(profit_info.profit_percentage, 0)
+        self.assertEqual(profit_info.last_action_timestamp, 0)
+
+        # Add liquidity
+        result, add_context = self._add_liquidity(
+            self.token_a, self.token_b, 3, 500_00
+        )
+
+        # Remove some liquidity
+        remove_context, _ = self._remove_liquidity(
+            self.token_a, self.token_b, 3, 250_00, address=add_context.address
+        )
+
+        # Check that profit tracking was updated after removal
+        profit_info_after = self.runner.call_view_method(
+            self.nc_id, "get_user_profit_info", add_context.address, pool_key
+        )
+
+        # Should still have some liquidity and updated timestamp
+        self.assertGreater(profit_info_after.current_value_usd, 0)
+        self.assertGreater(profit_info_after.last_action_timestamp, 0)
+
+        self._check_balance()
+
+    def test_single_token_operations_edge_cases(self):
+        """Test edge cases for single token operations"""
+        # Create a pool
+        pool_key, _ = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        # Test with invalid tokens (same token)
+        tx = self._get_any_tx()
+        amount_in = 1000_00
+        actions = [NCDepositAction(token_uid=self.token_a, amount=amount_in)]
+
+        address_bytes, _ = self._get_any_address()
+        context = Context(
+            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp()
+        )
+
+        # Should fail with same token
+        with self.assertRaises(InvalidTokens):
+            self.runner.call_public_method(
+                self.nc_id, "add_liquidity_single_token", context, self.token_a, 3
+            )
+
+        # Test quote with same tokens
+        with self.assertRaises(InvalidTokens):
+            self.runner.call_view_method(
+                self.nc_id, "quote_add_liquidity_single_token",
+                self.token_a, amount_in, self.token_a, 3
+            )
+
+        # Test remove liquidity single token with no liquidity
+        empty_context = Context(
+            [], tx, Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+        )
+
+        with self.assertRaises(InvalidAction):
+            self.runner.call_public_method(
+                self.nc_id, "remove_liquidity_single_token", empty_context, self.token_a, 3
+            )
+
+        self._check_balance()
+
