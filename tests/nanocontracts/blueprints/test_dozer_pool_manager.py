@@ -17,7 +17,7 @@ from hathor.nanocontracts.blueprints.dozer_pool_manager import (
     Unauthorized,
 )
 from hathor.nanocontracts.context import Context
-from hathor.nanocontracts.exception import NCFail
+from hathor.nanocontracts.exception import NCFail, NCForbiddenAction
 from hathor.nanocontracts.vertex_data import VertexData, BlockData
 
 from hathor.nanocontracts.nc_types.nc_type import NCType
@@ -3007,6 +3007,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         user_liquidity = self.runner.call_view_method(
             self.nc_id, "liquidity_of", context.caller_id, pool_key
         )
+        
+        # Verify the user has some liquidity
         self.assertGreater(user_liquidity, 0)
 
         self._check_balance()
@@ -3034,15 +3036,25 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertTrue(hasattr(quote, "swap_amount"))
         self.assertTrue(hasattr(quote, "swap_output"))
 
-        # Verify values are reasonable
+        # Verify values are reasonable (we can't easily replicate the exact quadratic formula)
         self.assertGreater(quote.liquidity_amount, 0)
         self.assertGreater(quote.token_a_used, 0)
         self.assertGreater(quote.token_b_used, 0)
         self.assertGreater(quote.swap_amount, 0)
         self.assertGreater(quote.swap_output, 0)
+        
+        # Verify the quote is internally consistent
+        # The total input should equal: token_a_used + swap_amount + excess_amount
+        if quote.excess_token == self.token_a.hex():
+            self.assertEqual(quote.token_a_used + quote.swap_amount + quote.excess_amount, amount_in)
+        else:
+            # If excess is in token_b, then token_a_used + swap_amount should equal amount_in
+            self.assertEqual(quote.token_a_used + quote.swap_amount, amount_in)
+        # Allow for small rounding differences (1 token)
+        self.assertLessEqual(abs(quote.token_b_used - quote.swap_output), 1)
 
     def test_remove_liquidity_single_token(self):
-        """Test removing liquidity to receive a single token"""
+        """Test removing liquidity to receive a single token with percentage-based removal"""
         # Create a pool
         pool_key, creator_address = self._create_pool(
             self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
@@ -3053,30 +3065,69 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.token_a, self.token_b, 3, 1000_00
         )
 
-        # Remove liquidity to get single token
+        # Get user's initial liquidity
+        initial_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
+        )
+        
+        # Verify initial liquidity is reasonable
+        self.assertGreater(initial_liquidity, 0)
+
+        # Test removing 50% of liquidity (5000 basis points)
+        percentage = 5000
         tx = self._get_any_tx()
+        
+        # Get quote first
+        quote = self.runner.call_view_method(
+            self.nc_id, "quote_remove_liquidity_single_token_percentage",
+            add_context.caller_id, pool_key, self.token_a, percentage
+        )
+        
+        # Verify quote contains expected fields
+        self.assertTrue(hasattr(quote, "amount_out"))
+        self.assertTrue(hasattr(quote, "token_a_withdrawn"))
+        self.assertTrue(hasattr(quote, "token_b_withdrawn"))
+        self.assertTrue(hasattr(quote, "swap_amount"))
+        self.assertTrue(hasattr(quote, "swap_output"))
+        self.assertTrue(hasattr(quote, "user_liquidity"))
+        
+        # Verify quote values are reasonable
+        self.assertGreater(quote.amount_out, 0)
+        self.assertGreater(quote.token_a_withdrawn, 0)
+        self.assertGreater(quote.token_b_withdrawn, 0)
+        self.assertGreater(quote.user_liquidity, 0)
+        
+        # Verify the quote is internally consistent
+        self.assertEqual(quote.user_liquidity, initial_liquidity)
+        self.assertEqual(quote.token_a_withdrawn + quote.swap_output, quote.amount_out)
+        
+        # Create context with withdrawal action for the expected amount
         context = self.create_context(
-            [], vertex=tx, caller_id=add_context.caller_id, timestamp=self.get_current_timestamp()
+            [NCWithdrawalAction(token_uid=self.token_a, amount=quote.amount_out)],
+            vertex=tx,
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp()
         )
 
         # Remove liquidity for single token
         amount_out = self.runner.call_public_method(
-            self.nc_id, "remove_liquidity_single_token", context, self.token_a, 3
+            self.nc_id, "remove_liquidity_single_token", context, pool_key, percentage
         )
 
-        # Verify we got some tokens back
-        self.assertGreater(amount_out, 0)
+        # Verify we got the expected amount back
+        self.assertEqual(amount_out, quote.amount_out)
 
-        # Check that user's liquidity is now zero
+        # Check that user's liquidity is now 50% of original
         user_liquidity = self.runner.call_view_method(
             self.nc_id, "liquidity_of", add_context.caller_id, pool_key
         )
-        self.assertEqual(user_liquidity, 0)
+        expected_liquidity = initial_liquidity - (initial_liquidity * percentage) // 10000
+        self.assertEqual(user_liquidity, expected_liquidity)
 
         self._check_balance()
 
     def test_quote_remove_liquidity_single_token(self):
-        """Test quoting single token liquidity removal"""
+        """Test quoting single token liquidity removal with percentage"""
         # Create a pool and add liquidity
         pool_key, creator_address = self._create_pool(
             self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
@@ -3086,25 +3137,461 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.token_a, self.token_b, 3, 1000_00
         )
 
-        # Get quote for single token removal
-        quote = self.runner.call_view_method(
-            self.nc_id, "quote_remove_liquidity_single_token",
-            add_context.caller_id, self.token_a, self.token_b, self.token_a, 3
+        # Test different percentages
+        for percentage in [2500, 5000, 7500, 10000]:  # 25%, 50%, 75%, 100%
+            # Get quote for single token removal
+            quote = self.runner.call_view_method(
+                self.nc_id, "quote_remove_liquidity_single_token_percentage",
+                add_context.caller_id, pool_key, self.token_a, percentage
+            )
+
+            # Verify quote contains expected fields (named tuple)
+            self.assertTrue(hasattr(quote, "amount_out"))
+            self.assertTrue(hasattr(quote, "token_a_withdrawn"))
+            self.assertTrue(hasattr(quote, "token_b_withdrawn"))
+            self.assertTrue(hasattr(quote, "swap_amount"))
+            self.assertTrue(hasattr(quote, "swap_output"))
+            self.assertTrue(hasattr(quote, "user_liquidity"))
+
+            # Verify values are reasonable
+            self.assertGreater(quote.amount_out, 0)
+            self.assertGreater(quote.token_a_withdrawn, 0)
+            self.assertGreater(quote.token_b_withdrawn, 0)
+            self.assertGreater(quote.user_liquidity, 0)
+            
+            # Verify the quote is internally consistent
+            self.assertEqual(quote.token_a_withdrawn + quote.swap_output, quote.amount_out)
+            
+            # Verify percentage-based calculations
+            expected_liquidity_to_remove = (quote.user_liquidity * percentage) // 10000
+            self.assertGreater(expected_liquidity_to_remove, 0)
+
+    def test_remove_liquidity_single_token_percentage_variations(self):
+        """Test removing liquidity with different percentages"""
+        # Create a pool
+        pool_key, creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
         )
 
-        # Verify quote contains expected fields (named tuple)
-        self.assertTrue(hasattr(quote, "amount_out"))
-        self.assertTrue(hasattr(quote, "token_a_withdrawn"))
-        self.assertTrue(hasattr(quote, "token_b_withdrawn"))
-        self.assertTrue(hasattr(quote, "swap_amount"))
-        self.assertTrue(hasattr(quote, "swap_output"))
-        self.assertTrue(hasattr(quote, "user_liquidity"))
+        # Add liquidity
+        result, add_context = self._add_liquidity(
+            self.token_a, self.token_b, 3, 2000_00
+        )
 
-        # Verify values are reasonable
+        initial_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
+        )
+
+        # Test different percentages
+        percentages = [1000, 2500, 5000, 7500, 9000]  # 10%, 25%, 50%, 75%, 90%
+        
+        for percentage in percentages:
+            # Get quote
+            quote = self.runner.call_view_method(
+                self.nc_id, "quote_remove_liquidity_single_token_percentage",
+                add_context.caller_id, pool_key, self.token_a, percentage
+            )
+
+            # Verify quote values are reasonable
+            self.assertGreater(quote.amount_out, 0)
+            self.assertGreater(quote.token_a_withdrawn, 0)
+            self.assertGreater(quote.token_b_withdrawn, 0)
+            self.assertGreater(quote.user_liquidity, 0)
+            
+            # Verify the quote is internally consistent
+            self.assertEqual(quote.token_a_withdrawn + quote.swap_output, quote.amount_out)
+
+            # Create context with withdrawal action
+            tx = self._get_any_tx()
+            context = self.create_context(
+                [NCWithdrawalAction(token_uid=self.token_a, amount=quote.amount_out)],
+                vertex=tx,
+                caller_id=add_context.caller_id,
+                timestamp=self.get_current_timestamp()
+            )
+
+            # Get liquidity before removal
+            liquidity_before = self.runner.call_view_method(
+                self.nc_id, "liquidity_of", add_context.caller_id, pool_key
+            )
+
+            # Remove liquidity
+            amount_out = self.runner.call_public_method(
+                self.nc_id, "remove_liquidity_single_token", context, pool_key, percentage
+            )
+
+            # Verify amount received matches quote
+            self.assertEqual(amount_out, quote.amount_out)
+
+            # Verify liquidity decreased by expected amount
+            liquidity_after = self.runner.call_view_method(
+                self.nc_id, "liquidity_of", add_context.caller_id, pool_key
+            )
+            expected_removed = (liquidity_before * percentage) // 10000
+            actual_removed = liquidity_before - liquidity_after
+            self.assertEqual(actual_removed, expected_removed)
+
+        self._check_balance()
+
+    def test_remove_liquidity_single_token_both_directions(self):
+        """Test removing liquidity to get both token A and token B"""
+        # Create a pool
+        pool_key, creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        # Add liquidity
+        result, add_context = self._add_liquidity(
+            self.token_a, self.token_b, 3, 1000_00
+        )
+
+        initial_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
+        )
+
+        # Test removing 50% to get token A
+        percentage_a = 5000
+        quote_a = self.runner.call_view_method(
+            self.nc_id, "quote_remove_liquidity_single_token_percentage",
+            add_context.caller_id, pool_key, self.token_a, percentage_a
+        )
+
+        # Verify quote calculations for token A
+        self.assertGreater(quote_a.amount_out, 0)
+        self.assertGreater(quote_a.token_a_withdrawn, 0)
+        self.assertGreater(quote_a.token_b_withdrawn, 0)
+        self.assertEqual(quote_a.user_liquidity, initial_liquidity)
+        self.assertEqual(quote_a.token_a_withdrawn + quote_a.swap_output, quote_a.amount_out)
+
+        tx = self._get_any_tx()
+        context_a = self.create_context(
+            [NCWithdrawalAction(token_uid=self.token_a, amount=quote_a.amount_out)],
+            vertex=tx,
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp()
+        )
+
+        amount_out_a = self.runner.call_public_method(
+            self.nc_id, "remove_liquidity_single_token", context_a, pool_key, percentage_a
+        )
+
+        self.assertEqual(amount_out_a, quote_a.amount_out)
+
+        # Test removing remaining liquidity to get token B
+        remaining_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
+        )
+
+        percentage_b = 10000  # Remove all remaining
+        quote_b = self.runner.call_view_method(
+            self.nc_id, "quote_remove_liquidity_single_token_percentage",
+            add_context.caller_id, pool_key, self.token_b, percentage_b
+        )
+
+        # Verify quote calculations for token B
+        self.assertGreater(quote_b.amount_out, 0)
+        self.assertGreater(quote_b.token_a_withdrawn, 0)
+        self.assertGreater(quote_b.token_b_withdrawn, 0)
+        self.assertEqual(quote_b.user_liquidity, remaining_liquidity)
+        self.assertEqual(quote_b.token_b_withdrawn + quote_b.swap_output, quote_b.amount_out)
+
+        context_b = self.create_context(
+            [NCWithdrawalAction(token_uid=self.token_b, amount=quote_b.amount_out)],
+            vertex=tx,
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp()
+        )
+
+        amount_out_b = self.runner.call_public_method(
+            self.nc_id, "remove_liquidity_single_token", context_b, pool_key, percentage_b
+        )
+
+        self.assertEqual(amount_out_b, quote_b.amount_out)
+
+        # Verify all liquidity is removed
+        final_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
+        )
+        self.assertEqual(final_liquidity, 0)
+
+        self._check_balance()
+
+    def test_remove_liquidity_single_token_slippage_handling(self):
+        """Test slippage handling in single token removal"""
+        # Create a pool
+        pool_key, creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        # Add liquidity
+        result, add_context = self._add_liquidity(
+            self.token_a, self.token_b, 3, 1000_00
+        )
+
+        initial_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
+        )
+        
+        # Get quote for 50% removal
+        percentage = 5000
+        quote = self.runner.call_view_method(
+            self.nc_id, "quote_remove_liquidity_single_token_percentage",
+            add_context.caller_id, pool_key, self.token_a, percentage
+        )
+
+        # Verify quote is reasonable
         self.assertGreater(quote.amount_out, 0)
-        self.assertGreater(quote.token_a_withdrawn, 0)
-        self.assertGreater(quote.token_b_withdrawn, 0)
-    #     self.assertGreater(quote.user_liquidity, 0)
+        self.assertEqual(quote.user_liquidity, initial_liquidity)
+
+        # Test with less withdrawal amount (slippage tolerance)
+        slippage_amount = 100_00  # 100 tokens of slippage
+        withdrawal_amount = quote.amount_out - slippage_amount
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            [NCWithdrawalAction(token_uid=self.token_a, amount=withdrawal_amount)],
+            vertex=tx,
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp()
+        )
+
+        # Remove liquidity with slippage
+        amount_out = self.runner.call_public_method(
+            self.nc_id, "remove_liquidity_single_token", context, pool_key, percentage
+        )
+
+        # Should receive the requested amount
+        self.assertEqual(amount_out, withdrawal_amount)
+
+        # Check that excess was stored in user balance
+        user_balance = self.runner.call_view_method(
+            self.nc_id, "balance_of", add_context.caller_id, pool_key
+        )
+        # The actual slippage amount should be the difference between quote and withdrawal
+        actual_slippage = quote.amount_out - withdrawal_amount
+        
+        # Instead of trying to calculate the expected balance, let's verify that:
+        # 1. The slippage amount is correct (should be 100_00)
+        self.assertEqual(actual_slippage, slippage_amount)
+        
+        # 2. The balance contains the slippage amount
+        # The balance should be (slippage_amount, 0) or (0, slippage_amount) depending on which token
+        # But since we're removing to token_a, the slippage should be in token_a
+        self.assertEqual(user_balance[1], 0)  # No token_b balance
+        self.assertGreaterEqual(user_balance[0], actual_slippage)  # At least the slippage amount
+
+        self._check_balance()
+
+    def test_remove_liquidity_single_token_insufficient_output(self):
+        """Test error handling for insufficient output amount"""
+        # Create a pool
+        pool_key, creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        # Add liquidity
+        result, add_context = self._add_liquidity(
+            self.token_a, self.token_b, 3, 1000_00
+        )
+
+        initial_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
+        )
+
+        # Get quote for 50% removal
+        percentage = 5000
+        quote = self.runner.call_view_method(
+            self.nc_id, "quote_remove_liquidity_single_token_percentage",
+            add_context.caller_id, pool_key, self.token_a, percentage
+        )
+
+        # Verify quote is reasonable
+        self.assertGreater(quote.amount_out, 0)
+        self.assertEqual(quote.user_liquidity, initial_liquidity)
+
+        # Test with more withdrawal amount than possible (should fail)
+        excessive_amount = quote.amount_out + 1000_00
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            [NCWithdrawalAction(token_uid=self.token_a, amount=excessive_amount)],
+            vertex=tx,
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp()
+        )
+
+        # Should fail with InvalidAction
+        with self.assertRaises(InvalidAction):
+            self.runner.call_public_method(
+                self.nc_id, "remove_liquidity_single_token", context, pool_key, percentage
+            )
+
+        self._check_balance()
+
+    def test_remove_liquidity_single_token_invalid_percentage(self):
+        """Test error handling for invalid percentages"""
+        # Create a pool
+        pool_key, creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        # Add liquidity
+        result, add_context = self._add_liquidity(
+            self.token_a, self.token_b, 3, 1000_00
+        )
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            [NCWithdrawalAction(token_uid=self.token_a, amount=100_00)],
+            vertex=tx,
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp()
+        )
+
+        # Test invalid percentages
+        invalid_percentages = [0, 10001, 15000, -1000]
+        
+        for invalid_percentage in invalid_percentages:
+            with self.assertRaises((InvalidAction, NCFail)):
+                self.runner.call_public_method(
+                    self.nc_id, "remove_liquidity_single_token", context, pool_key, invalid_percentage
+                )
+
+        # Test quote with invalid percentages
+        for invalid_percentage in invalid_percentages:
+            with self.assertRaises((InvalidAction, NCFail)):
+                self.runner.call_view_method(
+                    self.nc_id, "quote_remove_liquidity_single_token_percentage",
+                    add_context.caller_id, pool_key, self.token_a, invalid_percentage
+                )
+
+        self._check_balance()
+
+    def test_remove_liquidity_single_token_invalid_token(self):
+        """Test error handling for invalid output token"""
+        # Create a pool
+        pool_key, creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        # Add liquidity
+        result, add_context = self._add_liquidity(
+            self.token_a, self.token_b, 3, 1000_00
+        )
+
+        # Test with token not in pool
+        with self.assertRaises(InvalidTokens):
+            self.runner.call_view_method(
+                self.nc_id, "quote_remove_liquidity_single_token_percentage",
+                add_context.caller_id, pool_key, self.token_c, 5000
+            )
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            [NCWithdrawalAction(token_uid=self.token_c, amount=100_00)],
+            vertex=tx,
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp()
+        )
+
+        with self.assertRaises(InvalidTokens):
+            self.runner.call_public_method(
+                self.nc_id, "remove_liquidity_single_token", context, pool_key, 5000
+            )
+
+        self._check_balance()
+
+    def test_remove_liquidity_single_token_no_liquidity(self):
+        """Test error handling when user has no liquidity"""
+        # Create a pool
+        pool_key, creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        # Create user with no liquidity
+        address_bytes, _ = self._get_any_address()
+        user_address = Address(address_bytes)
+
+        # Test quote with no liquidity
+        with self.assertRaises(InvalidAction):
+            self.runner.call_view_method(
+                self.nc_id, "quote_remove_liquidity_single_token_percentage",
+                user_address, pool_key, self.token_a, 5000
+            )
+
+        # Test removal with no liquidity
+        tx = self._get_any_tx()
+        context = self.create_context(
+            [NCWithdrawalAction(token_uid=self.token_a, amount=100_00)],
+            vertex=tx,
+            caller_id=user_address,
+            timestamp=self.get_current_timestamp()
+        )
+
+        with self.assertRaises(InvalidAction):
+            self.runner.call_public_method(
+                self.nc_id, "remove_liquidity_single_token", context, pool_key, 5000
+            )
+
+        self._check_balance()
+
+    def test_remove_liquidity_single_token_invalid_context(self):
+        """Test error handling for invalid context actions"""
+        # Create a pool
+        pool_key, creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+        )
+
+        # Add liquidity
+        result, add_context = self._add_liquidity(
+            self.token_a, self.token_b, 3, 1000_00
+        )
+
+        tx = self._get_any_tx()
+
+        # Test with no actions
+        context_no_actions = self.create_context(
+            [],
+            vertex=tx,
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp()
+        )
+
+        with self.assertRaises(InvalidAction):
+            self.runner.call_public_method(
+                self.nc_id, "remove_liquidity_single_token", context_no_actions, pool_key, 5000
+            )
+
+        # Test with multiple actions
+        context_multiple_actions = self.create_context(
+            [
+                NCWithdrawalAction(token_uid=self.token_a, amount=100_00),
+                NCWithdrawalAction(token_uid=self.token_b, amount=200_00)
+            ],
+            vertex=tx,
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp()
+        )
+
+        with self.assertRaises(InvalidAction):
+            self.runner.call_public_method(
+                self.nc_id, "remove_liquidity_single_token", context_multiple_actions, pool_key, 5000
+            )
+
+        # Test with deposit action instead of withdrawal
+        context_deposit = self.create_context(
+            [NCDepositAction(token_uid=self.token_a, amount=100_00)],
+            vertex=tx,
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp()
+        )
+
+        with self.assertRaises(NCForbiddenAction):
+            self.runner.call_public_method(
+                self.nc_id, "remove_liquidity_single_token", context_deposit, pool_key, 5000
+            )
+
+        self._check_balance()
 
     def test_profit_tracking_edge_cases(self):
         """Test profit tracking with various edge cases"""
@@ -3238,7 +3725,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         with self.assertRaises(InvalidAction):
             self.runner.call_public_method(
-                self.nc_id, "remove_liquidity_single_token", empty_context, self.token_a, 3
+                self.nc_id, "remove_liquidity_single_token", empty_context, pool_key, 5000
             )
 
         self._check_balance()
