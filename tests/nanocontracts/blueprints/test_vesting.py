@@ -138,6 +138,7 @@ class VestingTestCase(BlueprintTestCase):
 
         # Verify initial state using contract instance
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Vesting)
         self.assertEqual(contract.admin, self.admin_address)
         self.assertEqual(contract.token_uid, self.token_uid)
         self.assertEqual(contract.available_balance, self.initial_deposit)
@@ -157,10 +158,10 @@ class VestingTestCase(BlueprintTestCase):
             self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
         )
 
-        self.assertEqual(info["beneficiary"], beneficiary)
-        self.assertEqual(info["amount"], amount)
-        self.assertEqual(info["withdrawn"], 0)
-        self.assertEqual(info["vested"], 0)
+        self.assertEqual(info.beneficiary, beneficiary)
+        self.assertEqual(info.amount, amount)
+        self.assertEqual(info.withdrawn, 0)
+        self.assertEqual(info.vested, 0)
 
         # Test insufficient balance
         with self.assertRaises(InsufficientAvailableBalance):
@@ -181,6 +182,7 @@ class VestingTestCase(BlueprintTestCase):
 
         # Verify started state
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Vesting)
         self.assertTrue(contract.is_started)
         self.assertEqual(contract.vesting_start, start_time)
 
@@ -233,7 +235,7 @@ class VestingTestCase(BlueprintTestCase):
         info = self.runner.call_view_method(
             self.contract_id, "get_vesting_info", 0, Timestamp(after_cliff)
         )
-        self.assertEqual(info["withdrawn"], monthly_vesting)
+        self.assertEqual(info.withdrawn, monthly_vesting)
 
     def test_change_beneficiary(self):
         """Test beneficiary change functionality."""
@@ -255,7 +257,7 @@ class VestingTestCase(BlueprintTestCase):
         info = self.runner.call_view_method(
             self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
         )
-        self.assertEqual(info["beneficiary"], new_beneficiary)
+        self.assertEqual(info.beneficiary, new_beneficiary)
 
         # Test unauthorized change
         unauthorized_ctx = self.create_context(
@@ -285,6 +287,7 @@ class VestingTestCase(BlueprintTestCase):
         self.runner.call_public_method(self.contract_id, "deposit_tokens", deposit_ctx)
 
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Vesting)
         self.assertEqual(
             contract.available_balance, self.initial_deposit + deposit_amount
         )
@@ -303,6 +306,7 @@ class VestingTestCase(BlueprintTestCase):
         )
 
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Vesting)
         self.assertEqual(
             contract.available_balance,
             self.initial_deposit + deposit_amount - withdraw_amount,
@@ -340,7 +344,7 @@ class VestingTestCase(BlueprintTestCase):
                 self.contract_id, "get_vesting_info", 0, Timestamp(timestamp)
             )
             self.assertEqual(
-                info["vested"], expected_vested, f"Incorrect vesting at {months} months"
+                info.vested, expected_vested, f"Incorrect vesting at {months} months"
             )
 
     def test_multiple_allocations(self):
@@ -374,7 +378,7 @@ class VestingTestCase(BlueprintTestCase):
             info = self.runner.call_view_method(
                 self.contract_id, "get_vesting_info", index, Timestamp(claim_time)
             )
-            self.assertEqual(info["vested"], expected_vested)
+            self.assertEqual(info.vested, expected_vested)
 
             # Test claiming
             claim_ctx = self.create_context(
@@ -425,4 +429,4 @@ class VestingTestCase(BlueprintTestCase):
     #     info = self.runner.call_view_method(
     #         self.contract_id, "get_vesting_info", 0, Timestamp(claim_time)
     #     )
-    #     self.assertEqual(info["withdrawn"], expected_vested)
+    #     self.assertEqual(info.withdrawn, expected_vested)

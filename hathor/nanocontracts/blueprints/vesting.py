@@ -1,4 +1,4 @@
-from typing import Any
+from typing import NamedTuple
 
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
@@ -6,6 +6,7 @@ from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
     Address,
     Amount,
+    ContractId,
     NCDepositAction,
     NCWithdrawalAction,
     TokenUid,
@@ -18,6 +19,30 @@ from hathor.nanocontracts.types import (
 MAX_ALLOCATIONS = 10
 MONTH_IN_SECONDS = 30 * 24 * 3600  # 30 days in seconds
 PRECISION = 10**8
+
+
+class VestingInfo(NamedTuple):
+    """Vesting information for a specific allocation."""
+
+    name: str
+    beneficiary: str
+    amount: int
+    cliff_months: int
+    vesting_months: int
+    withdrawn: int
+    vested: int
+    claimable: int
+
+
+class VestingContractInfo(NamedTuple):
+    """Overall vesting contract information."""
+
+    token_uid: str
+    available: int
+    total_allocated: int
+    is_started: bool
+    start_time: int | None
+    allocations: list[int]
 
 
 class AllocationNotConfigured(NCFail):
@@ -77,6 +102,7 @@ class Vesting(Blueprint):
     token_uid: TokenUid
     vesting_start: Timestamp
     is_started: bool
+    creator_contract_id: ContractId  # DozerTools contract that created this
 
     # Balance tracking
     available_balance: Amount
@@ -98,8 +124,12 @@ class Vesting(Blueprint):
             raise InvalidIndex("Index out of range")
 
     def _only_admin(self, ctx: Context) -> None:
-        if ctx.address != self.admin:
+        if ctx.caller_id != self.admin:
             raise NCFail("Only admin can call this method")
+
+    def _only_creator_contract(self, ctx: Context) -> None:
+        if ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only creator contract can call this method")
 
     def _get_single_deposit_action(
         self, ctx: Context, token_uid: TokenUid
@@ -144,15 +174,19 @@ class Vesting(Blueprint):
         return Amount(min(vested_amount, total_amount))
 
     @public(allow_deposit=True)
-    def initialize(self, ctx: Context, token_uid: TokenUid) -> None:
+    def initialize(
+        self, ctx: Context, token_uid: TokenUid, creator_contract_id: ContractId
+    ) -> None:
         """Initialize contract with token deposit."""
         self.token_uid = token_uid
         action = self._get_single_deposit_action(ctx, token_uid)
 
-        self.admin = ctx.address
+        self.admin = ctx.caller_id
         self.available_balance = Amount(action.amount)
         self.total_allocated = Amount(0)
         self.is_started = False
+        # Set creator_contract_id (for DozerTools routing)
+        self.creator_contract_id = creator_contract_id
 
     @public
     def configure_vesting(
@@ -212,7 +246,7 @@ class Vesting(Blueprint):
             raise NCFail("Vesting not started")
 
         beneficiary = self.allocation_addresses[index]
-        if ctx.address != self.admin and ctx.address != beneficiary:
+        if ctx.caller_id != self.admin and ctx.caller_id != beneficiary:
             raise InvalidBeneficiary("Only admin or beneficiary can claim")
 
         action = self._get_single_withdrawal_action(ctx, self.token_uid)
@@ -239,7 +273,7 @@ class Vesting(Blueprint):
             raise AllocationNotConfigured
 
         current_beneficiary = self.allocation_addresses[index]
-        if ctx.address != current_beneficiary:
+        if ctx.caller_id != current_beneficiary:
             raise InvalidBeneficiary("Only current beneficiary can change")
 
         self.allocation_addresses[index] = new_beneficiary
@@ -295,7 +329,7 @@ class Vesting(Blueprint):
     #     )
 
     @view
-    def get_vesting_info(self, index: int, timestamp: Timestamp) -> dict[str, Any]:
+    def get_vesting_info(self, index: int, timestamp: Timestamp) -> VestingInfo:
         """Get vesting information for allocation."""
         if not self.is_configured.get(index, False):
             raise AllocationNotConfigured
@@ -306,27 +340,79 @@ class Vesting(Blueprint):
 
         withdrawn = self.allocation_withdrawn[index]
 
-        return {
-            "name": self.allocation_names[index],
-            "beneficiary": self.allocation_addresses[index],
-            "amount": self.allocation_amounts[index],
-            "cliff_months": self.allocation_cliffs[index],
-            "vesting_months": self.allocation_durations[index],
-            "withdrawn": withdrawn,
-            "vested": vested,
-            "claimable": vested - withdrawn,
-        }
+        return VestingInfo(
+            name=self.allocation_names[index],
+            beneficiary=self.allocation_addresses[index].hex(),
+            amount=self.allocation_amounts[index],
+            cliff_months=self.allocation_cliffs[index],
+            vesting_months=self.allocation_durations[index],
+            withdrawn=withdrawn,
+            vested=vested,
+            claimable=vested - withdrawn,
+        )
 
     @view
-    def get_contract_info(self) -> dict[str, Any]:
+    def get_contract_info(self) -> VestingContractInfo:
         """Get overall contract information."""
-        return {
-            "token_uid": self.token_uid.hex(),
-            "available": self.available_balance,
-            "total_allocated": self.total_allocated,
-            "is_started": self.is_started,
-            "start_time": self.vesting_start if self.is_started else None,
-            "allocations": [
+        return VestingContractInfo(
+            token_uid=self.token_uid.hex(),
+            available=self.available_balance,
+            total_allocated=self.total_allocated,
+            is_started=self.is_started,
+            start_time=self.vesting_start if self.is_started else None,
+            allocations=[
                 i for i in range(MAX_ALLOCATIONS) if self.is_configured.get(i, False)
             ],
-        }
+        )
+
+    # Routing methods for DozerTools integration
+    @public(allow_withdrawal=True)
+    def routed_claim_allocation(
+        self, ctx: Context, user_address: Address, index: int
+    ) -> None:
+        """Claim vested tokens for an allocation via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        self._validate_index(index)
+
+        if not self.is_configured.get(index, False):
+            raise AllocationNotConfigured
+
+        if not self.is_started:
+            raise NCFail("Vesting not started")
+
+        beneficiary = self.allocation_addresses[index]
+        if user_address != self.admin and user_address != beneficiary:
+            raise InvalidBeneficiary("Only admin or beneficiary can claim")
+
+        action = self._get_single_withdrawal_action(ctx, self.token_uid)
+
+        vested = self._calculate_vested_amount(index, Timestamp(ctx.timestamp))
+        withdrawn = self.allocation_withdrawn[index]
+        claimable = vested - withdrawn
+
+        if action.amount > claimable:
+            raise InsufficientVestedAmount
+
+        self.allocation_withdrawn[index] = Amount(
+            self.allocation_withdrawn[index] + action.amount
+        )
+
+    @public
+    def routed_change_beneficiary(
+        self, ctx: Context, user_address: Address, index: int, new_beneficiary: Address
+    ) -> None:
+        """Change beneficiary address for allocation via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        self._validate_index(index)
+
+        if not self.is_configured.get(index, False):
+            raise AllocationNotConfigured
+
+        current_beneficiary = self.allocation_addresses[index]
+        if user_address != current_beneficiary:
+            raise InvalidBeneficiary("Only current beneficiary can change")
+
+        self.allocation_addresses[index] = new_beneficiary
+
+
+__blueprint__ = Vesting
