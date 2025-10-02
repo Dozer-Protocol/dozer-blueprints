@@ -1,17 +1,75 @@
-from typing import List
+from typing import NamedTuple
+
 from hathor.nanocontracts.blueprint import Blueprint
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
-from hathor.nanocontracts.types import NCDepositAction, NCWithdrawalAction, public, view
-from hathor.types import Address, Amount, TokenUid, Timestamp, AddressB58
-from math import floor, ceil
+from hathor.nanocontracts.types import (
+    Amount,
+    TokenUid,
+    Timestamp,
+    Address,
+    ContractId,
+    NCDepositAction,
+    NCWithdrawalAction,
+    public,
+    view,
+)
 
 # Constants
 DAY_IN_SECONDS: int = 60 * 60 * 24
 MIN_PERIOD_DAYS: int = 30
-MIN_STAKE_AMOUNT: Amount = 100  # Minimum stake amount
-MAX_STAKE_AMOUNT: Amount = 1000000  # Maximum stake amount per address
+MIN_STAKE_AMOUNT = 100  # Minimum stake amount
+MAX_STAKE_AMOUNT = 1000000  # Maximum stake amount per address
 PRECISION: int = 10**20  # For fixed-point arithmetic
+
+
+class StakeUserInfo(NamedTuple):
+    """User information for staking contract."""
+
+    deposits: int
+
+
+class StakeFrontEndInfo(NamedTuple):
+    """Frontend API information for staking contract."""
+
+    owner_balance: int
+    total_staked: int
+    rewards_per_share: int
+    paused: bool
+
+
+class StakingStats(NamedTuple):
+    """Comprehensive staking pool statistics."""
+
+    owner_balance: int
+    total_staked: int
+    rewards_per_share: int
+    paused: bool
+    earnings_per_day: int
+    days_of_rewards_remaining: int
+    estimated_apy: int
+    owner_address: bytes
+    token_uid: bytes
+
+
+class UserStakingInfo(NamedTuple):
+    """Comprehensive user staking information."""
+
+    deposits: int
+    pending_rewards: int
+    max_withdrawal: int
+    stake_timestamp: int
+    days_until_unlock: int
+    can_unstake: bool
+
+
+class StakeValidationInfo(NamedTuple):
+    """Validation parameters for stake/unstake operations."""
+
+    min_stake_amount: int
+    max_stake_amount: int
+    min_period_days: int
+    is_paused: bool
 
 
 class Stake(Blueprint):
@@ -36,6 +94,7 @@ class Stake(Blueprint):
     # Owner
     owner_balance: Amount
     owner_address: bytes
+    creator_contract_id: ContractId  # DozerTools contract that created this
 
     # User
     user_deposits: dict[Address, Amount]
@@ -49,7 +108,7 @@ class Stake(Blueprint):
 
     def _validate_address(self, address: Address) -> None:
         """Validate address format"""
-        if not isinstance(address, Address):
+        if not isinstance(address, bytes):
             raise InvalidInput("Invalid address format")
 
     def _validate_stake_amount(self, amount: Amount) -> None:
@@ -88,8 +147,12 @@ class Stake(Blueprint):
 
     def _validate_owner_auth(self, ctx: Context) -> None:
         """Validate owner authorization"""
-        if ctx.address != self.owner_address:
+        if ctx.caller_id != self.owner_address:
             raise Unauthorized("Unauthorized")
+
+    def _only_creator_contract(self, ctx: Context) -> None:
+        if ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only creator contract can call this method")
 
     def _safe_pay(self, amount: int, address: Address) -> None:
         """Safe payment handling"""
@@ -119,40 +182,44 @@ class Stake(Blueprint):
         if address not in self.user_deposits:
             return Amount(0)
         return Amount(
-            floor(
-                (self.user_deposits[address] * self.rewards_per_share) // PRECISION
-                - self.user_debit.get(address, 0)
-            )
+            (self.user_deposits[address] * self.rewards_per_share) // PRECISION
+            - self.user_debit.get(address, 0)
         )
 
     @public(allow_deposit=True)
     def initialize(
-        self, ctx: Context, earnings_per_day: int, token_uid: TokenUid
+        self,
+        ctx: Context,
+        earnings_per_day: int,
+        token_uid: TokenUid,
+        creator_contract_id: ContractId,
     ) -> None:
         self.token_uid = token_uid
         action = self._get_single_deposit_action(ctx)
         self.earnings_per_second = (earnings_per_day * PRECISION) // DAY_IN_SECONDS
-        self.owner_address = ctx.address
-        amount = action.amount
+        self.owner_address = ctx.caller_id
+        amount = Amount(action.amount)
         self._amount_check(amount, earnings_per_day)
         self.owner_balance = Amount(amount)
         self.total_staked = Amount(0)
         self.last_reward = 0
         self.rewards_per_share = 0
         self.paused = False
+        # Set creator_contract_id (for DozerTools routing)
+        self.creator_contract_id = creator_contract_id
         self._validate_state()
 
     @public
     def pause(self, ctx: Context) -> None:
         """Emergency pause functionality"""
-        if ctx.address != self.owner_address:
+        if ctx.caller_id != self.owner_address:
             raise Unauthorized("Only owner can pause")
         self.paused = True
 
     @public
     def unpause(self, ctx: Context) -> None:
         """Unpause functionality"""
-        if ctx.address != self.owner_address:
+        if ctx.caller_id != self.owner_address:
             raise Unauthorized("Only owner can unpause")
         self.paused = False
 
@@ -162,7 +229,7 @@ class Stake(Blueprint):
         if not self.paused:
             raise InvalidState("Contract must be paused")
         action = self._get_single_withdrawal_action(ctx)
-        address = Address(ctx.address)
+        address = Address(ctx.caller_id)
         if address not in self.user_deposits:
             raise Unauthorized("user not staked")
         amount = action.amount
@@ -192,11 +259,11 @@ class Stake(Blueprint):
     def stake(self, ctx: Context) -> None:
         if self.paused:
             raise InvalidState("Contract is paused")
-        if ctx.address == self.owner_address:
+        if ctx.caller_id == self.owner_address:
             raise Unauthorized("admin, please use other address to stake")
         action = self._get_single_deposit_action(ctx)
-        address = Address(ctx.address)
-        amount = action.amount
+        address = Address(ctx.caller_id)
+        amount = Amount(action.amount)
         self._validate_stake_amount(amount)
         self._validate_address(address)
 
@@ -223,7 +290,7 @@ class Stake(Blueprint):
         if self.paused:
             raise InvalidState("Contract is paused")
         action = self._get_single_withdrawal_action(ctx)
-        address = Address(ctx.address)
+        address = Address(ctx.caller_id)
         if address not in self.user_deposits:
             raise Unauthorized("user not staked")
 
@@ -268,29 +335,195 @@ class Stake(Blueprint):
                 multiplier * self.earnings_per_second
             ) // self.total_staked
             pending = Amount(
-                floor(
-                    (self.user_deposits[address] * rewards_per_share) // PRECISION
-                    - self.user_debit.get(address, 0)
-                )
+                (self.user_deposits[address] * rewards_per_share) // PRECISION
+                - self.user_debit.get(address, 0)
             )
             return Amount(self.user_deposits[address] + pending)
         else:
             return Amount(0)
 
     @view
-    def get_user_info(self, address: Address) -> dict[str, int]:
-        return {
-            "deposits": self.user_deposits.get(address, 0),
-        }
+    def get_user_info(self, address: Address) -> StakeUserInfo:
+        return StakeUserInfo(
+            deposits=self.user_deposits.get(address, 0),
+        )
 
     @view
-    def front_end_api(self) -> dict[str, float]:
-        return {
-            "owner_balance": self.owner_balance,
-            "total_staked": self.total_staked,
-            "rewards_per_share": self.rewards_per_share,
-            "paused": self.paused,
-        }
+    def front_end_api(self) -> StakeFrontEndInfo:
+        return StakeFrontEndInfo(
+            owner_balance=self.owner_balance,
+            total_staked=self.total_staked,
+            rewards_per_share=self.rewards_per_share,
+            paused=self.paused,
+        )
+
+    @view
+    def get_staking_stats(self) -> StakingStats:
+        """Get comprehensive staking pool statistics.
+
+        Returns comprehensive stats including owner balance, total staked,
+        rewards info, and calculated metrics like days remaining and APY.
+        """
+        # Calculate earnings per day
+        earnings_per_day = (
+            (self.earnings_per_second * DAY_IN_SECONDS) // PRECISION
+            if PRECISION > 0
+            else 0
+        )
+
+        # Calculate days of rewards remaining
+        days_remaining = (
+            self.owner_balance // earnings_per_day if earnings_per_day > 0 else 0
+        )
+
+        # Calculate estimated APY
+        if self.total_staked > 0 and earnings_per_day > 0:
+            annual_rewards = earnings_per_day * 365
+            estimated_apy = (annual_rewards * 100) // self.total_staked
+        else:
+            estimated_apy = 0
+
+        return StakingStats(
+            owner_balance=self.owner_balance,
+            total_staked=self.total_staked,
+            rewards_per_share=self.rewards_per_share,
+            paused=self.paused,
+            earnings_per_day=earnings_per_day,
+            days_of_rewards_remaining=days_remaining,
+            estimated_apy=estimated_apy,
+            owner_address=self.owner_address,
+            token_uid=self.token_uid,
+        )
+
+    @view
+    def get_user_staking_info(
+        self, address: Address, timestamp: Timestamp
+    ) -> UserStakingInfo:
+        """Get comprehensive user staking information.
+
+        Args:
+            address: User address
+            timestamp: Current timestamp for calculations
+
+        Returns:
+            UserStakingInfo with current stake, rewards, and timelock status
+        """
+        if address not in self.user_deposits:
+            return UserStakingInfo(
+                deposits=0,
+                pending_rewards=0,
+                max_withdrawal=0,
+                stake_timestamp=0,
+                days_until_unlock=0,
+                can_unstake=False,
+            )
+
+        stake_time = self.user_stake_timestamp.get(address, 0)
+        time_since_stake = int(timestamp) - stake_time
+        days_since_stake = time_since_stake // DAY_IN_SECONDS
+        days_until_unlock = max(0, MIN_PERIOD_DAYS - days_since_stake)
+        can_unstake = days_until_unlock == 0
+
+        # Calculate pending rewards
+        pending = self._pending_rewards(address)
+
+        # Get max withdrawal
+        max_withdrawal = self.get_max_withdrawal(address, timestamp)
+
+        return UserStakingInfo(
+            deposits=self.user_deposits[address],
+            pending_rewards=pending,
+            max_withdrawal=max_withdrawal,
+            stake_timestamp=stake_time,
+            days_until_unlock=days_until_unlock,
+            can_unstake=can_unstake,
+        )
+
+    @view
+    def get_stake_validation_info(self) -> StakeValidationInfo:
+        """Get validation parameters for stake/unstake operations.
+
+        Returns contract constants and current state for UI validation.
+        """
+        return StakeValidationInfo(
+            min_stake_amount=MIN_STAKE_AMOUNT,
+            max_stake_amount=MAX_STAKE_AMOUNT,
+            min_period_days=MIN_PERIOD_DAYS,
+            is_paused=self.paused,
+        )
+
+    # Routing methods for DozerTools integration
+    @public(allow_deposit=True)
+    def routed_stake(self, ctx: Context, user_address: Address) -> None:
+        """Stake tokens via DozerTools routing."""
+        self._only_creator_contract(ctx)
+
+        if self.paused:
+            raise InvalidState("Contract is paused")
+        if user_address == self.owner_address:
+            raise Unauthorized("admin, please use other address to stake")
+
+        action = self._get_single_deposit_action(ctx)
+        amount = Amount(action.amount)
+        self._validate_stake_amount(amount)
+        self._validate_address(user_address)
+
+        # update pool parameters
+        self._update_pool(ctx)
+        # update rewards if user already have balance in pool
+        pending = self._pending_rewards(user_address)
+        # create entries for newcomers
+        if pending == 0:
+            if user_address not in self.user_deposits:
+                self.user_deposits[user_address] = Amount(0)
+            self.user_stake_timestamp[user_address] = int(ctx.timestamp)
+
+        self._safe_pay(pending, user_address)
+        self.user_deposits[user_address] = Amount(
+            self.user_deposits[user_address] + amount
+        )
+        self.total_staked = Amount(self.total_staked + amount + pending)
+        self.user_debit[user_address] = (
+            self.user_deposits[user_address] * self.rewards_per_share
+        ) // PRECISION
+        self._validate_state()
+
+    @public(allow_withdrawal=True)
+    def routed_unstake(self, ctx: Context, user_address: Address) -> None:
+        """Unstake tokens via DozerTools routing."""
+        self._only_creator_contract(ctx)
+
+        if self.paused:
+            raise InvalidState("Contract is paused")
+
+        action = self._get_single_withdrawal_action(ctx)
+        if user_address not in self.user_deposits:
+            raise Unauthorized("user not staked")
+
+        self._validate_unstake_time(ctx, user_address)
+        amount = action.amount
+
+        self._update_pool(ctx)
+        pending = self._pending_rewards(user_address)
+        if amount > (self.user_deposits[user_address] + pending):
+            raise InsufficientBalance("insufficient funds")
+
+        # First update total staked
+        self.total_staked = Amount(
+            max(0, self.total_staked - self.user_deposits[user_address])
+        )
+        # Then set user's deposit to zero before updating with pending rewards
+        self.user_deposits[user_address] = Amount(0)
+        # Add pending rewards
+        if pending > 0:
+            self._safe_pay(pending, user_address)
+        # Finally process withdrawal
+        self.user_deposits[user_address] = Amount(
+            max(0, self.user_deposits[user_address] - amount)
+        )
+        self.user_debit[user_address] = 0
+
+        self._validate_state()
 
 
 class Unauthorized(NCFail):
@@ -323,3 +556,6 @@ class InvalidState(NCFail):
 
 class InvalidInput(NCFail):
     pass
+
+
+__blueprint__ = Stake

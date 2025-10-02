@@ -2,8 +2,13 @@ import os
 from hathor.conf.get_settings import HathorSettings
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.context import Context
-from hathor.nanocontracts.types import NCDepositAction, NCWithdrawalAction
-from hathor.types import Address, Amount, TokenUid
+from hathor.nanocontracts.types import (
+    NCDepositAction,
+    NCWithdrawalAction,
+    Address,
+    Amount,
+    TokenUid,
+)
 from hathor.wallet.keypair import KeyPair
 from hathor.util import not_none
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
@@ -107,7 +112,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
 
@@ -128,9 +133,10 @@ class StakeTestCase(BlueprintTestCase):
         )
 
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Stake)
         self.assertEqual(contract.total_staked, stake_amount)
         self.assertEqual(
-            user_info["deposits"],
+            user_info.deposits,
             stake_amount,
         )
 
@@ -196,8 +202,9 @@ class StakeTestCase(BlueprintTestCase):
             self.contract_id, "get_user_info", ctx.address
         )
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Stake)
         self.assertEqual(contract.total_staked, 0)
-        self.assertEqual(user_info["deposits"], 0)
+        self.assertEqual(user_info.deposits, 0)
 
     def test_rewards_calculation(self):
         """Test reward calculation and distribution."""
@@ -240,11 +247,12 @@ class StakeTestCase(BlueprintTestCase):
         pause_ctx = Context(
             [],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "pause", pause_ctx)
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Stake)
         self.assertTrue(contract.paused)
 
         # Test emergency withdrawal
@@ -259,17 +267,19 @@ class StakeTestCase(BlueprintTestCase):
         )
 
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Stake)
         self.assertEqual(contract.total_staked, 0)
 
         # Test unpause
         unpause_ctx = Context(
             [],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "unpause", unpause_ctx)
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Stake)
         self.assertFalse(contract.paused)
 
     def test_owner_operations(self):
@@ -279,12 +289,13 @@ class StakeTestCase(BlueprintTestCase):
         deposit_ctx = Context(
             [NCDepositAction(token_uid=self.token_uid, amount=Amount(deposit_amount))],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "owner_deposit", deposit_ctx)
 
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Stake)
         self.assertEqual(contract.owner_balance, self.initial_deposit + deposit_amount)
 
         # Test owner withdrawal
@@ -295,12 +306,13 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=self.owner_address,
+            address=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "owner_withdraw", withdraw_ctx)
 
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Stake)
         self.assertEqual(contract.owner_balance, self.initial_deposit)
 
         # Test unauthorized withdrawal
@@ -311,7 +323,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=self._get_any_address()[0],
+            address=Address(self._get_any_address()[0]),
             timestamp=self.clock.seconds(),
         )
         with self.assertRaises(Unauthorized):
@@ -331,6 +343,7 @@ class StakeTestCase(BlueprintTestCase):
             stakers.append(ctx.address)
 
         contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Stake)
         self.assertEqual(contract.total_staked, total_stake)
 
         # Check rewards distribution
@@ -356,6 +369,6 @@ class StakeTestCase(BlueprintTestCase):
 
         api_data = self.runner.call_view_method(self.contract_id, "front_end_api")
 
-        self.assertEqual(api_data["owner_balance"], self.initial_deposit)
-        self.assertEqual(api_data["total_staked"], stake_amount)
-        self.assertFalse(api_data["paused"])
+        self.assertEqual(api_data.owner_balance, self.initial_deposit)
+        self.assertEqual(api_data.total_staked, stake_amount)
+        self.assertFalse(api_data.paused)
