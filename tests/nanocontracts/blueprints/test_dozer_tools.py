@@ -28,13 +28,15 @@ from hathor.nanocontracts.blueprints.dozer_tools import (
     ContractAlreadyExists,
     VestingNotConfigured,
     InvalidAllocation,
+    STAKING_ALLOCATION_INDEX,
+    PUBLIC_SALE_ALLOCATION_INDEX,
+    DOZER_POOL_ALLOCATION_INDEX,
+)
+from hathor.nanocontracts.blueprints.token_manager import (
     VESTING_BLUEPRINT_ID,
     STAKING_BLUEPRINT_ID,
     DAO_BLUEPRINT_ID,
     CROWDSALE_BLUEPRINT_ID,
-    STAKING_ALLOCATION_INDEX,
-    PUBLIC_SALE_ALLOCATION_INDEX,
-    DOZER_POOL_ALLOCATION_INDEX,
 )
 from hathor.nanocontracts.blueprints.dozer_pool_manager import DozerPoolManager
 from hathor.nanocontracts.blueprints.vesting import Vesting
@@ -42,7 +44,6 @@ from hathor.nanocontracts.blueprints.stake import Stake
 from hathor.nanocontracts.blueprints.dao import DAO
 from hathor.nanocontracts.blueprints.crowdsale import Crowdsale
 from hathor.nanocontracts.context import Context
-from hathor.nanocontracts.nc_types import make_nc_type_for_type
 from hathor.nanocontracts.types import (
     Address,
     Amount,
@@ -61,8 +62,6 @@ from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 DOZER_POOL_MANAGER_BLUEPRINT_ID = (
     "d6c09caa2f1f7ef6a6f416301c2b665e041fa819a792e53b8409c9c1aed2c89a"
 )
-
-TOKEN_UID_TYPE = make_nc_type_for_type(TokenUid)
 
 
 class DozerToolsTest(BlueprintTestCase):
@@ -966,6 +965,421 @@ class DozerToolsTest(BlueprintTestCase):
                 [12],
                 [36],
             )
+
+
+    def test_staking_stake_routing(self) -> None:
+        """Test staking through DozerTools.staking_stake() routing method."""
+        # Create project and configure vesting with staking allocation
+        token_uid = self._create_test_project("RoutingToken", "ROUTE")
+
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Configure vesting with 30% staking allocation
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            30,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            500,  # earnings_per_day
+            ["Team"],  # allocation_names
+            [70],  # allocation_percentages (70% for team)
+            [self.dev_address],  # allocation_beneficiaries
+            [12],  # allocation_cliff_months
+            [36],  # allocation_vesting_months
+        )
+
+        # Get staking contract that was auto-created
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # User stakes tokens through DozerTools routing
+        user_address, _ = self._get_any_address()
+        stake_amount = 1000_00  # 1000 tokens
+
+        stake_context = Context(
+            [NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            self._get_any_tx(),
+            Address(user_address),
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Stake through DozerTools routing method
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "staking_stake", stake_context, token_uid
+        )
+
+        # Verify user staked successfully by checking staking contract directly
+        user_info = self.runner.call_view_method(
+            staking_contract_id, "get_user_info", Address(user_address)
+        )
+        self.assertEqual(user_info["deposits"], stake_amount)
+
+    def test_staking_unstake_routing_with_view_methods(self) -> None:
+        """Test complete staking workflow through DozerTools with view methods."""
+        # Create project and configure staking
+        token_uid = self._create_test_project("UnstakeToken", "UNSTAKE")
+
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        earnings_per_day = 1000
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            25,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            earnings_per_day,
+            ["Team"],
+            [75],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Get staking contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # User stakes through DozerTools
+        user_address, _ = self._get_any_address()
+        stake_amount = 5000_00
+        initial_time = self.get_current_timestamp()
+
+        stake_context = Context(
+            [NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            self._get_any_tx(),
+            Address(user_address),
+            timestamp=initial_time,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "staking_stake", stake_context, token_uid
+        )
+
+        # Advance time by 31 days (past timelock)
+        time_after_timelock = initial_time + (31 * 24 * 60 * 60)
+
+        # Use view method to get max withdrawal
+        max_withdrawal = self.runner.call_view_method(
+            staking_contract_id,
+            "get_max_withdrawal",
+            Address(user_address),
+            time_after_timelock,
+        )
+
+        # Verify max_withdrawal includes stake + rewards
+        self.assertGreater(max_withdrawal, stake_amount)
+
+        # Unstake through DozerTools routing using exact amount from view method
+        unstake_context = Context(
+            [NCWithdrawalAction(token_uid=token_uid, amount=Amount(max_withdrawal))],
+            self._get_any_tx(),
+            Address(user_address),
+            timestamp=time_after_timelock,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "staking_unstake", unstake_context, token_uid
+        )
+
+        # Verify user has withdrawn everything
+        user_info = self.runner.call_view_method(
+            staking_contract_id, "get_user_info", Address(user_address)
+        )
+        self.assertEqual(user_info["deposits"], 0)
+
+    def test_routed_methods_authorization(self) -> None:
+        """Test that only DozerTools can call routed_stake/routed_unstake."""
+        # Create project and configure staking
+        token_uid = self._create_test_project("AuthToken", "AUTH")
+
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            500,
+            ["Team"],
+            [80],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Get staking contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # Try to call routed_stake directly (should fail - only DozerTools can call it)
+        user_address, _ = self._get_any_address()
+
+        # Import the Unauthorized exception from stake contract
+        from hathor.nanocontracts.blueprints.stake import Unauthorized
+
+        direct_stake_context = Context(
+            [NCDepositAction(token_uid=token_uid, amount=Amount(1000_00))],
+            self._get_any_tx(),
+            Address(user_address),
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Direct call to routed_stake should fail
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                staking_contract_id,
+                "routed_stake",
+                direct_stake_context,
+                Address(user_address),
+            )
+
+    def test_end_to_end_dozer_tools_staking_workflow(self) -> None:
+        """Test complete end-to-end staking workflow with multiple operations."""
+        # Create project
+        token_uid = self._create_test_project("E2EToken", "E2E")
+
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        earnings_per_day = 2000
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            40,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            earnings_per_day,
+            ["Team"],
+            [60],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Get staking contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # Multiple users stake through DozerTools
+        users = []
+        stake_amounts = [2000_00, 3000_00, 1500_00]
+        initial_time = self.get_current_timestamp()
+
+        for i, stake_amount in enumerate(stake_amounts):
+            user_addr, _ = self._get_any_address()
+            users.append(user_addr)
+
+            stake_ctx = Context(
+                [NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+                self._get_any_tx(),
+                Address(user_addr),
+                timestamp=initial_time,
+            )
+
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "staking_stake", stake_ctx, token_uid
+            )
+
+        # Advance time by 35 days
+        time_after = initial_time + (35 * 24 * 60 * 60)
+
+        # Each user checks their max withdrawal and unstakes
+        for i, user_addr in enumerate(users):
+            # Get user info
+            user_info = self.runner.call_view_method(
+                staking_contract_id, "get_user_info", Address(user_addr)
+            )
+            self.assertEqual(user_info["deposits"], stake_amounts[i])
+
+            # Get max withdrawal
+            max_withdrawal = self.runner.call_view_method(
+                staking_contract_id,
+                "get_max_withdrawal",
+                Address(user_addr),
+                time_after,
+            )
+
+            # Should have rewards accumulated
+            self.assertGreater(max_withdrawal, stake_amounts[i])
+
+            # Unstake half through DozerTools
+            half_withdrawal = max_withdrawal // 2
+            unstake_ctx = Context(
+                [NCWithdrawalAction(token_uid=token_uid, amount=Amount(half_withdrawal))],
+                self._get_any_tx(),
+                Address(user_addr),
+                timestamp=time_after,
+            )
+
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "staking_unstake", unstake_ctx, token_uid
+            )
+
+            # Verify partial unstake
+            user_info_after = self.runner.call_view_method(
+                staking_contract_id, "get_user_info", Address(user_addr)
+            )
+            self.assertLess(user_info_after["deposits"], stake_amounts[i])
+            self.assertGreater(user_info_after["deposits"], 0)
+
+    def test_staking_routing_with_nonexistent_contract(self) -> None:
+        """Test routing methods fail gracefully when staking contract doesn't exist."""
+        # Create project but don't configure vesting (no staking contract)
+        token_uid = self._create_test_project("NoStakeToken", "NOSTAKE")
+
+        user_address, _ = self._get_any_address()
+
+        # Try to stake through routing (should fail - no staking contract)
+        stake_context = Context(
+            [NCDepositAction(token_uid=token_uid, amount=Amount(1000_00))],
+            self._get_any_tx(),
+            Address(user_address),
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(ProjectNotFound):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "staking_stake", stake_context, token_uid
+            )
+
+    def test_staking_view_methods_consistency_through_routing(self) -> None:
+        """Test that view methods return consistent values when using DozerTools routing."""
+        # Create project with staking
+        token_uid = self._create_test_project("ViewToken", "VIEW")
+
+        tx = self._get_any_tx()
+        context = Context(
+            [],
+            tx,
+            self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        earnings_per_day = 1500
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            35,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            earnings_per_day,
+            ["Team"],
+            [65],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Get staking contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # User stakes through DozerTools
+        user_address, _ = self._get_any_address()
+        stake_amount = 10000_00
+        initial_time = self.get_current_timestamp()
+
+        stake_context = Context(
+            [NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            self._get_any_tx(),
+            Address(user_address),
+            timestamp=initial_time,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "staking_stake", stake_context, token_uid
+        )
+
+        # Check view methods at multiple time points
+        time_points = [
+            initial_time + (1 * 24 * 60 * 60),   # 1 day
+            initial_time + (7 * 24 * 60 * 60),   # 7 days
+            initial_time + (30 * 24 * 60 * 60),  # 30 days (at timelock)
+            initial_time + (31 * 24 * 60 * 60),  # 31 days (past timelock)
+            initial_time + (60 * 24 * 60 * 60),  # 60 days
+        ]
+
+        for time_point in time_points:
+            # Get max withdrawal
+            max_withdrawal = self.runner.call_view_method(
+                staking_contract_id,
+                "get_max_withdrawal",
+                Address(user_address),
+                time_point,
+            )
+
+            # Get user info
+            user_info = self.runner.call_view_method(
+                staking_contract_id, "get_user_info", Address(user_address)
+            )
+
+            # Get staking stats
+            stats = self.runner.call_view_method(
+                staking_contract_id, "get_staking_stats", time_point
+            )
+
+            # Verify consistency
+            self.assertEqual(user_info["deposits"], stake_amount)
+            self.assertGreaterEqual(max_withdrawal, stake_amount)  # Always at least the deposit
+
+            # Verify stats reflect this user's stake
+            self.assertEqual(stats["total_staked"], stake_amount)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from hathor.nanocontracts.types import (
 )
 
 # Constants
-DAY_IN_SECONDS: int = 60 * 60 * 24
+DAY_IN_SECONDS: int = 24 * 60 * 60  # 86400 seconds = 24 hours
 MIN_PERIOD_DAYS: int = 30
 MIN_STAKE_AMOUNT = 100  # Minimum stake amount
 MAX_STAKE_AMOUNT = 1000000  # Maximum stake amount per address
@@ -48,8 +48,8 @@ class StakingStats(NamedTuple):
     earnings_per_day: int
     days_of_rewards_remaining: int
     estimated_apy: int
-    owner_address: bytes
-    token_uid: bytes
+    owner_address: str  # hex-encoded address
+    token_uid: str  # hex-encoded token UID
 
 
 class UserStakingInfo(NamedTuple):
@@ -97,7 +97,8 @@ class Stake(Blueprint):
     creator_contract_id: ContractId  # DozerTools contract that created this
 
     # User
-    user_deposits: dict[Address, Amount]
+    user_deposits: dict[Address, Amount]  # Includes deposits + auto-compounded rewards
+    user_actual_stake: dict[Address, Amount]  # Only actual deposits (for total_staked tracking)
     user_debit: dict[Address, int]  # Changed to int for fixed-point arithmetic
     user_stake_timestamp: dict[Address, int]  # For timelock
 
@@ -171,9 +172,11 @@ class Stake(Blueprint):
         if self.total_staked == 0:
             self.last_reward = now
             return
-        multiplier = (now - self.last_reward) * PRECISION
+        # Note: earnings_per_second already includes PRECISION factor
+        # So we don't multiply time_diff by PRECISION here
+        time_diff = now - self.last_reward
         self.rewards_per_share += (
-            multiplier * self.earnings_per_second
+            time_diff * self.earnings_per_second
         ) // self.total_staked
         self.last_reward = now
 
@@ -275,11 +278,16 @@ class Stake(Blueprint):
         if pending == 0:
             if address not in self.user_deposits:
                 self.user_deposits[address] = Amount(0)
+                self.user_actual_stake[address] = Amount(0)
             self.user_stake_timestamp[address] = int(ctx.timestamp)
 
         self._safe_pay(pending, address)
         self.user_deposits[address] = Amount(self.user_deposits[address] + amount)
-        self.total_staked = Amount(self.total_staked + amount + pending)
+        # Track actual stake (deposits only, not auto-compounded rewards)
+        self.user_actual_stake[address] = Amount(self.user_actual_stake[address] + amount)
+        # Only add the new deposit amount to total_staked, NOT pending rewards
+        # Pending rewards are already accounted for in owner_balance
+        self.total_staked = Amount(self.total_staked + amount)
         self.user_debit[address] = (
             self.user_deposits[address] * self.rewards_per_share
         ) // PRECISION
@@ -299,23 +307,52 @@ class Stake(Blueprint):
 
         self._update_pool(ctx)
         pending = self._pending_rewards(address)
-        if amount > (self.user_deposits[address] + pending):
+
+        # User can withdraw up to deposits + pending rewards
+        max_withdrawal = self.user_deposits[address] + pending
+        if amount > max_withdrawal:
             raise InsufficientBalance("insufficient funds")
 
-        # First update total staked
-        self.total_staked = Amount(
-            max(0, self.total_staked - self.user_deposits[address])
-        )
-        # Then set user's deposit to zero before updating with pending rewards
-        self.user_deposits[address] = Amount(0)
-        # Add pending rewards
-        if pending > 0:
-            self._safe_pay(pending, address)
-        # Finally process withdrawal
+        # Calculate how much comes from actual stake vs rewards
+        # user_actual_stake tracks only deposits (not auto-compounded rewards)
+        # For legacy users without user_actual_stake, use a conservative estimate
+        if address not in self.user_actual_stake:
+            # Initialize with current deposits (migration for existing users)
+            self.user_actual_stake[address] = self.user_deposits[address]
+
+        user_actual = self.user_actual_stake.get(address, 0)
+
+        # Split withdrawal into: actual stake, compounded rewards (in deposits), pending rewards
+        amount_from_deposits = min(amount, self.user_deposits[address])
+        amount_from_pending = amount - amount_from_deposits
+
+        # Of the amount from deposits, how much is actual stake vs compounded rewards?
+        amount_from_stake = min(amount_from_deposits, user_actual)
+        amount_from_compounded = amount_from_deposits - amount_from_stake
+
+        total_rewards = amount_from_compounded + amount_from_pending
+
+        # Deduct from deposits and actual stake
         self.user_deposits[address] = Amount(
-            max(0, self.user_deposits[address] - amount)
+            self.user_deposits[address] - amount_from_deposits
         )
-        self.user_debit[address] = 0
+        self.user_actual_stake[address] = Amount(
+            self.user_actual_stake[address] - amount_from_stake
+        )
+
+        # Deduct from owner balance (for all rewards: compounded + pending)
+        if total_rewards > 0:
+            if total_rewards > self.owner_balance:
+                raise InsufficientBalance("insufficient owner balance for rewards")
+            self.owner_balance = Amount(self.owner_balance - total_rewards)
+
+        # Update total_staked (only the actual stake portion affects total_staked)
+        self.total_staked = Amount(self.total_staked - amount_from_stake)
+
+        # Update user debit to reflect that pending rewards were paid out
+        self.user_debit[address] = (
+            self.user_deposits[address] * self.rewards_per_share
+        ) // PRECISION
 
         self._validate_state()
 
@@ -330,14 +367,15 @@ class Stake(Blueprint):
             and self.total_staked != 0
             and address in self.user_deposits
         ):
-            multiplier = int(timestamp) - self.last_reward
-            rewards_per_share += (
-                multiplier * self.earnings_per_second
-            ) // self.total_staked
-            pending = Amount(
-                (self.user_deposits[address] * rewards_per_share) // PRECISION
-                - self.user_debit.get(address, 0)
-            )
+            time_diff = int(timestamp) - self.last_reward
+            # Note: earnings_per_second already includes PRECISION factor
+            # So we don't multiply time_diff by PRECISION here (unlike in _update_pool)
+            rewards_increment = (time_diff * self.earnings_per_second) // self.total_staked
+            rewards_per_share += rewards_increment
+
+            user_total = (self.user_deposits[address] * rewards_per_share) // PRECISION
+            user_debit_val = self.user_debit.get(address, 0)
+            pending = Amount(user_total - user_debit_val)
             return Amount(self.user_deposits[address] + pending)
         else:
             return Amount(0)
@@ -391,8 +429,8 @@ class Stake(Blueprint):
             earnings_per_day=earnings_per_day,
             days_of_rewards_remaining=days_remaining,
             estimated_apy=estimated_apy,
-            owner_address=self.owner_address,
-            token_uid=self.token_uid,
+            owner_address=self.owner_address.hex(),
+            token_uid=self.token_uid.hex(),
         )
 
     @view
@@ -476,13 +514,19 @@ class Stake(Blueprint):
         if pending == 0:
             if user_address not in self.user_deposits:
                 self.user_deposits[user_address] = Amount(0)
+                self.user_actual_stake[user_address] = Amount(0)
             self.user_stake_timestamp[user_address] = int(ctx.timestamp)
 
         self._safe_pay(pending, user_address)
         self.user_deposits[user_address] = Amount(
             self.user_deposits[user_address] + amount
         )
-        self.total_staked = Amount(self.total_staked + amount + pending)
+        # Track actual stake (deposits only, not auto-compounded rewards)
+        self.user_actual_stake[user_address] = Amount(
+            self.user_actual_stake[user_address] + amount
+        )
+        # Only add the new deposit amount to total_staked, NOT pending rewards
+        self.total_staked = Amount(self.total_staked + amount)
         self.user_debit[user_address] = (
             self.user_deposits[user_address] * self.rewards_per_share
         ) // PRECISION
@@ -505,23 +549,52 @@ class Stake(Blueprint):
 
         self._update_pool(ctx)
         pending = self._pending_rewards(user_address)
-        if amount > (self.user_deposits[user_address] + pending):
+
+        # User can withdraw up to deposits + pending rewards
+        max_withdrawal = self.user_deposits[user_address] + pending
+        if amount > max_withdrawal:
             raise InsufficientBalance("insufficient funds")
 
-        # First update total staked
-        self.total_staked = Amount(
-            max(0, self.total_staked - self.user_deposits[user_address])
-        )
-        # Then set user's deposit to zero before updating with pending rewards
-        self.user_deposits[user_address] = Amount(0)
-        # Add pending rewards
-        if pending > 0:
-            self._safe_pay(pending, user_address)
-        # Finally process withdrawal
+        # Calculate how much comes from actual stake vs rewards
+        # user_actual_stake tracks only deposits (not auto-compounded rewards)
+        # For legacy users without user_actual_stake, use a conservative estimate
+        if user_address not in self.user_actual_stake:
+            # Initialize with current deposits (migration for existing users)
+            self.user_actual_stake[user_address] = self.user_deposits[user_address]
+
+        user_actual = self.user_actual_stake.get(user_address, 0)
+
+        # Split withdrawal into: actual stake, compounded rewards (in deposits), pending rewards
+        amount_from_deposits = min(amount, self.user_deposits[user_address])
+        amount_from_pending = amount - amount_from_deposits
+
+        # Of the amount from deposits, how much is actual stake vs compounded rewards?
+        amount_from_stake = min(amount_from_deposits, user_actual)
+        amount_from_compounded = amount_from_deposits - amount_from_stake
+
+        total_rewards = amount_from_compounded + amount_from_pending
+
+        # Deduct from deposits and actual stake
         self.user_deposits[user_address] = Amount(
-            max(0, self.user_deposits[user_address] - amount)
+            self.user_deposits[user_address] - amount_from_deposits
         )
-        self.user_debit[user_address] = 0
+        self.user_actual_stake[user_address] = Amount(
+            self.user_actual_stake[user_address] - amount_from_stake
+        )
+
+        # Deduct from owner balance (for all rewards: compounded + pending)
+        if total_rewards > 0:
+            if total_rewards > self.owner_balance:
+                raise InsufficientBalance("insufficient owner balance for rewards")
+            self.owner_balance = Amount(self.owner_balance - total_rewards)
+
+        # Update total_staked (only the actual stake portion affects total_staked)
+        self.total_staked = Amount(self.total_staked - amount_from_stake)
+
+        # Update user debit to reflect that pending rewards were paid out
+        self.user_debit[user_address] = (
+            self.user_deposits[user_address] * self.rewards_per_share
+        ) // PRECISION
 
         self._validate_state()
 

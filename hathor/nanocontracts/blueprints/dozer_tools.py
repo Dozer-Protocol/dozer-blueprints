@@ -26,7 +26,7 @@ DOZER_POOL_ALLOCATION_INDEX = 2  # "Dozer Pool" - for liquidity pool
 # Indices 3-9 available for regular time-locked vesting schedules
 
 # HTR token UID
-HTR_UID = b'\x00'
+HTR_UID = b"\x00"
 
 # Null contract ID for initialization
 NULL_CONTRACT_ID = ContractId(VertexId(b"\x00" * 32))
@@ -107,7 +107,7 @@ class DozerTools(Blueprint):
     owner: Address
     dozer_pool_manager_id: ContractId
     dzr_token_uid: TokenUid
-    
+
     # Configurable blueprint IDs
     vesting_blueprint_id: BlueprintId
     staking_blueprint_id: BlueprintId
@@ -122,7 +122,7 @@ class DozerTools(Blueprint):
     project_exists: dict[TokenUid, bool]  # token_uid -> exists
     all_projects: list[TokenUid]  # Ordered list of all project tokens
     total_projects_count: int  # Total number of projects created
-    
+
     # Symbol blocking - once used, symbols are permanently reserved
     used_symbols: dict[str, bool]  # symbol -> used (prevents reuse)
 
@@ -175,9 +175,11 @@ class DozerTools(Blueprint):
 
     # Vesting configuration status
     project_vesting_configured: dict[TokenUid, bool]  # token_uid -> is_configured
-    
+
     # Melt authority tracking
-    project_melt_authority_acquired: dict[TokenUid, bool]  # token_uid -> melt_authority_acquired
+    project_melt_authority_acquired: dict[
+        TokenUid, bool
+    ]  # token_uid -> melt_authority_acquired
 
     def _only_owner(self, ctx: Context) -> None:
         """Ensure only the contract owner can call this method."""
@@ -259,7 +261,7 @@ class DozerTools(Blueprint):
         self.dozer_pool_manager_id = dozer_pool_manager_id
         self.dzr_token_uid = dzr_token_uid
         self.minimum_deposit = minimum_deposit
-        
+
         # Initialize blueprint IDs as unset (NULL_CONTRACT_ID equivalent)
         null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
         self.vesting_blueprint_id = null_blueprint
@@ -273,7 +275,7 @@ class DozerTools(Blueprint):
 
         # Initialize project counter
         self.total_projects_count = 0
-        
+
         # Initialize used symbols registry
         # This dictionary tracks all symbols that have ever been used
         # Once a symbol is used, it cannot be reused even after project cancellation
@@ -336,7 +338,9 @@ class DozerTools(Blueprint):
 
         # Check if symbol has ever been used (before creating token)
         if self.symbol_exists(token_symbol):
-            raise ProjectAlreadyExists(f"Token symbol '{token_symbol}' has already been used and cannot be reused")
+            raise ProjectAlreadyExists(
+                f"Token symbol '{token_symbol}' has already been used and cannot be reused"
+            )
 
         # Create the token
         token_uid = self.syscall.create_token(
@@ -363,7 +367,7 @@ class DozerTools(Blueprint):
         self.project_dev[token_uid] = Address(ctx.caller_id)
         self.project_created_at[token_uid] = Timestamp(ctx.timestamp)
         self.project_total_supply[token_uid] = total_supply
-        
+
         # Mark symbol as permanently used to prevent future reuse
         self.used_symbols[token_symbol.upper().strip()] = True
 
@@ -423,7 +427,6 @@ class DozerTools(Blueprint):
         # Initialize credit balances
         self.project_htr_balance[token_uid] = Amount(0)
         self.project_dzr_balance[token_uid] = Amount(0)
-
 
         return token_uid
 
@@ -538,7 +541,12 @@ class DozerTools(Blueprint):
 
         self._ensure_staking_blueprint_configured()
         staking_id, _ = self.syscall.create_contract(
-            self.staking_blueprint_id, salt, staking_actions, earnings_per_day, token_uid, self.syscall.get_contract_id()
+            self.staking_blueprint_id,
+            salt,
+            staking_actions,
+            earnings_per_day,
+            token_uid,
+            self.syscall.get_contract_id(),
         )
 
         self.project_staking_contract[token_uid] = staking_id
@@ -815,15 +823,17 @@ class DozerTools(Blueprint):
         action = ctx.get_single_action(token_uid)
         if isinstance(action, NCAcquireAuthorityAction):
             if action.mint:
-                raise Unauthorized("Contract cannot acquire mint authority for this token")
+                raise Unauthorized(
+                    "Contract cannot acquire mint authority for this token"
+                )
             if not action.melt:
                 raise Unauthorized("Must request melt authority acquisition")
         else:
             raise Unauthorized("Only acquire authority action is allowed")
-        
+
         # Transfer melt authority to the caller by acquiring it from the contract
         # This will transfer the authority from the contract to the transaction caller
-        
+
         # Mark melt authority as acquired for this project
         self.project_melt_authority_acquired[token_uid] = True
 
@@ -873,17 +883,17 @@ class DozerTools(Blueprint):
         if self.syscall.can_melt(token_uid):
             # Get vesting contract that holds all tokens
             vesting_contract = self.project_vesting_contract[token_uid]
-            
+
             # Withdraw all tokens from vesting contract to this contract first
             withdraw_all_actions: list[NCAction] = [
                 NCWithdrawalAction(token_uid=token_uid, amount=total_supply)
             ]
-            
+
             # Call vesting contract to get all tokens back
             self.syscall.call_public_method(
                 vesting_contract, "withdraw_available", withdraw_all_actions
             )
-            
+
             # Now melt all tokens that are in this contract
             self.syscall.melt_tokens(token_uid, total_supply)
 
@@ -1229,8 +1239,9 @@ class DozerTools(Blueprint):
         projects = {}
         for token_uid in self.all_projects:
             # Only include projects that still exist and are not blacklisted
-            if (self.project_exists.get(token_uid, False) and 
-                not self.blacklisted_tokens.get(token_uid, False)):
+            if self.project_exists.get(
+                token_uid, False
+            ) and not self.blacklisted_tokens.get(token_uid, False):
                 projects[token_uid.hex()] = self.project_name.get(token_uid, "")
         return projects
 
@@ -1263,7 +1274,9 @@ class DozerTools(Blueprint):
             "github": self.project_github.get(token_uid, ""),
             "category": self.project_category.get(token_uid, ""),
             "whitepaper_url": self.project_whitepaper_url.get(token_uid, ""),
-            "melt_authority_acquired": str(self.project_melt_authority_acquired.get(token_uid, False)).lower(),
+            "melt_authority_acquired": str(
+                self.project_melt_authority_acquired.get(token_uid, False)
+            ).lower(),
         }
 
         return project_info
@@ -1342,8 +1355,9 @@ class DozerTools(Blueprint):
         projects = {}
         for token_uid in self.all_projects:
             # Only include projects that still exist and are not blacklisted
-            if (self.project_exists.get(token_uid, False) and 
-                not self.blacklisted_tokens.get(token_uid, False)):
+            if self.project_exists.get(
+                token_uid, False
+            ) and not self.blacklisted_tokens.get(token_uid, False):
                 project_category = self.project_category.get(token_uid, "")
                 if project_category == category:
                     projects[token_uid.hex()] = self.project_name.get(token_uid, "")
@@ -1362,8 +1376,9 @@ class DozerTools(Blueprint):
         projects = {}
         for token_uid in self.all_projects:
             # Only include projects that still exist and are not blacklisted
-            if (self.project_exists.get(token_uid, False) and 
-                not self.blacklisted_tokens.get(token_uid, False)):
+            if self.project_exists.get(
+                token_uid, False
+            ) and not self.blacklisted_tokens.get(token_uid, False):
                 project_dev = self.project_dev.get(token_uid, Address(b"\x00" * 25))
                 if project_dev == dev_address:
                     projects[token_uid.hex()] = self.project_name.get(token_uid, "")
@@ -1402,7 +1417,7 @@ class DozerTools(Blueprint):
     @view
     def symbol_exists(self, symbol: str) -> bool:
         """Check if a token symbol has ever been used.
-        
+
         Once a symbol is used by any project (active or cancelled), it becomes
         permanently reserved and cannot be reused by any future projects.
 
@@ -1414,7 +1429,6 @@ class DozerTools(Blueprint):
         """
         symbol_upper = symbol.upper().strip()
         return self.used_symbols.get(symbol_upper, False)
-
 
     @view
     def can_cancel_project(self, token_uid: TokenUid) -> bool:
@@ -1428,7 +1442,7 @@ class DozerTools(Blueprint):
         """
         if not self.project_exists.get(token_uid, False):
             return False
-        
+
         return not self.project_vesting_configured.get(token_uid, False)
 
     @view
@@ -1812,7 +1826,7 @@ class DozerTools(Blueprint):
     @public(allow_withdrawal=True)
     def vesting_claim_allocation(self, ctx: Context, index: int) -> None:
         """Route vesting claim allocation to child contract.
-        
+
         Args:
             ctx: Transaction context
             index: Allocation index to claim
@@ -1820,18 +1834,20 @@ class DozerTools(Blueprint):
         # Get the withdrawal action to derive token_uid
         if len(ctx.actions) != 1:
             raise DozerToolsError("Exactly one withdrawal action required")
-        
+
         # Get the action and derive token_uid from it
         action = ctx.actions_list[0]
         if not isinstance(action, NCWithdrawalAction):
             raise DozerToolsError("Withdrawal action required")
-        
+
         token_uid = action.token_uid
-        
-        vesting_contract = self.project_vesting_contract.get(token_uid, NULL_CONTRACT_ID)
+
+        vesting_contract = self.project_vesting_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
         if vesting_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("Vesting contract does not exist")
-        
+
         # Route to vesting contract with user address
         self.syscall.call_public_method(
             vesting_contract,
@@ -1846,7 +1862,7 @@ class DozerTools(Blueprint):
         self, ctx: Context, token_uid: TokenUid, index: int, new_beneficiary: Address
     ) -> None:
         """Route vesting change beneficiary to child contract.
-        
+
         Args:
             ctx: Transaction context
             token_uid: Project token UID
@@ -1854,11 +1870,13 @@ class DozerTools(Blueprint):
             new_beneficiary: New beneficiary address
         """
         self._only_project_dev(ctx, token_uid)
-        
-        vesting_contract = self.project_vesting_contract.get(token_uid, NULL_CONTRACT_ID)
+
+        vesting_contract = self.project_vesting_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
         if vesting_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("Vesting contract does not exist")
-        
+
         # Route to vesting contract with user address
         self.syscall.call_public_method(
             vesting_contract,
@@ -1872,20 +1890,22 @@ class DozerTools(Blueprint):
     @public(allow_deposit=True)
     def staking_stake(self, ctx: Context, token_uid: TokenUid) -> None:
         """Route staking stake to child contract.
-        
+
         Args:
             ctx: Transaction context
             token_uid: Project token UID
         """
-        staking_contract = self.project_staking_contract.get(token_uid, NULL_CONTRACT_ID)
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
         if staking_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("Staking contract does not exist")
-        
+
         # Get the deposit action to forward (should be for the project token)
         action = ctx.get_single_action(token_uid)
         if not isinstance(action, NCDepositAction):
             raise DozerToolsError("Deposit action required")
-        
+
         # Route to staking contract with user address
         self.syscall.call_public_method(
             staking_contract,
@@ -1897,20 +1917,22 @@ class DozerTools(Blueprint):
     @public(allow_withdrawal=True)
     def staking_unstake(self, ctx: Context, token_uid: TokenUid) -> None:
         """Route staking unstake to child contract.
-        
+
         Args:
             ctx: Transaction context
             token_uid: Project token UID
         """
-        staking_contract = self.project_staking_contract.get(token_uid, NULL_CONTRACT_ID)
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
         if staking_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("Staking contract does not exist")
-        
+
         # Get the withdrawal action to forward (should be for the project token)
         action = ctx.get_single_action(token_uid)
         if not isinstance(action, NCWithdrawalAction):
             raise DozerToolsError("Withdrawal action required")
-        
+
         # Route to staking contract with user address
         self.syscall.call_public_method(
             staking_contract,
@@ -1919,23 +1941,111 @@ class DozerTools(Blueprint):
             Address(ctx.caller_id),
         )
 
+    @public(allow_deposit=True)
+    def staking_owner_deposit(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route owner deposit (add rewards) to staking contract.
+
+        Only the project dev can call this method.
+        DozerTools is the owner of the staking contract, so it can call owner_deposit directly.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        self._only_project_dev(ctx, token_uid)
+
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if staking_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Staking contract does not exist")
+
+        # Get the deposit action to forward (should be for the project token)
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCDepositAction):
+            raise DozerToolsError("Deposit action required")
+
+        # Call staking contract's owner_deposit directly
+        # DozerTools is the owner, so this will succeed
+        self.syscall.call_public_method(
+            staking_contract,
+            "owner_deposit",
+            [action],
+        )
+
     @public
-    def dao_create_proposal(self, ctx: Context, token_uid: TokenUid, title: str, description: str) -> int:
+    def staking_pause(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route pause to staking contract.
+
+        Only the project dev can call this method.
+        DozerTools is the owner of the staking contract, so it can call pause directly.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        self._only_project_dev(ctx, token_uid)
+
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if staking_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Staking contract does not exist")
+
+        # Call staking contract's pause directly
+        # DozerTools is the owner, so this will succeed
+        self.syscall.call_public_method(
+            staking_contract,
+            "pause",
+            [],
+        )
+
+    @public
+    def staking_unpause(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route unpause to staking contract.
+
+        Only the project dev can call this method.
+        DozerTools is the owner of the staking contract, so it can call unpause directly.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        self._only_project_dev(ctx, token_uid)
+
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if staking_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Staking contract does not exist")
+
+        # Call staking contract's unpause directly
+        # DozerTools is the owner, so this will succeed
+        self.syscall.call_public_method(
+            staking_contract,
+            "unpause",
+            [],
+        )
+
+    @public
+    def dao_create_proposal(
+        self, ctx: Context, token_uid: TokenUid, title: str, description: str
+    ) -> int:
         """Route DAO create proposal to child contract.
-        
+
         Args:
             ctx: Transaction context
             token_uid: Project token UID
             title: Proposal title
             description: Proposal description
-            
+
         Returns:
             Proposal ID
         """
         dao_contract = self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
         if dao_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("DAO contract does not exist")
-        
+
         # Route to DAO contract with user address
         return self.syscall.call_public_method(
             dao_contract,
@@ -1947,9 +2057,11 @@ class DozerTools(Blueprint):
         )
 
     @public
-    def dao_cast_vote(self, ctx: Context, token_uid: TokenUid, proposal_id: int, support: bool) -> None:
+    def dao_cast_vote(
+        self, ctx: Context, token_uid: TokenUid, proposal_id: int, support: bool
+    ) -> None:
         """Route DAO cast vote to child contract.
-        
+
         Args:
             ctx: Transaction context
             token_uid: Project token UID
@@ -1959,7 +2071,7 @@ class DozerTools(Blueprint):
         dao_contract = self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
         if dao_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("DAO contract does not exist")
-        
+
         # Route to DAO contract with user address
         self.syscall.call_public_method(
             dao_contract,
@@ -1973,20 +2085,22 @@ class DozerTools(Blueprint):
     @public(allow_deposit=True)
     def crowdsale_participate(self, ctx: Context, token_uid: TokenUid) -> None:
         """Route crowdsale participate to child contract.
-        
+
         Args:
             ctx: Transaction context
             token_uid: Project token UID
         """
-        crowdsale_contract = self.project_crowdsale_contract.get(token_uid, NULL_CONTRACT_ID)
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
         if crowdsale_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("Crowdsale contract does not exist")
-        
+
         # Get the deposit action to forward (should be HTR for crowdsale participation)
         action = ctx.get_single_action(TokenUid(HTR_UID))
         if not isinstance(action, NCDepositAction):
             raise DozerToolsError("HTR deposit action required")
-        
+
         # Route to crowdsale contract with user address
         self.syscall.call_public_method(
             crowdsale_contract,
@@ -1998,20 +2112,22 @@ class DozerTools(Blueprint):
     @public(allow_withdrawal=True)
     def crowdsale_claim_tokens(self, ctx: Context, token_uid: TokenUid) -> None:
         """Route crowdsale claim tokens to child contract.
-        
+
         Args:
             ctx: Transaction context
             token_uid: Project token UID
         """
-        crowdsale_contract = self.project_crowdsale_contract.get(token_uid, NULL_CONTRACT_ID)
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
         if crowdsale_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("Crowdsale contract does not exist")
-        
+
         # Get the withdrawal action to forward (should be for the project token)
         action = ctx.get_single_action(token_uid)
         if not isinstance(action, NCWithdrawalAction):
             raise DozerToolsError("Withdrawal action required")
-        
+
         # Route to crowdsale contract with user address
         self.syscall.call_public_method(
             crowdsale_contract,
@@ -2023,20 +2139,22 @@ class DozerTools(Blueprint):
     @public(allow_withdrawal=True)
     def crowdsale_claim_refund(self, ctx: Context, token_uid: TokenUid) -> None:
         """Route crowdsale claim refund to child contract.
-        
+
         Args:
             ctx: Transaction context
             token_uid: Project token UID
         """
-        crowdsale_contract = self.project_crowdsale_contract.get(token_uid, NULL_CONTRACT_ID)
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
         if crowdsale_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("Crowdsale contract does not exist")
-        
+
         # Get the withdrawal action to forward (should be HTR for refunds)
         action = ctx.get_single_action(TokenUid(HTR_UID))
         if not isinstance(action, NCWithdrawalAction):
             raise DozerToolsError("HTR withdrawal action required")
-        
+
         # Route to crowdsale contract with user address
         self.syscall.call_public_method(
             crowdsale_contract,
@@ -2044,5 +2162,6 @@ class DozerTools(Blueprint):
             [action],
             Address(ctx.caller_id),
         )
+
 
 __blueprint__ = DozerTools
