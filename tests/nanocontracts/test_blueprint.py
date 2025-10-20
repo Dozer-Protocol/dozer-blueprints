@@ -17,7 +17,7 @@ from hathor.nanocontracts.types import (
     public,
     view,
 )
-from tests import unittest
+from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 from tests.nanocontracts.utils import TestRunner
 
 STR_NC_TYPE = make_nc_type(str)
@@ -61,6 +61,9 @@ class ContainerFields(Blueprint):
 
     @public
     def initialize(self, ctx: Context, items: list[tuple[str, str, bytes, int]]) -> None:
+        self.a = {}
+        self.b = {}
+        self.c = {}
         for key, va, vb, vc in items:
             self._set(self.a, key, va)
             self._set(self.b, key, vb)
@@ -95,7 +98,7 @@ class MyBlueprint(Blueprint):
         return 1
 
 
-class NCBlueprintTestCase(unittest.TestCase):
+class NCBlueprintTestCase(BlueprintTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.simple_fields_id = ContractId(VertexId(b'1' * 32))
@@ -129,7 +132,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         blueprint_id = self.blueprint_ids['simple_fields']
         nc_id = self.simple_fields_id
 
-        ctx = Context([], self.tx, MOCK_ADDRESS, timestamp=0)
+        ctx = self.create_context()
         a = 'str'
         b = b'bytes'
         c = 123
@@ -146,7 +149,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         blueprint_id = self.blueprint_ids['container_fields']
         nc_id = self.container_fields_id
 
-        ctx = Context([], self.tx, MOCK_ADDRESS, timestamp=0)
+        ctx = self.create_context()
         items = [
             ('a', '1', b'1', 1),
             ('b', '2', b'2', 2),
@@ -162,7 +165,7 @@ class NCBlueprintTestCase(unittest.TestCase):
     def _create_my_blueprint_contract(self) -> None:
         blueprint_id = self.blueprint_ids['my_blueprint']
         nc_id = self.my_blueprint_id
-        ctx = Context([], self.tx, MOCK_ADDRESS, timestamp=0)
+        ctx = self.create_context()
         self.runner.create_contract(nc_id, blueprint_id, ctx)
 
     def test_public_method_fails(self) -> None:
@@ -171,7 +174,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         storage = self.runner.get_storage(nc_id)
 
         with self.assertRaises(NCFail):
-            ctx = Context([], self.tx, MOCK_ADDRESS, timestamp=0)
+            ctx = self.create_context()
             self.runner.call_public_method(nc_id, 'fail', ctx)
         self.assertEqual(1, storage.get_obj(b'a', INT_NC_TYPE))
 
@@ -195,14 +198,14 @@ class NCBlueprintTestCase(unittest.TestCase):
     def test_nop(self) -> None:
         self._create_my_blueprint_contract()
         nc_id = self.my_blueprint_id
-        ctx = Context([], self.tx, MOCK_ADDRESS, timestamp=0)
+        ctx = self.create_context()
         self.runner.call_public_method(nc_id, 'nop', ctx)
 
     def test_withdrawal_fail(self) -> None:
         self._create_my_blueprint_contract()
         nc_id = self.my_blueprint_id
         token_uid = TokenUid(b'\0')
-        ctx = Context(
+        ctx = self.create_context(
             [NCWithdrawalAction(token_uid=token_uid, amount=1)],
             self.tx,
             MOCK_ADDRESS,
@@ -216,7 +219,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         nc_id = self.my_blueprint_id
         storage = self.runner.get_storage(nc_id)
         token_uid = TokenUid(b'\0')
-        ctx = Context(
+        ctx = self.create_context(
             [NCDepositAction(token_uid=token_uid, amount=100)],
             self.tx,
             MOCK_ADDRESS,
@@ -225,7 +228,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         self.runner.call_public_method(nc_id, 'nop', ctx)
         self.assertEqual(Balance(value=100, can_mint=False, can_melt=False), storage.get_balance(token_uid))
 
-        ctx = Context(
+        ctx = self.create_context(
             [NCWithdrawalAction(token_uid=token_uid, amount=1)],
             self.tx,
             MOCK_ADDRESS,
@@ -234,7 +237,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         self.runner.call_public_method(nc_id, 'nop', ctx)
         self.assertEqual(Balance(value=99, can_mint=False, can_melt=False), storage.get_balance(token_uid))
 
-        ctx = Context(
+        ctx = self.create_context(
             [NCWithdrawalAction(token_uid=token_uid, amount=50)],
             self.tx,
             MOCK_ADDRESS,
@@ -243,7 +246,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         self.runner.call_public_method(nc_id, 'nop', ctx)
         self.assertEqual(Balance(value=49, can_mint=False, can_melt=False), storage.get_balance(token_uid))
 
-        ctx = Context(
+        ctx = self.create_context(
             [NCWithdrawalAction(token_uid=token_uid, amount=50)],
             self.tx,
             MOCK_ADDRESS,
@@ -260,7 +263,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         token_uid = TokenUid(b'\0')
         wrong_token_uid = TokenUid(b'\1')
 
-        ctx = Context(
+        ctx = self.create_context(
             [NCDepositAction(token_uid=token_uid, amount=100)],
             self.tx,
             MOCK_ADDRESS,
@@ -269,7 +272,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         self.runner.call_public_method(nc_id, 'nop', ctx)
         self.assertEqual(Balance(value=100, can_mint=False, can_melt=False), storage.get_balance(token_uid))
 
-        ctx = Context(
+        ctx = self.create_context(
             [NCWithdrawalAction(token_uid=wrong_token_uid, amount=1)],
             self.tx,
             MOCK_ADDRESS,
@@ -294,7 +297,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         storage = self.runner.get_storage(nc_id)
 
         token_uid = TokenUid(b'\0')  # HTR
-        ctx = Context(
+        ctx = self.create_context(
             [NCDepositAction(token_uid=token_uid, amount=100)],
             self.tx,
             MOCK_ADDRESS,
@@ -304,7 +307,7 @@ class NCBlueprintTestCase(unittest.TestCase):
         self.assertEqual(Balance(value=100, can_mint=False, can_melt=False), storage.get_balance(token_uid))
 
         token_uid2 = TokenUid(b'\0' + b'\1' * 31)
-        ctx = Context(
+        ctx = self.create_context(
             [NCDepositAction(token_uid=token_uid2, amount=200)],
             self.tx,
             MOCK_ADDRESS,
