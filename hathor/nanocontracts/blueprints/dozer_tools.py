@@ -2163,5 +2163,179 @@ class DozerTools(Blueprint):
             Address(ctx.caller_id),
         )
 
+    @public
+    def crowdsale_pause(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route pause to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_pause.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        self._only_project_dev(ctx, token_uid)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Route to crowdsale contract with user address
+        self.syscall.call_public_method(
+            crowdsale_contract,
+            "routed_pause",
+            [],
+            Address(ctx.caller_id),
+        )
+
+    @public
+    def crowdsale_unpause(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route unpause to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_unpause.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        self._only_project_dev(ctx, token_uid)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Route to crowdsale contract with user address
+        self.syscall.call_public_method(
+            crowdsale_contract,
+            "routed_unpause",
+            [],
+            Address(ctx.caller_id),
+        )
+
+    @public
+    def crowdsale_early_activate(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route early activate to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_early_activate.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        self._only_project_dev(ctx, token_uid)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Route to crowdsale contract with user address
+        self.syscall.call_public_method(
+            crowdsale_contract,
+            "routed_early_activate",
+            [],
+            Address(ctx.caller_id),
+        )
+
+    @public
+    def crowdsale_finalize(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route finalize to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_finalize.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        self._only_project_dev(ctx, token_uid)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Route to crowdsale contract with user address
+        self.syscall.call_public_method(
+            crowdsale_contract,
+            "routed_finalize",
+            [],
+            Address(ctx.caller_id),
+        )
+
+    @public(allow_withdrawal=True)
+    def crowdsale_withdraw_raised_htr(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route withdraw raised HTR to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_withdraw_raised_htr.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        self._only_project_dev(ctx, token_uid)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Get the withdrawal action to forward (should be HTR)
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCWithdrawalAction):
+            raise DozerToolsError("HTR withdrawal action required")
+
+        # Route to crowdsale contract with user address
+        self.syscall.call_public_method(
+            crowdsale_contract,
+            "routed_withdraw_raised_htr",
+            [action],
+            Address(ctx.caller_id),
+        )
+
+    @public(allow_withdrawal=True)
+    def crowdsale_withdraw_remaining_tokens(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> None:
+        """Route withdraw remaining tokens to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_withdraw_remaining_tokens.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        self._only_project_dev(ctx, token_uid)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Get the withdrawal action to forward (should be for the project token)
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise DozerToolsError("Token withdrawal action required")
+
+        # Route to crowdsale contract with user address
+        self.syscall.call_public_method(
+            crowdsale_contract,
+            "routed_withdraw_remaining_tokens",
+            [action],
+            Address(ctx.caller_id),
+        )
+
 
 __blueprint__ = DozerTools
