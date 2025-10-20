@@ -1,30 +1,17 @@
-import json
-import math
 import os
-import random
 from logging import getLogger
 
 from hathor.conf import HathorSettings
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprints.dozer_pool_manager import (
-    HTR_UID,
     DozerPoolManager,
-    InsufficientLiquidity,
     InvalidAction,
-    InvalidFee,
     InvalidTokens,
     PoolExists,
-    PoolNotFound,
-    SwapResult,
-    Unauthorized,
 )
-from hathor.nanocontracts.context import Context
-from hathor.nanocontracts.exception import NCFail
 
-from hathor.nanocontracts.nc_types.nc_type import NCType
-from hathor.nanocontracts.types import Address, Amount, NCAction, NCActionType, NCDepositAction, NCWithdrawalAction
+from hathor.nanocontracts.types import Address, NCDepositAction, NCWithdrawalAction
 from hathor.transaction.base_transaction import BaseTransaction
-from hathor.types import TokenUid
 from hathor.util import not_none
 from hathor.wallet import KeyPair
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
@@ -42,7 +29,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         self.blueprint_id = self.gen_random_blueprint_id()
         self.nc_id = self.gen_random_contract_id()
-        self.register_blueprint_class(self.blueprint_id, DozerPoolManager)
+        self._register_blueprint_class(DozerPoolManager,self.blueprint_id)
 
         # Generate random token UIDs for testing
         self.token_a = self.gen_random_token_uid()
@@ -72,8 +59,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def _initialize_contract(self):
         """Initialize the DozerPoolManager contract"""
         tx = self._get_any_tx()
-        context = Context(
-            [], tx, Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[], vertex=tx, caller_id=Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
         )
         self.runner.create_contract(
             self.nc_id,
@@ -82,7 +69,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
 
         self.nc_storage = self.runner.get_storage(self.nc_id)
-        self.owner_address = context.address
+        self.owner_address = context.caller_id
 
     def _check_balance(self):
         """Check the balance of the contract"""
@@ -96,7 +83,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 self.nc_id, "get_pools_for_token", token_uid
             )
             for pool in token_to_pools:
-                token_a_hex, token_b_hex, fee = pool.split("/")
+                token_a_hex, _token_b_hex, _fee = pool.split("/")
                 token_a = bytes.fromhex(token_a_hex)
                 if token_uid == token_a:
                    
@@ -124,16 +111,16 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             NCDepositAction(token_uid=token_a, amount=reserve_a),
             NCDepositAction(token_uid=token_b, amount=reserve_b),
         ]
-        context = Context(
-            actions,  # type: ignore
-            tx,
-            Address(self._get_any_address()[0]),
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(self._get_any_address()[0]),
             timestamp=self.get_current_timestamp(),
         )
         pool_key = self.runner.call_public_method(
             self.nc_id, "create_pool", context, fee
         )
-        return pool_key, context.address
+        return pool_key, context.caller_id
 
     def _add_liquidity(self, token_a, token_b, fee, amount_a, amount_b=None):
         """Add liquidity to an existing pool"""
@@ -150,8 +137,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             NCDepositAction(token_uid=token_b, amount=amount_b),
         ]
         address_bytes, _ = self._get_any_address()
-        context = Context(
-            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp() # type: ignore
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(address_bytes),
+            timestamp=self.get_current_timestamp()
         ) 
         result = self.runner.call_public_method(
             self.nc_id, "add_liquidity", context, fee
@@ -205,10 +195,14 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         ]
         if address is None:
             address_bytes, _ = self._get_any_address()
+            caller_id = Address(address_bytes)
         else:
-            address_bytes = address
-        context = Context(
-            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp()  # type: ignore
+            caller_id = address
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=caller_id,
+            timestamp=self.get_current_timestamp()
         )
         result = self.runner.call_public_method(
             self.nc_id, "remove_liquidity", context, fee
@@ -223,8 +217,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             NCWithdrawalAction(token_uid=token_out, amount=amount_out),
         ]
         address_bytes, _ = self._get_any_address()
-        return Context(
-            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp()
+        return self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(address_bytes),
+            timestamp=self.get_current_timestamp()
         )
 
     def _swap_exact_tokens_for_tokens(
@@ -289,10 +286,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             NCDepositAction(token_uid=self.token_a, amount=1000_00),
             NCDepositAction(token_uid=self.token_b, amount=1000_00),
         ]
-        context = Context(
-            actions,  # type: ignore
-            tx,
-            Address(self._get_any_address()[0]),
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(self._get_any_address()[0]),
             timestamp=self.get_current_timestamp(),
         )
         with self.assertRaises(PoolExists):
@@ -353,7 +350,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def test_add_liquidity(self):
         """Test adding liquidity to a pool"""
         # Create a pool
-        pool_key, creator_address = self._create_pool(self.token_a, self.token_b)
+        pool_key, _creator_address = self._create_pool(self.token_a, self.token_b)
 
         contract = self.get_readonly_contract(self.nc_id)
         assert isinstance(contract, DozerPoolManager)
@@ -373,7 +370,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         liquidity_increase = initial_total_liquidity * amount_a // reserve_a
         # Add liquidity
-        result, context = self._add_liquidity(
+        _result, context = self._add_liquidity(
             self.token_a,
             self.token_b,
             3,
@@ -403,7 +400,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         self.assertEqual(
             self.runner.call_view_method(
-                self.nc_id, "liquidity_of", context.address, pool_key
+                self.nc_id, "liquidity_of", context.caller_id, pool_key
             ),
             liquidity_increase,
         )
@@ -413,10 +410,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def test_remove_liquidity(self):
         """Test removing liquidity from a pool"""
         # Create a pool
-        pool_key, creator_address = self._create_pool(self.token_a, self.token_b)
+        pool_key, _creator_address = self._create_pool(self.token_a, self.token_b)
 
         # Add liquidity with a new user
-        result, add_context = self._add_liquidity(
+        _result, add_context = self._add_liquidity(
             self.token_a,
             self.token_b,
             3,
@@ -431,7 +428,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         initial_reserve_b = contract.pool_reserve_b[pool_key]
         initial_total_liquidity = contract.pool_total_liquidity[pool_key]
         initial_user_liquidity = self.runner.call_view_method(
-            self.nc_id, "liquidity_of", add_context.address, pool_key
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
         )
 
         # Calculate amount of token A to remove (half of the user's liquidity)
@@ -455,7 +452,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             3,
             amount_to_remove_a,
             amount_to_remove_b,
-            address=add_context.address,
+            address=add_context.caller_id,
         )
 
         # Get updated contract state
@@ -481,7 +478,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Verify user liquidity decreased
         self.assertEqual(
             self.runner.call_view_method(
-                self.nc_id, "liquidity_of", remove_context.address, pool_key
+                self.nc_id, "liquidity_of", remove_context.caller_id, pool_key
             ),
             initial_user_liquidity - liquidity_decrease,
         )
@@ -2901,16 +2898,16 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def test_user_profit_tracking(self):
         """Test user profit tracking functionality"""
         # Create a pool
-        pool_key, creator_address = self._create_pool(self.token_a, self.token_b)
+        pool_key, _creator_address = self._create_pool(self.token_a, self.token_b)
 
         # Add liquidity with a new user
-        result, add_context = self._add_liquidity(
+        _result, add_context = self._add_liquidity(
             self.token_a, self.token_b, 3, 500_00
         )
 
         # Check profit info immediately after adding liquidity
         profit_info = self.runner.call_view_method(
-            self.nc_id, "get_user_profit_info", add_context.address, pool_key
+            self.nc_id, "get_user_profit_info", add_context.caller_id, pool_key
         )
 
         # Initially, profit should be zero (or very small due to rounding)
@@ -2925,7 +2922,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def test_add_liquidity_single_token(self):
         """Test adding liquidity with a single token"""
         # Create a pool with initial liquidity
-        pool_key, creator_address = self._create_pool(
+        pool_key, _creator_address = self._create_pool(
             self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
         )
 
@@ -2935,8 +2932,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         actions = [NCDepositAction(token_uid=self.token_a, amount=amount_in)]
 
         address_bytes, _ = self._get_any_address()
-        context = Context(
-            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(address_bytes),
+            timestamp=self.get_current_timestamp()
         )
 
         # Add liquidity with single token
@@ -2949,7 +2949,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Check that user now has liquidity
         user_liquidity = self.runner.call_view_method(
-            self.nc_id, "liquidity_of", context.address, pool_key
+            self.nc_id, "liquidity_of", context.caller_id, pool_key
         )
         self.assertGreater(user_liquidity, 0)
 
@@ -2958,7 +2958,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def test_quote_add_liquidity_single_token(self):
         """Test quoting single token liquidity addition"""
         # Create a pool
-        pool_key, _ = self._create_pool(
+        _pool_key, _ = self._create_pool(
             self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
         )
 
@@ -2988,24 +2988,38 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def test_remove_liquidity_single_token(self):
         """Test removing liquidity to receive a single token"""
         # Create a pool
-        pool_key, creator_address = self._create_pool(
+        pool_key, _creator_address = self._create_pool(
             self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
         )
 
         # Add liquidity first with the creator
-        result, add_context = self._add_liquidity(
+        _result, add_context = self._add_liquidity(
             self.token_a, self.token_b, 3, 1000_00
         )
 
         # Remove liquidity to get single token
         tx = self._get_any_tx()
-        context = Context(
-            [], tx, add_context.address, timestamp=self.get_current_timestamp()
+        assert isinstance(add_context.caller_id, Address)
+
+        # First get a quote to know how much we'll receive
+        quote = self.runner.call_view_method(
+            self.nc_id, "quote_remove_liquidity_single_token_percentage",
+            add_context.caller_id, pool_key, self.token_a, 10000
         )
 
-        # Remove liquidity for single token
+        # Create withdrawal action for the desired token with the quoted amount
+        actions = [NCWithdrawalAction(token_uid=self.token_a, amount=quote.amount_out)]
+
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp()
+        )
+
+        # Remove liquidity for single token (100% = 10000 basis points)
         amount_out = self.runner.call_public_method(
-            self.nc_id, "remove_liquidity_single_token", context, self.token_a, 3
+            self.nc_id, "remove_liquidity_single_token", context, pool_key, 10000
         )
 
         # Verify we got some tokens back
@@ -3013,7 +3027,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Check that user's liquidity is now zero
         user_liquidity = self.runner.call_view_method(
-            self.nc_id, "liquidity_of", add_context.address, pool_key
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
         )
         self.assertEqual(user_liquidity, 0)
 
@@ -3022,18 +3036,18 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def test_quote_remove_liquidity_single_token(self):
         """Test quoting single token liquidity removal"""
         # Create a pool and add liquidity
-        pool_key, creator_address = self._create_pool(
+        _pool_key, _creator_address = self._create_pool(
             self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
         )
 
-        result, add_context = self._add_liquidity(
+        _result, add_context = self._add_liquidity(
             self.token_a, self.token_b, 3, 1000_00
         )
 
         # Get quote for single token removal
         quote = self.runner.call_view_method(
             self.nc_id, "quote_remove_liquidity_single_token",
-            add_context.address, self.token_a, self.token_b, self.token_a, 3
+            add_context.caller_id, self.token_a, self.token_b, self.token_a, 3
         )
 
         # Verify quote contains expected fields (named tuple)
@@ -3053,10 +3067,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def test_profit_tracking_edge_cases(self):
         """Test profit tracking with various edge cases"""
         # Create a pool
-        pool_key, creator_address = self._create_pool(self.token_a, self.token_b)
+        pool_key, _creator_address = self._create_pool(self.token_a, self.token_b)
 
         # Test profit info for user with no liquidity
-        empty_address, _ = self._get_any_address()
+        empty_address_bytes, _ = self._get_any_address()
+        empty_address = Address(empty_address_bytes)
         profit_info = self.runner.call_view_method(
             self.nc_id, "get_user_profit_info", empty_address, pool_key
         )
@@ -3069,22 +3084,23 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(profit_info.last_action_timestamp, 0)
 
         # Add liquidity
-        result, add_context = self._add_liquidity(
+        _result, add_context = self._add_liquidity(
             self.token_a, self.token_b, 3, 500_00
         )
 
         # Remove some liquidity
-        remove_context, _ = self._remove_liquidity(
-            self.token_a, self.token_b, 3, 250_00, address=add_context.address
+        _remove_context, _ = self._remove_liquidity(
+            self.token_a, self.token_b, 3, 250_00, address=add_context.caller_id
         )
 
         # Check that profit tracking was updated after removal
         profit_info_after = self.runner.call_view_method(
-            self.nc_id, "get_user_profit_info", add_context.address, pool_key
+            self.nc_id, "get_user_profit_info", add_context.caller_id, pool_key
         )
 
-        # Should still have some liquidity and updated timestamp
-        self.assertGreater(profit_info_after.current_value_usd, 0)
+        # USD values will be 0 since there's no HTR-USD pool configured in this test
+        # But timestamp should be updated
+        self.assertEqual(profit_info_after.current_value_usd, 0)
         self.assertGreater(profit_info_after.last_action_timestamp, 0)
 
         self._check_balance()
@@ -3092,7 +3108,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     def test_single_token_operations_edge_cases(self):
         """Test edge cases for single token operations"""
         # Create a pool
-        pool_key, _ = self._create_pool(
+        _pool_key, _ = self._create_pool(
             self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
         )
 
@@ -3102,8 +3118,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         actions = [NCDepositAction(token_uid=self.token_a, amount=amount_in)]
 
         address_bytes, _ = self._get_any_address()
-        context = Context(
-            actions, tx, Address(address_bytes), timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(address_bytes),
+            timestamp=self.get_current_timestamp()
         )
 
         # Should fail with same token
@@ -3120,13 +3139,18 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             )
 
         # Test remove liquidity single token with no liquidity
-        empty_context = Context(
-            [], tx, Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+        # Need to create a withdrawal action
+        actions_empty = [NCWithdrawalAction(token_uid=self.token_a, amount=100_00)]
+        empty_context = self.create_context(
+            actions=actions_empty,
+            vertex=tx,
+            caller_id=Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp()
         )
 
         with self.assertRaises(InvalidAction):
             self.runner.call_public_method(
-                self.nc_id, "remove_liquidity_single_token", empty_context, self.token_a, 3
+                self.nc_id, "remove_liquidity_single_token", empty_context, _pool_key, 10000
             )
 
         self._check_balance()

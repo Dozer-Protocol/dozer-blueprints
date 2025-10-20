@@ -237,7 +237,7 @@ class DozerTools(Blueprint):
         return (
             token_uid
             + bytes(contract_type, "utf-8")
-            + bytes(str(ctx.timestamp), "utf-8")
+            + bytes(str(ctx.block.timestamp), "utf-8")
         )
 
     @public(allow_deposit=True)
@@ -343,7 +343,7 @@ class DozerTools(Blueprint):
             )
 
         # Create the token
-        token_uid = self.syscall.create_token(
+        token_uid = self.syscall.create_token(  # type: ignore[attr-defined]
             token_name,
             token_symbol,
             total_supply,
@@ -365,7 +365,7 @@ class DozerTools(Blueprint):
         self.project_name[token_uid] = token_name
         self.project_symbol[token_uid] = token_symbol
         self.project_dev[token_uid] = Address(ctx.caller_id)
-        self.project_created_at[token_uid] = Timestamp(ctx.timestamp)
+        self.project_created_at[token_uid] = Timestamp(ctx.block.timestamp)
         self.project_total_supply[token_uid] = total_supply
 
         # Mark symbol as permanently used to prevent future reuse
@@ -398,10 +398,11 @@ class DozerTools(Blueprint):
         ]
 
         self._ensure_vesting_blueprint_configured()
-        vesting_id, _ = self.syscall.create_contract(
+        vesting_id, _ = self.syscall.setup_new_contract(
             self.vesting_blueprint_id,
-            vesting_salt,
-            vesting_actions,
+            *vesting_actions,
+            salt=vesting_salt,
+        ).initialize(
             token_uid,  # Initialize vesting with the token
             self.syscall.get_contract_id(),  # Pass DozerTools contract ID as creator
         )
@@ -526,10 +527,10 @@ class DozerTools(Blueprint):
             NCWithdrawalAction(token_uid=token_uid, amount=staking_amount)
         ]
 
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             vesting_contract,
-            "claim_allocation",
-            withdraw_actions,
+            blueprint_id=None,
+        ).public(*withdraw_actions).claim_allocation(
             STAKING_ALLOCATION_INDEX,
         )
 
@@ -540,10 +541,11 @@ class DozerTools(Blueprint):
         ]
 
         self._ensure_staking_blueprint_configured()
-        staking_id, _ = self.syscall.create_contract(
+        staking_id, _ = self.syscall.setup_new_contract(
             self.staking_blueprint_id,
-            salt,
-            staking_actions,
+            *staking_actions,
+            salt=salt,
+        ).initialize(
             earnings_per_day,
             token_uid,
             self.syscall.get_contract_id(),
@@ -596,10 +598,10 @@ class DozerTools(Blueprint):
         salt = self._generate_salt(ctx, token_uid, "dao")
 
         self._ensure_dao_blueprint_configured()
-        dao_id, _ = self.syscall.create_contract(
+        dao_id, _ = self.syscall.setup_new_contract(
             self.dao_blueprint_id,
-            salt,
-            [],
+            salt=salt,
+        ).initialize(
             name,
             description,
             token_uid,
@@ -695,10 +697,10 @@ class DozerTools(Blueprint):
             NCWithdrawalAction(token_uid=token_uid, amount=public_sale_amount)
         ]
 
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             vesting_contract,
-            "claim_allocation",
-            withdraw_actions,
+            blueprint_id=None,
+        ).public(*withdraw_actions).claim_allocation(
             PUBLIC_SALE_ALLOCATION_INDEX,
         )
 
@@ -709,10 +711,11 @@ class DozerTools(Blueprint):
         ]
 
         self._ensure_crowdsale_blueprint_configured()
-        crowdsale_id, _ = self.syscall.create_contract(
+        crowdsale_id, _ = self.syscall.setup_new_contract(
             self.crowdsale_blueprint_id,
-            salt,
-            crowdsale_actions,
+            *crowdsale_actions,
+            salt=salt,
+        ).initialize(
             token_uid,
             rate,
             soft_cap,
@@ -777,10 +780,10 @@ class DozerTools(Blueprint):
             NCWithdrawalAction(token_uid=token_uid, amount=dozer_pool_amount)
         ]
 
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             vesting_contract,
-            "claim_allocation",
-            withdraw_actions,
+            blueprint_id=None,
+        ).public(*withdraw_actions).claim_allocation(
             DOZER_POOL_ALLOCATION_INDEX,
         )
 
@@ -791,9 +794,10 @@ class DozerTools(Blueprint):
         ]
 
         # Call DozerPoolManager to create pool
-        pool_key = self.syscall.call_public_method(
-            self.dozer_pool_manager_id, "create_pool", pool_actions, fee
-        )
+        pool_key = self.syscall.get_contract(
+            self.dozer_pool_manager_id,
+            blueprint_id=None,
+        ).public(*pool_actions).create_pool(fee)
 
         self.project_pools[token_uid] = pool_key
         return pool_key
@@ -890,9 +894,10 @@ class DozerTools(Blueprint):
             ]
 
             # Call vesting contract to get all tokens back
-            self.syscall.call_public_method(
-                vesting_contract, "withdraw_available", withdraw_all_actions
-            )
+            self.syscall.get_contract(
+                vesting_contract,
+                blueprint_id=None,
+            ).public(*withdraw_all_actions).withdraw_available()
 
             # Now melt all tokens that are in this contract
             self.syscall.melt_tokens(token_uid, total_supply)
@@ -1623,9 +1628,10 @@ class DozerTools(Blueprint):
         vesting_contract = self.project_vesting_contract[token_uid]
         current_timestamp = 0  # In real usage, this would be ctx.timestamp
 
-        vesting_info = self.syscall.call_view_method(
+        vesting_info = self.syscall.get_contract(
             vesting_contract,
-            "get_vesting_info",
+            blueprint_id=None,
+        ).view().get_vesting_info(
             allocation_index,
             current_timestamp,
         )
@@ -1750,10 +1756,10 @@ class DozerTools(Blueprint):
         # Configure special allocations (unlocked: cliff=0, vesting=0)
         if staking_percentage > 0:
             staking_amount = Amount((total_supply * staking_percentage) // 100)
-            self.syscall.call_public_method(
+            self.syscall.get_contract(
                 vesting_contract,
-                "configure_vesting",
-                [],
+                blueprint_id=None,
+            ).public().configure_vesting(
                 STAKING_ALLOCATION_INDEX,
                 staking_amount,
                 Address(
@@ -1766,10 +1772,10 @@ class DozerTools(Blueprint):
 
         if public_sale_percentage > 0:
             public_sale_amount = Amount((total_supply * public_sale_percentage) // 100)
-            self.syscall.call_public_method(
+            self.syscall.get_contract(
                 vesting_contract,
-                "configure_vesting",
-                [],
+                blueprint_id=None,
+            ).public().configure_vesting(
                 PUBLIC_SALE_ALLOCATION_INDEX,
                 public_sale_amount,
                 Address(
@@ -1782,10 +1788,10 @@ class DozerTools(Blueprint):
 
         if dozer_pool_percentage > 0:
             dozer_pool_amount = Amount((total_supply * dozer_pool_percentage) // 100)
-            self.syscall.call_public_method(
+            self.syscall.get_contract(
                 vesting_contract,
-                "configure_vesting",
-                [],
+                blueprint_id=None,
+            ).public().configure_vesting(
                 DOZER_POOL_ALLOCATION_INDEX,
                 dozer_pool_amount,
                 Address(
@@ -1804,10 +1810,10 @@ class DozerTools(Blueprint):
                 )
                 allocation_index = 3 + i  # Start from index 3
 
-                self.syscall.call_public_method(
+                self.syscall.get_contract(
                     vesting_contract,
-                    "configure_vesting",
-                    [],
+                    blueprint_id=None,
+                ).public().configure_vesting(
                     allocation_index,
                     allocation_amount,
                     allocation_beneficiaries[i],
@@ -1819,7 +1825,10 @@ class DozerTools(Blueprint):
     def _start_vesting(self, ctx: Context, token_uid: TokenUid) -> None:
         """Start the vesting schedule."""
         vesting_contract = self.project_vesting_contract[token_uid]
-        self.syscall.call_public_method(vesting_contract, "start_vesting", [])
+        self.syscall.get_contract(
+            vesting_contract,
+            blueprint_id=None,
+        ).public().start_vesting()
 
     # Routing Methods for Child Contract Operations
 
@@ -1849,10 +1858,10 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Vesting contract does not exist")
 
         # Route to vesting contract with user address
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             vesting_contract,
-            "routed_claim_allocation",
-            [action],
+            blueprint_id=None,
+        ).public(action).routed_claim_allocation(
             Address(ctx.caller_id),
             index,
         )
@@ -1878,10 +1887,10 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Vesting contract does not exist")
 
         # Route to vesting contract with user address
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             vesting_contract,
-            "routed_change_beneficiary",
-            [],
+            blueprint_id=None,
+        ).public().routed_change_beneficiary(
             Address(ctx.caller_id),
             index,
             new_beneficiary,
@@ -1907,10 +1916,10 @@ class DozerTools(Blueprint):
             raise DozerToolsError("Deposit action required")
 
         # Route to staking contract with user address
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             staking_contract,
-            "routed_stake",
-            [action],
+            blueprint_id=None,
+        ).public(action).routed_stake(
             Address(ctx.caller_id),
         )
 
@@ -1934,10 +1943,10 @@ class DozerTools(Blueprint):
             raise DozerToolsError("Withdrawal action required")
 
         # Route to staking contract with user address
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             staking_contract,
-            "routed_unstake",
-            [action],
+            blueprint_id=None,
+        ).public(action).routed_unstake(
             Address(ctx.caller_id),
         )
 
@@ -1967,11 +1976,10 @@ class DozerTools(Blueprint):
 
         # Call staking contract's owner_deposit directly
         # DozerTools is the owner, so this will succeed
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             staking_contract,
-            "owner_deposit",
-            [action],
-        )
+            blueprint_id=None,
+        ).public(action).owner_deposit()
 
     @public
     def staking_pause(self, ctx: Context, token_uid: TokenUid) -> None:
@@ -1994,11 +2002,10 @@ class DozerTools(Blueprint):
 
         # Call staking contract's pause directly
         # DozerTools is the owner, so this will succeed
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             staking_contract,
-            "pause",
-            [],
-        )
+            blueprint_id=None,
+        ).public().pause()
 
     @public
     def staking_unpause(self, ctx: Context, token_uid: TokenUid) -> None:
@@ -2021,11 +2028,10 @@ class DozerTools(Blueprint):
 
         # Call staking contract's unpause directly
         # DozerTools is the owner, so this will succeed
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             staking_contract,
-            "unpause",
-            [],
-        )
+            blueprint_id=None,
+        ).public().unpause()
 
     @public
     def dao_create_proposal(
@@ -2047,10 +2053,10 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("DAO contract does not exist")
 
         # Route to DAO contract with user address
-        return self.syscall.call_public_method(
+        return self.syscall.get_contract(
             dao_contract,
-            "routed_create_proposal",
-            [],
+            blueprint_id=None,
+        ).public().routed_create_proposal(
             Address(ctx.caller_id),
             title,
             description,
@@ -2073,10 +2079,10 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("DAO contract does not exist")
 
         # Route to DAO contract with user address
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             dao_contract,
-            "routed_cast_vote",
-            [],
+            blueprint_id=None,
+        ).public().routed_cast_vote(
             Address(ctx.caller_id),
             proposal_id,
             support,
@@ -2102,10 +2108,10 @@ class DozerTools(Blueprint):
             raise DozerToolsError("HTR deposit action required")
 
         # Route to crowdsale contract with user address
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             crowdsale_contract,
-            "routed_participate",
-            [action],
+            blueprint_id=None,
+        ).public(action).routed_participate(
             Address(ctx.caller_id),
         )
 
@@ -2129,10 +2135,10 @@ class DozerTools(Blueprint):
             raise DozerToolsError("Withdrawal action required")
 
         # Route to crowdsale contract with user address
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             crowdsale_contract,
-            "routed_claim_tokens",
-            [action],
+            blueprint_id=None,
+        ).public(action).routed_claim_tokens(
             Address(ctx.caller_id),
         )
 
@@ -2156,10 +2162,10 @@ class DozerTools(Blueprint):
             raise DozerToolsError("HTR withdrawal action required")
 
         # Route to crowdsale contract with user address
-        self.syscall.call_public_method(
+        self.syscall.get_contract(
             crowdsale_contract,
-            "routed_claim_refund",
-            [action],
+            blueprint_id=None,
+        ).public(action).routed_claim_refund(
             Address(ctx.caller_id),
         )
 
