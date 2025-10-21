@@ -1,7 +1,7 @@
-from hathor.nanocontracts.blueprint import Blueprint
-from hathor.nanocontracts.context import Context
-from hathor.nanocontracts.exception import NCFail
-from hathor.nanocontracts.types import (
+from hathor import (
+    Blueprint,
+    Context,
+    NCFail,
     Address,
     Amount,
     BlueprintId,
@@ -833,10 +833,14 @@ class DozerTools(Blueprint):
         ]
 
         # Call DozerPoolManager to create pool
-        pool_key = self.syscall.get_contract(
-            self.dozer_pool_manager_id,
-            blueprint_id=None,
-        ).public(*pool_actions).create_pool(fee)
+        pool_key = (
+            self.syscall.get_contract(
+                self.dozer_pool_manager_id,
+                blueprint_id=None,
+            )
+            .public(*pool_actions)
+            .create_pool(fee)
+        )
 
         self.project_pools[token_uid] = pool_key
         return pool_key
@@ -1667,12 +1671,16 @@ class DozerTools(Blueprint):
         vesting_contract = self.project_vesting_contract[token_uid]
         current_timestamp = 0  # In real usage, this would be ctx.timestamp
 
-        vesting_info = self.syscall.get_contract(
-            vesting_contract,
-            blueprint_id=None,
-        ).view().get_vesting_info(
-            allocation_index,
-            current_timestamp,
+        vesting_info = (
+            self.syscall.get_contract(
+                vesting_contract,
+                blueprint_id=None,
+            )
+            .view()
+            .get_vesting_info(
+                allocation_index,
+                current_timestamp,
+            )
         )
 
         # Convert to string dict for consistency
@@ -2092,13 +2100,17 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("DAO contract does not exist")
 
         # Route to DAO contract with user address
-        return self.syscall.get_contract(
-            dao_contract,
-            blueprint_id=None,
-        ).public().routed_create_proposal(
-            Address(ctx.caller_id),
-            title,
-            description,
+        return (
+            self.syscall.get_contract(
+                dao_contract,
+                blueprint_id=None,
+            )
+            .public()
+            .routed_create_proposal(
+                Address(ctx.caller_id),
+                title,
+                description,
+            )
         )
 
     @public

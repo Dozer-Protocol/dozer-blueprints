@@ -3,14 +3,13 @@ import random
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprints.dozer_pool_v1_1 import Dozer_Pool_v1_1
 from hathor.nanocontracts.blueprints.oasis import Oasis
-from hathor.nanocontracts.types import NCAction, NCActionType
-from hathor.pycoin import htr
+from hathor.nanocontracts.context import Context
+from hathor.nanocontracts.exception import NCFail
+from hathor.nanocontracts.types import NCAction, NCDepositAction, NCWithdrawalAction
 from hathor.util import not_none
 from hathor.conf.get_settings import HathorSettings
 from hathor.wallet.keypair import KeyPair
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
-
-from hathor.nanocontracts import Context, NCFail
 
 settings = HathorSettings()
 HTR_UID = settings.HATHOR_TOKEN_UID
@@ -26,14 +25,13 @@ class OasisTestCase(BlueprintTestCase):
         super().setUp()
 
         # Set up Oasis contract
-        self.oasis_id = self.gen_random_nanocontract_id()
-        self.runner.register_contract(Oasis, self.oasis_id)
-        self.oasis_storage = self.runner.get_storage(self.oasis_id)
+        self.oasis_blueprint_id = self._register_blueprint_class(Oasis)
+        self.oasis_id = self.gen_random_contract_id()
 
         # Set up Dozer Pool contract
-        self.dozer_id = self.gen_random_nanocontract_id()
-        self.runner.register_contract(Dozer_Pool_v1_1, self.dozer_id)
-        self.dozer_storage = self.runner.get_storage(self.dozer_id)
+        self.dozer_blueprint_id = self._register_blueprint_class(Dozer_Pool_v1_1)
+        self.dozer_id = self.gen_random_contract_id()
+
         self.dev_address = self._get_any_address()[0]
         self.owner_address = self._get_any_address()[0]
         self.token_b = self.gen_random_token_uid()
@@ -111,23 +109,19 @@ class OasisTestCase(BlueprintTestCase):
         self, amount: int = 10_000_000_00, protocol_fee: int = 0
     ) -> None:
         """Test basic initialization"""
-        ctx = Context(
-            [
-                NCAction(NCActionType.DEPOSIT, HTR_UID, amount),  # type: ignore
-            ],
-            self.tx,
-            self.dev_address,
-            timestamp=0,
-        )
-        self.runner.call_public_method(
+        actions = [
+            NCDepositAction(token_uid=HTR_UID, amount=amount),  # type: ignore
+        ]
+        ctx = self.create_context(actions=actions, vertex=self.tx, timestamp=0)  # type: ignore
+        self.runner.create_contract(
             self.oasis_id,
-            "initialize",
+            self.oasis_blueprint_id,
             ctx,
             self.dozer_id,
             self.token_b,
             protocol_fee,
         )
-        # self.assertIsNone(self.oasis_storage.get("dozer_pool"))
+        self.oasis_storage = self.runner.get_storage(self.oasis_id)
 
     def initialize_pool(
         self, amount_htr: int = 1000000, amount_b: int = 7000000
@@ -135,19 +129,20 @@ class OasisTestCase(BlueprintTestCase):
         """Test basic initialization"""
         # Initialize dozer pool first
         actions = [
-            NCAction(NCActionType.DEPOSIT, HTR_UID, amount_htr),  # type: ignore
-            NCAction(NCActionType.DEPOSIT, self.token_b, amount_b),  # type: ignore
+            NCDepositAction(token_uid=HTR_UID, amount=amount_htr),  # type: ignore
+            NCDepositAction(token_uid=self.token_b, amount=amount_b),  # type: ignore
         ]
-        pool_ctx = Context(actions, self.tx, self.dev_address, timestamp=0)  # type: ignore
-        self.runner.call_public_method(
+        pool_ctx = self.create_context(actions=actions, vertex=self.tx, timestamp=0)  # type: ignore
+        self.runner.create_contract(
             self.dozer_id,
-            "initialize",
+            self.dozer_blueprint_id,
             pool_ctx,
             HTR_UID,
             self.token_b,
             0,  # fee
             50,  # protocol fee
         )
+        self.dozer_storage = self.runner.get_storage(self.dozer_id)
 
     def test_owner_and_dev_deposit(self) -> None:
         dev_initial_deposit = 1_000_000_00
@@ -1015,9 +1010,7 @@ class OasisTestCase(BlueprintTestCase):
 
         for fee, should_succeed in test_cases:
             # Create new contract for each test
-            oasis_id = self.gen_random_nanocontract_id()
-            self.runner.register_contract(Oasis, oasis_id)
-            oasis_storage = self.runner.get_storage(oasis_id)
+            oasis_id = self.gen_random_contract_id()
 
             ctx = Context(
                 [NCAction(NCActionType.DEPOSIT, HTR_UID, 10_000_000_00)],
@@ -1027,14 +1020,15 @@ class OasisTestCase(BlueprintTestCase):
             )
 
             if should_succeed:
-                self.runner.call_public_method(
+                self.runner.create_contract(
                     oasis_id,
-                    "initialize",
+                    self.oasis_blueprint_id,
                     ctx,
                     self.dozer_id,
                     self.token_b,
                     fee,
                 )
+                oasis_storage = self.runner.get_storage(oasis_id)
                 # Verify owner is set to dev
                 self.assertEqual(oasis_storage.get("owner_address"), self.dev_address)
 
@@ -1070,13 +1064,11 @@ class OasisTestCase(BlueprintTestCase):
                 self.assertEqual(oasis_info["protocol_fee"], fee)
             else:
                 with self.assertRaises(NCFail):
-                    self.runner.call_public_method(
-                        oasis_id, "initialize", ctx, self.dozer_id, self.token_b, fee
+                    self.runner.create_contract(
+                        oasis_id, self.oasis_blueprint_id, ctx, self.dozer_id, self.token_b, fee
                     )
-                with self.assertRaises(NCFail):
-                    self.runner.call_public_method(
-                        oasis_id, "update_protocol_fee", ctx, fee
-                    )
+                # For invalid fee during initialization, update_protocol_fee shouldn't be tested
+                # since the contract was never created
 
     def test_protocol_fee(self) -> None:
         """Test protocol fee collection and management"""
