@@ -14,36 +14,23 @@
 
 import os
 import unittest
-from typing import Any, Optional
+from typing import Optional
 
 from hathor.conf import settings
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprints.dozer_tools import (
     DozerTools,
     ProjectNotFound,
-    ProjectAlreadyExists,
     Unauthorized,
     InsufficientCredits,
-    TokenBlacklisted,
-    ContractAlreadyExists,
-    VestingNotConfigured,
     InvalidAllocation,
-    STAKING_ALLOCATION_INDEX,
-    PUBLIC_SALE_ALLOCATION_INDEX,
-    DOZER_POOL_ALLOCATION_INDEX,
 )
-from hathor.nanocontracts.blueprints.token_manager import (
-    VESTING_BLUEPRINT_ID,
-    STAKING_BLUEPRINT_ID,
-    DAO_BLUEPRINT_ID,
-    CROWDSALE_BLUEPRINT_ID,
-)
+
 from hathor.nanocontracts.blueprints.dozer_pool_manager import DozerPoolManager
 from hathor.nanocontracts.blueprints.vesting import Vesting
 from hathor.nanocontracts.blueprints.stake import Stake
 from hathor.nanocontracts.blueprints.dao import DAO
 from hathor.nanocontracts.blueprints.crowdsale import Crowdsale
-from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.types import (
     Address,
     Amount,
@@ -59,8 +46,38 @@ from hathor.util import not_none
 from hathor.wallet.keypair import KeyPair
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
+
 DOZER_POOL_MANAGER_BLUEPRINT_ID = (
     "d6c09caa2f1f7ef6a6f416301c2b665e041fa819a792e53b8409c9c1aed2c89a"
+)
+
+VESTING_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef0"
+        )
+    )
+)
+STAKING_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef1"
+        )
+    )
+)
+DAO_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef2"
+        )
+    )
+)
+CROWDSALE_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef3"
+        )
+    )
 )
 
 
@@ -92,7 +109,11 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Initialize DozerPoolManager
-        pool_manager_context = self.create_context(actions=[], vertex=self._get_any_tx(), caller_id=Address(self._get_any_address()[0]), timestamp=self.get_current_timestamp()
+        pool_manager_context = self.create_context(
+            actions=[],
+            vertex=self._get_any_tx(),
+            caller_id=Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp(),
         )
         self.runner.create_contract(
             self.pool_manager_nc_id,
@@ -135,7 +156,11 @@ class DozerToolsTest(BlueprintTestCase):
         tx = self._get_any_tx()
         # Add HTR deposit for initialization fee (0.01 HTR = 1000000 satoshis)
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.owner_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         self.runner.create_contract(
@@ -152,7 +177,7 @@ class DozerToolsTest(BlueprintTestCase):
             actions=[],
             vertex=self._get_any_tx(),
             caller_id=self.owner_address,
-            timestamp=self.get_current_timestamp()
+            timestamp=self.get_current_timestamp(),
         )
 
         # Set vesting blueprint
@@ -216,10 +241,12 @@ class DozerToolsTest(BlueprintTestCase):
         tx = self._get_any_tx()
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
         context = self.create_context(
-            actions=[NCDepositAction(token_uid=htr_uid, amount=required_htr)],  # 1% HTR deposit
+            actions=[
+                NCDepositAction(token_uid=htr_uid, amount=required_htr)
+            ],  # 1% HTR deposit
             vertex=tx,
             caller_id=self.dev_address,
-            timestamp=self.get_current_timestamp()
+            timestamp=self.get_current_timestamp(),
         )
 
         token_uid = self.runner.call_public_method(
@@ -295,7 +322,11 @@ class DozerToolsTest(BlueprintTestCase):
         tx = self._get_any_tx()
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
         required_htr = total_supply // 100  # 1% of total supply
-        context = self.create_context(actions=[NCDepositAction(token_uid=htr_uid, amount=required_htr)], vertex=tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=required_htr)],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         token_uid = self.runner.call_public_method(
@@ -343,7 +374,7 @@ class DozerToolsTest(BlueprintTestCase):
             actions=[NCDepositAction(token_uid=htr_uid, amount=user1_required_htr)],
             vertex=tx1,
             caller_id=self.dev_address,  # User 1
-            timestamp=self.get_current_timestamp()
+            timestamp=self.get_current_timestamp(),
         )
 
         user1_token_uid = self.runner.call_public_method(
@@ -398,7 +429,7 @@ class DozerToolsTest(BlueprintTestCase):
             actions=[NCDepositAction(token_uid=htr_uid, amount=user2_required_htr)],
             vertex=tx2,
             caller_id=self.user_address,  # User 2 (different address)
-            timestamp=self.get_current_timestamp()
+            timestamp=self.get_current_timestamp(),
         )
 
         user2_token_uid = self.runner.call_public_method(
@@ -463,10 +494,12 @@ class DozerToolsTest(BlueprintTestCase):
         # Test that User 2 cannot create project without proper HTR deposit
         tx3 = self._get_any_tx()
         insufficient_context = self.create_context(
-            actions=[NCDepositAction(token_uid=htr_uid, amount=Amount(2))],  # Insufficient HTR
+            actions=[
+                NCDepositAction(token_uid=htr_uid, amount=Amount(2))
+            ],  # Insufficient HTR
             vertex=tx3,
             caller_id=self.user_address,
-            timestamp=self.get_current_timestamp()
+            timestamp=self.get_current_timestamp(),
         )
 
         with self.assertRaises(InsufficientCredits):
@@ -498,7 +531,11 @@ class DozerToolsTest(BlueprintTestCase):
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
         htr_deposit_amount = Amount(5000000)  # 0.05 HTR
 
-        context = self.create_context(actions=[NCDepositAction(token_uid=htr_uid, amount=htr_deposit_amount)], vertex=tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=htr_deposit_amount)],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         self.runner.call_public_method(
@@ -564,8 +601,11 @@ class DozerToolsTest(BlueprintTestCase):
         tx = self._get_any_tx()
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
 
-        context = self.create_context(actions=[NCDepositAction(token_uid=htr_uid, amount=1000000)], vertex=tx, caller_id=self.user_address,  # Wrong address
-            timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=1000000)],
+            vertex=tx,
+            caller_id=self.user_address,  # Wrong address
+            timestamp=self.get_current_timestamp(),
         )
 
         with self.assertRaises(Unauthorized):
@@ -585,7 +625,11 @@ class DozerToolsTest(BlueprintTestCase):
 
         # Blacklist token (as owner)
         tx = self._get_any_tx()
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.owner_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         self.runner.call_public_method(
@@ -608,7 +652,11 @@ class DozerToolsTest(BlueprintTestCase):
         """Test method fee management."""
         # Set fees for a method (as owner)
         tx = self._get_any_tx()
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.owner_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         method_name = "create_liquidity_pool"
@@ -645,7 +693,11 @@ class DozerToolsTest(BlueprintTestCase):
         """Test changing contract ownership."""
         # Change owner
         tx = self._get_any_tx()
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.owner_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         self.runner.call_public_method(
@@ -674,7 +726,11 @@ class DozerToolsTest(BlueprintTestCase):
         total_supply = Amount(10000000)
         required_htr = total_supply // 100  # 1% of total supply
 
-        context = self.create_context(actions=[NCDepositAction(token_uid=htr_uid, amount=required_htr)], vertex=tx, caller_id=dev_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=required_htr)],
+            vertex=tx,
+            caller_id=dev_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         return self.runner.call_public_method(
@@ -702,7 +758,11 @@ class DozerToolsTest(BlueprintTestCase):
 
         # Configure vesting with special allocations
         tx = self._get_any_tx()
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         # Configure vesting: 20% staking, 10% public sale, 5% dozer pool, 65% regular vesting
@@ -772,7 +832,11 @@ class DozerToolsTest(BlueprintTestCase):
 
         # Configure vesting with staking allocation
         tx = self._get_any_tx()
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         self.runner.call_public_method(
@@ -826,7 +890,7 @@ class DozerToolsTest(BlueprintTestCase):
             actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
             vertex=self._get_any_tx(),
             caller_id=Address(user_address),
-            timestamp=initial_time
+            timestamp=initial_time,
         )
 
         self.runner.call_public_method(staking_contract_id, "stake", stake_context)
@@ -938,16 +1002,18 @@ class DozerToolsTest(BlueprintTestCase):
         expected_six_months_vesting = (total_team_allocation * 6) // vesting_months
 
         self.assertEqual(vesting_info_six_months.vested, expected_six_months_vesting)
-        self.assertEqual(
-            vesting_info_six_months.claimable, expected_six_months_vesting
-        )
+        self.assertEqual(vesting_info_six_months.claimable, expected_six_months_vesting)
 
     def test_invalid_allocation_percentages(self) -> None:
         """Test validation of allocation percentages."""
         token_uid = self._create_test_project("InvalidToken", "INV")
 
         tx = self._get_any_tx()
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         # Try to configure vesting with total > 100%
@@ -968,14 +1034,17 @@ class DozerToolsTest(BlueprintTestCase):
                 [36],
             )
 
-
     def test_staking_stake_routing(self) -> None:
         """Test staking through DozerTools.staking_stake() routing method."""
         # Create project and configure vesting with staking allocation
         token_uid = self._create_test_project("RoutingToken", "ROUTE")
 
         tx = self._get_any_tx()
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         # Configure vesting with 30% staking allocation
@@ -1007,7 +1076,11 @@ class DozerToolsTest(BlueprintTestCase):
         user_address, _ = self._get_any_address()
         stake_amount = 1000_00  # 1000 tokens
 
-        stake_context = self.create_context(actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))], vertex=self._get_any_tx(), caller_id=Address(user_address), timestamp=self.get_current_timestamp()
+        stake_context = self.create_context(
+            actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=self.get_current_timestamp(),
         )
 
         # Stake through DozerTools routing method
@@ -1027,7 +1100,11 @@ class DozerToolsTest(BlueprintTestCase):
         token_uid = self._create_test_project("UnstakeToken", "UNST")
 
         tx = self._get_any_tx()
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         earnings_per_day = 1000
@@ -1060,7 +1137,12 @@ class DozerToolsTest(BlueprintTestCase):
         stake_amount = 5000_00
         initial_time = self.get_current_timestamp()
 
-        stake_context = self.create_context(actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))], vertex=self._get_any_tx(), caller_id=Address(user_address), timestamp=initial_time,)
+        stake_context = self.create_context(
+            actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=initial_time,
+        )
 
         self.runner.call_public_method(
             self.dozer_tools_nc_id, "staking_stake", stake_context, token_uid
@@ -1081,7 +1163,14 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertGreater(max_withdrawal, stake_amount)
 
         # Unstake through DozerTools routing using exact amount from view method
-        unstake_context = self.create_context(actions=[NCWithdrawalAction(token_uid=token_uid, amount=Amount(max_withdrawal))], vertex=self._get_any_tx(), caller_id=Address(user_address), timestamp=time_after_timelock,)
+        unstake_context = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=token_uid, amount=Amount(max_withdrawal))
+            ],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=time_after_timelock,
+        )
 
         self.runner.call_public_method(
             self.dozer_tools_nc_id, "staking_unstake", unstake_context, token_uid
@@ -1099,7 +1188,11 @@ class DozerToolsTest(BlueprintTestCase):
         token_uid = self._create_test_project("AuthToken", "AUTH")
 
         tx = self._get_any_tx()
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         self.runner.call_public_method(
@@ -1129,11 +1222,16 @@ class DozerToolsTest(BlueprintTestCase):
         # Try to call routed_stake directly (should fail - only DozerTools can call it)
         user_address, _ = self._get_any_address()
 
-        direct_stake_context = self.create_context(actions=[NCDepositAction(token_uid=token_uid, amount=Amount(1000_00))], vertex=self._get_any_tx(), caller_id=Address(user_address), timestamp=self.get_current_timestamp()
+        direct_stake_context = self.create_context(
+            actions=[NCDepositAction(token_uid=token_uid, amount=Amount(1000_00))],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=self.get_current_timestamp(),
         )
 
         # Direct call to routed_stake should fail
         from hathor.nanocontracts.exception import NCFail
+
         with self.assertRaises(NCFail):
             self.runner.call_public_method(
                 staking_contract_id,
@@ -1148,7 +1246,11 @@ class DozerToolsTest(BlueprintTestCase):
         token_uid = self._create_test_project("E2EToken", "E2E")
 
         tx = self._get_any_tx()
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         earnings_per_day = 2000
@@ -1185,7 +1287,14 @@ class DozerToolsTest(BlueprintTestCase):
             user_addr, _ = self._get_any_address()
             users.append(user_addr)
 
-            stake_ctx = self.create_context(actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))], vertex=self._get_any_tx(), caller_id=Address(user_addr), timestamp=initial_time,)
+            stake_ctx = self.create_context(
+                actions=[
+                    NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))
+                ],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=initial_time,
+            )
 
             self.runner.call_public_method(
                 self.dozer_tools_nc_id, "staking_stake", stake_ctx, token_uid
@@ -1215,7 +1324,16 @@ class DozerToolsTest(BlueprintTestCase):
 
             # Unstake half through DozerTools
             half_withdrawal = max_withdrawal // 2
-            unstake_ctx = self.create_context(actions=[NCWithdrawalAction(token_uid=token_uid, amount=Amount(half_withdrawal))], vertex=self._get_any_tx(), caller_id=Address(user_addr), timestamp=time_after,)
+            unstake_ctx = self.create_context(
+                actions=[
+                    NCWithdrawalAction(
+                        token_uid=token_uid, amount=Amount(half_withdrawal)
+                    )
+                ],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=time_after,
+            )
 
             self.runner.call_public_method(
                 self.dozer_tools_nc_id, "staking_unstake", unstake_ctx, token_uid
@@ -1236,7 +1354,11 @@ class DozerToolsTest(BlueprintTestCase):
         user_address, _ = self._get_any_address()
 
         # Try to stake through routing (should fail - no staking contract)
-        stake_context = self.create_context(actions=[NCDepositAction(token_uid=token_uid, amount=Amount(1000_00))], vertex=self._get_any_tx(), caller_id=Address(user_address), timestamp=self.get_current_timestamp()
+        stake_context = self.create_context(
+            actions=[NCDepositAction(token_uid=token_uid, amount=Amount(1000_00))],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=self.get_current_timestamp(),
         )
 
         with self.assertRaises(ProjectNotFound):
@@ -1250,7 +1372,11 @@ class DozerToolsTest(BlueprintTestCase):
         token_uid = self._create_test_project("ViewToken", "VIEW")
 
         tx = self._get_any_tx()
-        context = self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
         )
 
         earnings_per_day = 1500
@@ -1283,7 +1409,12 @@ class DozerToolsTest(BlueprintTestCase):
         stake_amount = 10000_00
         initial_time = self.get_current_timestamp()
 
-        stake_context = self.create_context(actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))], vertex=self._get_any_tx(), caller_id=Address(user_address), timestamp=initial_time,)
+        stake_context = self.create_context(
+            actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=initial_time,
+        )
 
         self.runner.call_public_method(
             self.dozer_tools_nc_id, "staking_stake", stake_context, token_uid
@@ -1291,8 +1422,8 @@ class DozerToolsTest(BlueprintTestCase):
 
         # Check view methods at multiple time points
         time_points = [
-            initial_time + (1 * 24 * 60 * 60),   # 1 day
-            initial_time + (7 * 24 * 60 * 60),   # 7 days
+            initial_time + (1 * 24 * 60 * 60),  # 1 day
+            initial_time + (7 * 24 * 60 * 60),  # 7 days
             initial_time + (30 * 24 * 60 * 60),  # 30 days (at timelock)
             initial_time + (31 * 24 * 60 * 60),  # 31 days (past timelock)
             initial_time + (60 * 24 * 60 * 60),  # 60 days
@@ -1319,7 +1450,9 @@ class DozerToolsTest(BlueprintTestCase):
 
             # Verify consistency
             self.assertEqual(user_info.deposits, stake_amount)
-            self.assertGreaterEqual(max_withdrawal, stake_amount)  # Always at least the deposit
+            self.assertGreaterEqual(
+                max_withdrawal, stake_amount
+            )  # Always at least the deposit
 
             # Verify stats reflect this user's stake
             self.assertEqual(stats.total_staked, stake_amount)

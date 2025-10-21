@@ -16,6 +16,7 @@ from hathor import (
     public,
     view,
     NCActionType,
+    export,
 )
 
 
@@ -95,6 +96,7 @@ class InvalidAllocation(DozerToolsError):
     pass
 
 
+@export
 class DozerTools(Blueprint):
     """Singleton contract for managing token projects with credit-based fee system.
 
@@ -2219,6 +2221,3 @@ class DozerTools(Blueprint):
         ).public(action).routed_claim_refund(
             Address(ctx.caller_id),
         )
-
-
-__blueprint__ = DozerTools
