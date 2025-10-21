@@ -122,7 +122,7 @@ class Stake(Blueprint):
     def _validate_unstake_time(self, ctx: Context, address: Address) -> None:
         """Validate unstaking timelock"""
         if (
-            int(ctx.timestamp)
+            int(ctx.block.timestamp)
             < self.user_stake_timestamp[address] + MIN_PERIOD_DAYS * DAY_IN_SECONDS
         ):
             raise InvalidTime("Staking period not completed")
@@ -166,7 +166,7 @@ class Stake(Blueprint):
 
     def _update_pool(self, ctx: Context):
         """Update pool with fixed-point arithmetic"""
-        now = int(ctx.timestamp)
+        now = int(ctx.block.timestamp)
         if self.last_reward != 0 and now <= self.last_reward:
             return
         if self.total_staked == 0:
@@ -208,6 +208,11 @@ class Stake(Blueprint):
         self.last_reward = 0
         self.rewards_per_share = 0
         self.paused = False
+        # Initialize user tracking dictionaries
+        self.user_deposits = {}
+        self.user_actual_stake = {}
+        self.user_debit = {}
+        self.user_stake_timestamp = {}
         # Set creator_contract_id (for DozerTools routing)
         self.creator_contract_id = creator_contract_id
         self._validate_state()
@@ -279,7 +284,7 @@ class Stake(Blueprint):
             if address not in self.user_deposits:
                 self.user_deposits[address] = Amount(0)
                 self.user_actual_stake[address] = Amount(0)
-            self.user_stake_timestamp[address] = int(ctx.timestamp)
+            self.user_stake_timestamp[address] = int(ctx.block.timestamp)
 
         self._safe_pay(pending, address)
         self.user_deposits[address] = Amount(self.user_deposits[address] + amount)
@@ -515,7 +520,7 @@ class Stake(Blueprint):
             if user_address not in self.user_deposits:
                 self.user_deposits[user_address] = Amount(0)
                 self.user_actual_stake[user_address] = Amount(0)
-            self.user_stake_timestamp[user_address] = int(ctx.timestamp)
+            self.user_stake_timestamp[user_address] = int(ctx.block.timestamp)
 
         self._safe_pay(pending, user_address)
         self.user_deposits[user_address] = Amount(

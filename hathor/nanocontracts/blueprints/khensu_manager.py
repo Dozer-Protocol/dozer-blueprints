@@ -539,7 +539,7 @@ class KhensuManager(Blueprint):
         # Statistics
         self.token_volumes[token_uid] = Amount(0)
         self.token_tx_counts[token_uid] = 0
-        self.token_last_activities[token_uid] = ctx.timestamp
+        self.token_last_activities[token_uid] = ctx.block.timestamp
 
         # Register token in the list
         self.all_tokens.append(token_uid)
@@ -617,7 +617,7 @@ class KhensuManager(Blueprint):
         # Update statistics
         self.token_volumes[token_uid] += action_in.amount
         self.token_tx_counts[token_uid] += 1
-        self.token_last_activities[token_uid] = ctx.timestamp
+        self.token_last_activities[token_uid] = ctx.block.timestamp
 
         # Check migration threshold
         # Only attempt migration if we've reached the target market cap
@@ -675,7 +675,7 @@ class KhensuManager(Blueprint):
         # Update statistics
         self.token_volumes[token_uid] += htr_out
         self.token_tx_counts[token_uid] += 1
-        self.token_last_activities[token_uid] = ctx.timestamp
+        self.token_last_activities[token_uid] = ctx.block.timestamp
 
     @public(allow_withdrawal=True)
     def withdraw_fees(self, ctx: Context) -> None:

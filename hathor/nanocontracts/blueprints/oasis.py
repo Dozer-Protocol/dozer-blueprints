@@ -117,7 +117,7 @@ class Oasis(Blueprint):
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
         token_price_in_htr = deposit_amount * 100 // htr_amount if htr_amount > 0 else 0
         bonus = self._get_user_bonus(timelock, htr_amount)
-        now = ctx.timestamp
+        now = ctx.block.timestamp
         if htr_amount + bonus > self.oasis_htr_balance:
             raise NCFail("Not enough balance")
 
@@ -228,7 +228,7 @@ class Oasis(Blueprint):
             NCFail: If position is still locked or already closed
         """
         # Verify position can be closed
-        if ctx.timestamp < self.user_withdrawal_time.get(ctx.address, 0):
+        if ctx.block.timestamp < self.user_withdrawal_time.get(ctx.address, 0):
             raise NCFail("Position is still locked")
 
         if self.user_position_closed.get(ctx.address, False):
@@ -320,7 +320,7 @@ class Oasis(Blueprint):
             action_htr = self._get_token_action(ctx, NCActionType.WITHDRAWAL, HTR_UID)
 
         # Check if the position is unlocked
-        if ctx.timestamp < self.user_withdrawal_time.get(ctx.address, 0):
+        if ctx.block.timestamp < self.user_withdrawal_time.get(ctx.address, 0):
             raise NCFail("Withdrawal locked")
 
         # For positions that haven't been closed yet, automatically close them first

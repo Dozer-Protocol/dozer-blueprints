@@ -263,7 +263,7 @@ class Vesting(Blueprint):
 
         action = self._get_single_withdrawal_action(ctx, self.token_uid)
 
-        vested = self._calculate_vested_amount(index, Timestamp(ctx.timestamp))
+        vested = self._calculate_vested_amount(index, Timestamp(ctx.block.timestamp))
         withdrawn = self.allocation_withdrawn[index]
         claimable = vested - withdrawn
 
@@ -398,7 +398,7 @@ class Vesting(Blueprint):
 
         action = self._get_single_withdrawal_action(ctx, self.token_uid)
 
-        vested = self._calculate_vested_amount(index, Timestamp(ctx.timestamp))
+        vested = self._calculate_vested_amount(index, Timestamp(ctx.block.timestamp))
         withdrawn = self.allocation_withdrawn[index]
         claimable = vested - withdrawn
 

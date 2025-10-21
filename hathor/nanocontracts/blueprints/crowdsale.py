@@ -313,8 +313,8 @@ class Crowdsale(Blueprint):
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.PENDING:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
-        if ctx.timestamp < self.start_time:
-            self.start_time = Timestamp(ctx.timestamp)
+        if ctx.block.timestamp < self.start_time:
+            self.start_time = Timestamp(ctx.block.timestamp)
 
         self.state = SaleState.ACTIVE
 
@@ -322,7 +322,7 @@ class Crowdsale(Blueprint):
         """Activate the sale (anyone)"""
         if self.state != SaleState.PENDING:
             return
-        if ctx.timestamp >= self.start_time:
+        if ctx.block.timestamp >= self.start_time:
             self.state = SaleState.ACTIVE
 
     def _validate_sale_active(self, ctx: Context) -> None:
@@ -330,9 +330,9 @@ class Crowdsale(Blueprint):
         self._activate_if_started(ctx)
         if self.state != SaleState.ACTIVE:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
-        if ctx.timestamp < self.start_time:
+        if ctx.block.timestamp < self.start_time:
             raise NCFail(CrowdsaleErrors.NOT_STARTED)
-        if ctx.timestamp > self.end_time:
+        if ctx.block.timestamp > self.end_time:
             raise NCFail(CrowdsaleErrors.SALE_ACTIVE)
 
     @public

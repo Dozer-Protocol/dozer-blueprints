@@ -107,7 +107,7 @@ class TokenManager(Blueprint):
 
     def _generate_salt(self, ctx: Context, contract_type: str) -> bytes:
         """Generate a unique salt for contract creation."""
-        return self.main_token + bytes(contract_type, 'utf-8') + bytes(str(ctx.timestamp), 'utf-8')
+        return self.main_token + bytes(contract_type, 'utf-8') + bytes(str(ctx.block.timestamp), 'utf-8')
 
     @public(allow_deposit=True)
     def initialize(

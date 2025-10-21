@@ -131,7 +131,7 @@ class Khensu(Blueprint):
         self.total_supply = INITIAL_TOKEN_RESERVE
         self.total_volume = Amount(0)
         self.transaction_count = 0
-        self.last_activity_timestamp = ctx.timestamp
+        self.last_activity_timestamp = ctx.block.timestamp
 
     def _only_admin(self, ctx: Context) -> None:
         if ctx.address != self.admin_address:
@@ -182,7 +182,7 @@ class Khensu(Blueprint):
             raise NCFail("only token_a and token_b are allowed")
         action_htr = ctx.actions[HTR_UID]
         action_token = ctx.actions[self.token_uid]
-        self.last_activity_timestamp = ctx.timestamp
+        self.last_activity_timestamp = ctx.block.timestamp
         return action_htr, action_token
 
     def _get_action(self, ctx: Context, action_type: NCActionType) -> NCAction:
@@ -269,7 +269,7 @@ class Khensu(Blueprint):
         self.token_reserve -= action_out.amount
         self.total_volume += action_in.amount
         self.transaction_count += 1
-        self.last_activity_timestamp = ctx.timestamp
+        self.last_activity_timestamp = ctx.block.timestamp
 
         # Check migration threshold
         # Only attempt migration if we've reached the target market cap
@@ -309,7 +309,7 @@ class Khensu(Blueprint):
         self.token_reserve += action_in.amount
         self.total_volume += action_in.amount
         self.transaction_count += 1
-        self.last_activity_timestamp = ctx.timestamp
+        self.last_activity_timestamp = ctx.block.timestamp
 
     @public
     def withdraw_fees(self, ctx: Context) -> None:
@@ -378,7 +378,7 @@ class Khensu(Blueprint):
 
             # Create the Dozer pool contract with the required liquidity
             # Generate a unique salt based on the token pair
-            salt = self.token_uid + HTR_UID + bytes(str(ctx.timestamp), 'utf-8')
+            salt = self.token_uid + HTR_UID + bytes(str(ctx.block.timestamp), 'utf-8')
             
             # Prepare token actions for the new pool
             actions = [
@@ -438,7 +438,7 @@ class Khensu(Blueprint):
         self.collected_buy_fees += fee_amount
         self.total_volume += action_in.amount
         self.transaction_count += 1
-        self.last_activity_timestamp = ctx.timestamp
+        self.last_activity_timestamp = ctx.block.timestamp
 
     @public
     def post_migration_sell(self, ctx: Context) -> None:
@@ -474,7 +474,7 @@ class Khensu(Blueprint):
         self.collected_sell_fees += fee_amount
         self.total_volume += action_in.amount
         self.transaction_count += 1
-        self.last_activity_timestamp = ctx.timestamp
+        self.last_activity_timestamp = ctx.block.timestamp
 
     @view
     def quote_buy(self, htr_amount: Amount) -> dict[str, float]:

@@ -166,9 +166,9 @@ class DAO(Blueprint):
         self.proposal_titles[proposal_id] = title
         self.proposal_descriptions[proposal_id] = description
         self.proposal_creators[proposal_id] = ctx.caller_id
-        self.proposal_start_times[proposal_id] = ctx.timestamp
+        self.proposal_start_times[proposal_id] = ctx.block.timestamp
         self.proposal_end_times[proposal_id] = (
-            ctx.timestamp + self.voting_period_seconds
+            ctx.block.timestamp + self.voting_period_seconds
         )
         self.proposal_for_votes[proposal_id] = Amount(0)
         self.proposal_against_votes[proposal_id] = Amount(0)
@@ -184,7 +184,7 @@ class DAO(Blueprint):
         """Cast vote using staking-based voting power."""
         if proposal_id not in self.proposal_titles:
             raise NCFail("Proposal does not exist")
-        if ctx.timestamp >= self.proposal_end_times[proposal_id]:
+        if ctx.block.timestamp >= self.proposal_end_times[proposal_id]:
             raise NCFail("Voting period ended")
 
         vote_key = (proposal_id, ctx.caller_id)
@@ -197,7 +197,7 @@ class DAO(Blueprint):
 
         self.vote_support[vote_key] = support
         self.vote_power[vote_key] = power
-        self.vote_timestamp[vote_key] = ctx.timestamp
+        self.vote_timestamp[vote_key] = ctx.block.timestamp
 
         if support:
             self.proposal_for_votes[proposal_id] = Amount(
@@ -226,7 +226,7 @@ class DAO(Blueprint):
     def _get_voting_power(self, ctx: Context, address: bytes) -> Amount:
         """Get voting power from staking contract."""
         return self.syscall.call_view_method(
-            self.staking_contract, "get_max_withdrawal", address, ctx.timestamp
+            self.staking_contract, "get_max_withdrawal", address, ctx.block.timestamp
         )
 
     def _get_total_staked(self, ctx: Context) -> Amount:
@@ -369,9 +369,9 @@ class DAO(Blueprint):
         self.proposal_titles[proposal_id] = title
         self.proposal_descriptions[proposal_id] = description
         self.proposal_creators[proposal_id] = user_address
-        self.proposal_start_times[proposal_id] = ctx.timestamp
+        self.proposal_start_times[proposal_id] = ctx.block.timestamp
         self.proposal_end_times[proposal_id] = (
-            ctx.timestamp + self.voting_period_seconds
+            ctx.block.timestamp + self.voting_period_seconds
         )
         self.proposal_for_votes[proposal_id] = Amount(0)
         self.proposal_against_votes[proposal_id] = Amount(0)
@@ -391,7 +391,7 @@ class DAO(Blueprint):
 
         if proposal_id not in self.proposal_titles:
             raise NCFail("Proposal does not exist")
-        if ctx.timestamp >= self.proposal_end_times[proposal_id]:
+        if ctx.block.timestamp >= self.proposal_end_times[proposal_id]:
             raise NCFail("Voting period ended")
 
         vote_key = (proposal_id, user_address)
@@ -404,7 +404,7 @@ class DAO(Blueprint):
 
         self.vote_support[vote_key] = support
         self.vote_power[vote_key] = power
-        self.vote_timestamp[vote_key] = ctx.timestamp
+        self.vote_timestamp[vote_key] = ctx.block.timestamp
 
         if support:
             self.proposal_for_votes[proposal_id] = Amount(

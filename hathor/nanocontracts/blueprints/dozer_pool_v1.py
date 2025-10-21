@@ -204,7 +204,7 @@ class Dozer_Pool_v1(Blueprint):
             raise NCFail("only token_a and token_b are allowed")
         action_a = ctx.actions[self.token_a]
         action_b = ctx.actions[self.token_b]
-        self.last_activity_timestamp = ctx.timestamp
+        self.last_activity_timestamp = ctx.block.timestamp
         return action_a, action_b
 
     def _get_actions_in_out(self, ctx: Context) -> tuple[NCAction, NCAction]:

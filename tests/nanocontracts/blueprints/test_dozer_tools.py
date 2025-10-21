@@ -835,7 +835,7 @@ class DozerToolsTest(BlueprintTestCase):
         user_info = self.runner.call_view_method(
             staking_contract_id, "get_user_info", Address(user_address)
         )
-        self.assertEqual(user_info["deposits"], stake_amount)
+        self.assertEqual(user_info.deposits, stake_amount)
 
         # Advance time by 1 day and calculate expected rewards
         one_day_later = initial_time + (24 * 60 * 60)  # 1 day in seconds
@@ -902,10 +902,10 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # At cliff end, no tokens should be vested yet (cliff period just ended)
-        self.assertEqual(vesting_info["vested"], 0)
-        self.assertEqual(vesting_info["claimable"], 0)
-        self.assertEqual(vesting_info["beneficiary"], self.dev_address)
-        self.assertEqual(vesting_info["name"], "Team")
+        self.assertEqual(vesting_info.vested, 0)
+        self.assertEqual(vesting_info.claimable, 0)
+        self.assertEqual(vesting_info.beneficiary, self.dev_address.hex())
+        self.assertEqual(vesting_info.name, "Team")
 
         # Check vesting info 1 month after cliff (should have some vested tokens)
         one_month_after_cliff = after_cliff_time + month_in_seconds
@@ -918,12 +918,12 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Calculate expected vested amount (1 month out of 36 months vesting)
-        total_team_allocation = vesting_info_after["amount"]  # 70% of total supply
+        total_team_allocation = vesting_info_after.amount  # 70% of total supply
         expected_monthly_vesting = total_team_allocation // vesting_months
 
-        self.assertEqual(vesting_info_after["vested"], expected_monthly_vesting)
-        self.assertEqual(vesting_info_after["claimable"], expected_monthly_vesting)
-        self.assertEqual(vesting_info_after["withdrawn"], 0)
+        self.assertEqual(vesting_info_after.vested, expected_monthly_vesting)
+        self.assertEqual(vesting_info_after.claimable, expected_monthly_vesting)
+        self.assertEqual(vesting_info_after.withdrawn, 0)
 
         # Check vesting info 6 months after cliff
         six_months_after_cliff = after_cliff_time + (6 * month_in_seconds)
@@ -937,9 +937,9 @@ class DozerToolsTest(BlueprintTestCase):
 
         expected_six_months_vesting = (total_team_allocation * 6) // vesting_months
 
-        self.assertEqual(vesting_info_six_months["vested"], expected_six_months_vesting)
+        self.assertEqual(vesting_info_six_months.vested, expected_six_months_vesting)
         self.assertEqual(
-            vesting_info_six_months["claimable"], expected_six_months_vesting
+            vesting_info_six_months.claimable, expected_six_months_vesting
         )
 
     def test_invalid_allocation_percentages(self) -> None:
@@ -1019,7 +1019,7 @@ class DozerToolsTest(BlueprintTestCase):
         user_info = self.runner.call_view_method(
             staking_contract_id, "get_user_info", Address(user_address)
         )
-        self.assertEqual(user_info["deposits"], stake_amount)
+        self.assertEqual(user_info.deposits, stake_amount)
 
     def test_staking_unstake_routing_with_view_methods(self) -> None:
         """Test complete staking workflow through DozerTools with view methods."""
@@ -1091,7 +1091,7 @@ class DozerToolsTest(BlueprintTestCase):
         user_info = self.runner.call_view_method(
             staking_contract_id, "get_user_info", Address(user_address)
         )
-        self.assertEqual(user_info["deposits"], 0)
+        self.assertEqual(user_info.deposits, 0)
 
     def test_routed_methods_authorization(self) -> None:
         """Test that only DozerTools can call routed_stake/routed_unstake."""
@@ -1129,14 +1129,12 @@ class DozerToolsTest(BlueprintTestCase):
         # Try to call routed_stake directly (should fail - only DozerTools can call it)
         user_address, _ = self._get_any_address()
 
-        # Import the Unauthorized exception from stake contract
-        from hathor.nanocontracts.blueprints.stake import Unauthorized
-
         direct_stake_context = self.create_context(actions=[NCDepositAction(token_uid=token_uid, amount=Amount(1000_00))], vertex=self._get_any_tx(), caller_id=Address(user_address), timestamp=self.get_current_timestamp()
         )
 
         # Direct call to routed_stake should fail
-        with self.assertRaises(Unauthorized):
+        from hathor.nanocontracts.exception import NCFail
+        with self.assertRaises(NCFail):
             self.runner.call_public_method(
                 staking_contract_id,
                 "routed_stake",
@@ -1202,7 +1200,7 @@ class DozerToolsTest(BlueprintTestCase):
             user_info = self.runner.call_view_method(
                 staking_contract_id, "get_user_info", Address(user_addr)
             )
-            self.assertEqual(user_info["deposits"], stake_amounts[i])
+            self.assertEqual(user_info.deposits, stake_amounts[i])
 
             # Get max withdrawal
             max_withdrawal = self.runner.call_view_method(
@@ -1227,8 +1225,8 @@ class DozerToolsTest(BlueprintTestCase):
             user_info_after = self.runner.call_view_method(
                 staking_contract_id, "get_user_info", Address(user_addr)
             )
-            self.assertLess(user_info_after["deposits"], stake_amounts[i])
-            self.assertGreater(user_info_after["deposits"], 0)
+            self.assertLess(user_info_after.deposits, stake_amounts[i])
+            self.assertGreater(user_info_after.deposits, 0)
 
     def test_staking_routing_with_nonexistent_contract(self) -> None:
         """Test routing methods fail gracefully when staking contract doesn't exist."""
@@ -1316,15 +1314,15 @@ class DozerToolsTest(BlueprintTestCase):
 
             # Get staking stats
             stats = self.runner.call_view_method(
-                staking_contract_id, "get_staking_stats", time_point
+                staking_contract_id, "get_staking_stats"
             )
 
             # Verify consistency
-            self.assertEqual(user_info["deposits"], stake_amount)
+            self.assertEqual(user_info.deposits, stake_amount)
             self.assertGreaterEqual(max_withdrawal, stake_amount)  # Always at least the deposit
 
             # Verify stats reflect this user's stake
-            self.assertEqual(stats["total_staked"], stake_amount)
+            self.assertEqual(stats.total_staked, stake_amount)
 
 
 if __name__ == "__main__":
