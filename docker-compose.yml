@@ -11,13 +11,6 @@ services:
       # - ./.git:/app/.git
 
     # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_rewards.py"] # with stdout
-    command: [
-        "poetry",
-        "run",
-        "pytest",
-        "--capture=no",
-        "--disable-warnings",
-        "-qq", # quiet mode
-        "--tb=short", # shorter traceback
-        "tests/nanocontracts/blueprints/test_dozer_pool_manager.py",
-      ]
+    command: >
+      bash -c
+        "poetry run pytest --capture=no -s --disable-warnings --tb=short --color=yes tests/nanocontracts/blueprints/test_dozer_pool_manager.py && poetry run hathor-cli check-blueprint --file hathor/nanocontracts/blueprints/dozer_pool_manager.py"

@@ -217,7 +217,7 @@ class DozerPoolManager(Blueprint):
     default_fee: Amount
     default_protocol_fee: Amount
     authorized_signers: dict[CallerId, bool]  # Addresses authorized to sign pools
-    htr_usd_pool_key: str  # Reference pool key for HTR-USD price calculations
+    htr_usd_pool_key: str | None  # Reference pool key for HTR-USD price calculations
 
     # Pool registry - token_a/token_b/fee -> exists
     pool_exists: dict[str, bool]
@@ -316,8 +316,8 @@ class DozerPoolManager(Blueprint):
         # Add owner as authorized signer
         self.authorized_signers[self.owner] = True
 
-        # Initialize htr_usd_pool_key to empty string
-        self.htr_usd_pool_key = ""
+        # Initialize htr_usd_pool_key to None
+        self.htr_usd_pool_key = None
 
     def _get_pool_key(self, token_a: TokenUid, token_b: TokenUid, fee: Amount) -> str:
         """Create a standardized pool key from tokens and fee.
@@ -644,7 +644,7 @@ class DozerPoolManager(Blueprint):
         b = fee_denominator
         amount_out = (reserve_out * amount_in * a) // (reserve_in * b + amount_in * a)
         if amount_out > reserve_out:
-            amount_out = reserve_out**0.99
+            amount_out = (reserve_out * 99) // 100
         return Amount(amount_out)
 
     @view
@@ -3240,8 +3240,8 @@ class DozerPoolManager(Blueprint):
         
         # Calculate cumulative price using reserve ratios with integer precision
         # We want TOKEN_A price in USD, so we calculate in reverse direction
-        # Start with 1.0 
-        final_price = 1.0
+        # Start with 1
+        final_price = int(1)
         current_token = token  # Start from TOKEN_A
         
         # Iterate through pools in reverse order (TOKEN_A → USD direction)
@@ -3265,8 +3265,8 @@ class DozerPoolManager(Blueprint):
             
             # Calculate spot price for this hop: reserve_out / reserve_in
             # This gives us "how much of next_token per current_token"
-            hop_price = reserve_out / reserve_in
-            final_price = final_price * hop_price
+            # hop_price = reserve_out / reserve_in
+            final_price = (final_price * reserve_out) // reserve_in
             
             # Move to next token in the path
             current_token = next_token
@@ -4406,5 +4406,3 @@ class DozerPoolManager(Blueprint):
 
         # Round up
         return Amount(numerator // denominator)
-
-__blueprint__ = DozerPoolManager
