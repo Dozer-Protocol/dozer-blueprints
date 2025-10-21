@@ -211,7 +211,7 @@ class DozerTools(Blueprint):
                     "Not authorized to create project for this legacy token"
                 )
 
-    def _charge_fee(self, ctx: Context, token_uid: TokenUid, method_name: str) -> None:
+    def _charge_fee(self, _ctx: Context, token_uid: TokenUid, method_name: str) -> None:
         """Charge fee from project balance (DZR preferred over HTR)."""
         if not self.project_exists.get(token_uid, False):
             raise ProjectNotFound("Project does not exist")
@@ -269,16 +269,55 @@ class DozerTools(Blueprint):
         self.dao_blueprint_id = null_blueprint
         self.crowdsale_blueprint_id = null_blueprint
 
-        # Initialize all fees to 0 (free initially)
-        # self.method_fees_htr = {}
-        # self.method_fees_dzr = {}
+        # Initialize legacy permissions and blacklist
+        self.legacy_token_permissions = {}
+        self.blacklisted_tokens = {}
 
-        # Initialize project counter
+        # Initialize project registry
+        self.project_exists = {}
+        self.all_projects = []
         self.total_projects_count = 0
+        self.used_symbols = {}
 
-        # Initialize used symbols registry
-        # This dictionary tracks all symbols that have ever been used
-        # Once a symbol is used, it cannot be reused even after project cancellation
+        # Initialize project metadata
+        self.project_name = {}
+        self.project_symbol = {}
+        self.project_dev = {}
+        self.project_created_at = {}
+        self.project_total_supply = {}
+        self.project_description = {}
+        self.project_website = {}
+        self.project_logo_url = {}
+        self.project_twitter = {}
+        self.project_telegram = {}
+        self.project_discord = {}
+        self.project_github = {}
+        self.project_category = {}
+        self.project_whitepaper_url = {}
+
+        # Initialize project credit balances
+        self.project_htr_balance = {}
+        self.project_dzr_balance = {}
+
+        # Initialize all fees to 0 (free initially)
+        self.method_fees_htr = {}
+        self.method_fees_dzr = {}
+
+        # Initialize contract registries
+        self.project_vesting_contract = {}
+        self.project_staking_contract = {}
+        self.project_dao_contract = {}
+        self.project_crowdsale_contract = {}
+        self.project_pools = {}
+
+        # Initialize allocation percentages
+        self.project_staking_percentage = {}
+        self.project_public_sale_percentage = {}
+        self.project_dozer_pool_percentage = {}
+
+        # Initialize configuration flags
+        self.project_vesting_configured = {}
+        self.project_melt_authority_acquired = {}
 
     @public(allow_deposit=True, allow_acquire_authority=True)
     def create_project(
@@ -343,12 +382,12 @@ class DozerTools(Blueprint):
             )
 
         # Create the token
-        token_uid = self.syscall.create_token(  # type: ignore[attr-defined]
-            token_name,
-            token_symbol,
-            total_supply,
-            True,  # mint_authority
-            True,  # melt_authority
+        token_uid = self.syscall.create_deposit_token(
+            token_name=token_name,
+            token_symbol=token_symbol,
+            amount=total_supply,
+            mint_authority=True,
+            melt_authority=True,
         )
 
         # Validate token permissions for legacy tokens
@@ -765,7 +804,7 @@ class DozerTools(Blueprint):
         return self._create_liquidity_pool(ctx, token_uid, htr_amount, fee)
 
     def _create_liquidity_pool(
-        self, ctx: Context, token_uid: TokenUid, htr_amount: Amount, fee: Amount
+        self, _ctx: Context, token_uid: TokenUid, htr_amount: Amount, fee: Amount
     ) -> str:
         """Helper method to create liquidity pool with tokens from vesting."""
         vesting_contract = self.project_vesting_contract[token_uid]
@@ -821,8 +860,8 @@ class DozerTools(Blueprint):
         if not self.syscall.can_melt(token_uid):
             raise Unauthorized("Contract does not have melt authority for this token")
 
-        # Get project dev address
-        dev_address = self.project_dev[token_uid]
+        # Get project dev address (verified in _only_project_dev)
+        _dev_address = self.project_dev[token_uid]
 
         action = ctx.get_single_action(token_uid)
         if isinstance(action, NCAcquireAuthorityAction):
@@ -1488,7 +1527,7 @@ class DozerTools(Blueprint):
             }
 
         vesting_contract = self.project_vesting_contract[token_uid]
-        current_timestamp = 0  # In real usage, this would be ctx.timestamp
+        _current_timestamp = 0  # In real usage, this would be ctx.timestamp
 
         # Get base vesting information for special allocations
         overview = {
@@ -1822,7 +1861,7 @@ class DozerTools(Blueprint):
                     allocation_names[i],
                 )
 
-    def _start_vesting(self, ctx: Context, token_uid: TokenUid) -> None:
+    def _start_vesting(self, _ctx: Context, token_uid: TokenUid) -> None:
         """Start the vesting schedule."""
         vesting_contract = self.project_vesting_contract[token_uid]
         self.syscall.get_contract(

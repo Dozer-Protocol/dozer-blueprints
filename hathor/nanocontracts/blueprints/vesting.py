@@ -188,6 +188,18 @@ class Vesting(Blueprint):
         # Set creator_contract_id (for DozerTools routing)
         self.creator_contract_id = creator_contract_id
 
+        # Initialize vesting_start as 0 (will be set when start_vesting is called)
+        self.vesting_start = Timestamp(0)
+
+        # Initialize configuration dictionaries
+        self.is_configured = {}
+        self.allocation_names = {}
+        self.allocation_amounts = {}
+        self.allocation_addresses = {}
+        self.allocation_cliffs = {}
+        self.allocation_durations = {}
+        self.allocation_withdrawn = {}
+
     @public
     def configure_vesting(
         self,
@@ -232,7 +244,7 @@ class Vesting(Blueprint):
             raise NCFail("Vesting already started")
 
         self.is_started = True
-        self.vesting_start = Timestamp(ctx.timestamp)
+        self.vesting_start = Timestamp(ctx.block.timestamp)
 
     @public(allow_withdrawal=True)
     def claim_allocation(self, ctx: Context, index: int) -> None:
