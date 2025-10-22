@@ -14,6 +14,7 @@ from hathor import (
     NCActionType,
     NCDepositAction,
     NCWithdrawalAction,
+
     export,
     public,
     view,
@@ -24,7 +25,6 @@ PRECISION = 10**20
 PRICE_PRECISION = 10**8  # For decimal price handling (8 decimal places)
 MONTHS_IN_SECONDS = 60
 HTR_UID = TokenUid(b'\x00')
-
 
 class OasisUserInfo(NamedTuple):
     """Detailed information about a user's position in the Oasis contract."""
@@ -376,7 +376,10 @@ class Oasis(Blueprint):
 
         # Clear user cashback balances after moving them
         if user_token_b_balance > 0 or user_htr_current_balance > 0:
-            self.user_balances[Address(ctx.caller_id)] = {TokenUid(HTR_UID): Amount(0), self.token_b: Amount(0)}
+            user_balance = self.user_balances.get(Address(ctx.caller_id), {})
+            user_balance[TokenUid(HTR_UID)] = Amount(0)
+            user_balance[self.token_b] = Amount(0)
+            self.user_balances[Address(ctx.caller_id)] = user_balance
 
         # Mark position as closed
         self.user_position_closed[Address(ctx.caller_id)] = True
@@ -639,24 +642,34 @@ class Oasis(Blueprint):
         address: Address,
     ) -> OasisUserInfo:
         remove_liquidity_oasis_quote = self.get_remove_liquidity_oasis_quote(address)
+
+        # Safely access nested dicts using 'in' check to avoid state changes
+        user_balance_a = 0
+        if address in self.user_balances:
+            user_balance_a = self.user_balances[address].get(HTR_UID, 0)
+
+        user_balance_b = 0
+        if address in self.user_balances:
+            user_balance_b = self.user_balances[address].get(self.token_b, 0)
+
+        closed_balance_a = 0
+        if address in self.closed_position_balances:
+            closed_balance_a = self.closed_position_balances[address].get(HTR_UID, 0)
+
+        closed_balance_b = 0
+        if address in self.closed_position_balances:
+            closed_balance_b = self.closed_position_balances[address].get(self.token_b, 0)
+
         return OasisUserInfo(
             user_deposit_b=Amount(self.user_deposit_b.get(address, 0)),
             user_liquidity=Amount(self.user_liquidity.get(address, 0)),
             user_withdrawal_time=self.user_withdrawal_time.get(address, 0),
             oasis_htr_balance=self.oasis_htr_balance,
             total_liquidity=self.total_liquidity,
-            user_balance_a=Amount(self.user_balances.get(address, {HTR_UID: 0}).get(
-                HTR_UID, 0
-            )),
-            user_balance_b=Amount(self.user_balances.get(address, {self.token_b: 0}).get(
-                self.token_b, 0
-            )),
-            closed_balance_a=Amount(self.closed_position_balances.get(
-                address, {HTR_UID: 0}
-            ).get(HTR_UID, 0)),
-            closed_balance_b=Amount(self.closed_position_balances.get(
-                address, {self.token_b: 0}
-            ).get(self.token_b, 0)),
+            user_balance_a=Amount(user_balance_a),
+            user_balance_b=Amount(user_balance_b),
+            closed_balance_a=Amount(closed_balance_a),
+            closed_balance_b=Amount(closed_balance_b),
             user_lp_b=Amount(remove_liquidity_oasis_quote.user_lp_b),
             user_lp_htr=Amount(remove_liquidity_oasis_quote.user_lp_htr),
             max_withdraw_b=Amount(remove_liquidity_oasis_quote.max_withdraw_b),

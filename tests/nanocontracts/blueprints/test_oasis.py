@@ -4,6 +4,7 @@ from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprints.dozer_pool_manager import  DozerPoolManager
 from hathor.nanocontracts.blueprints.oasis import Oasis
 from hathor.nanocontracts.types import Address, NCAction, NCActionType, NCDepositAction, NCWithdrawalAction, Amount, TokenUid
+from hathor.transaction.token_info import TokenVersion
 from hathor.util import not_none
 from hathor.conf import HathorSettings
 from hathor.wallet import KeyPair
@@ -39,6 +40,9 @@ class OasisTestCase(BlueprintTestCase):
         self.dev_address = self._get_any_address()[0]
         self.owner_address = self._get_any_address()[0]
         self.token_b = self.gen_random_token_uid()
+        self.create_token(
+            self.token_b, "token_b", "TKB", TokenVersion.DEPOSIT
+        )
         self.usd_token = self.gen_random_token_uid()  # USD stablecoin for HTR-USD reference pool
         self.pool_fee = Amount(3)  # 0.3% default fee
         # Initialize base tx for contexts
@@ -166,7 +170,9 @@ class OasisTestCase(BlueprintTestCase):
             protocol_fee,
         )
         self.oasis_storage = self.runner.get_storage(self.oasis_id)
-        # self.assertIsNone(self.oasis_storage.get("dozer_pool"))
+        contract = self.get_readonly_contract(self.oasis_id)
+        assert isinstance(contract, Oasis)
+        self.assertIsNotNone(contract.dozer_pool_manager)
 
     def initialize_pool_manager(self) -> None:
         """Initialize the DozerPoolManager and set up HTR-USD reference pool"""

@@ -3097,7 +3097,7 @@ class DozerPoolManager(Blueprint):
         return self.htr_usd_pool_key
 
     @view
-    def get_user_pools(self, address: Address) -> list[str]:
+    def get_user_pools(self, address: CallerId) -> list[str]:
         """Get all pools where a user has liquidity.
 
         Args:
@@ -3116,7 +3116,7 @@ class DozerPoolManager(Blueprint):
         return user_pools
 
     @view
-    def get_user_positions(self, address: Address) -> dict[str, UserPosition]:
+    def get_user_positions(self, address: CallerId) -> dict[str, UserPosition]:
         """Get detailed information about all user positions across pools.
 
         Args:
@@ -3398,7 +3398,7 @@ class DozerPoolManager(Blueprint):
     @view
     def liquidity_of(
         self,
-        address: Address,
+        address: CallerId,
         pool_key: str,
     ) -> Amount:
         """Get the liquidity of an address in a specific pool.
@@ -3422,7 +3422,7 @@ class DozerPoolManager(Blueprint):
     @view
     def balance_of(
         self,
-        address: Address,
+        address: CallerId,
         pool_key: str,
     ) -> tuple[Amount, Amount]:
         """Get the balance of an address in a specific pool.
@@ -3555,26 +3555,33 @@ class DozerPoolManager(Blueprint):
         """
         self._validate_pool_exists(pool_key)
 
-        liquidity = self.pool_user_liquidity[pool_key].get(address, 0)
-        balance_a = self.pool_balance_a.get(pool_key, {}).get(address, 0)
-        balance_b = self.pool_balance_b.get(pool_key, {}).get(address, 0)
+        # Safely access nested dicts using 'in' check to avoid state changes
+        liquidity = 0
+        if pool_key in self.pool_user_liquidity:
+            liquidity = self.pool_user_liquidity[pool_key].get(address, 0)
+
+        balance_a = 0
+        if pool_key in self.pool_balance_a:
+            balance_a = self.pool_balance_a[pool_key].get(address, 0)
+
+        balance_b = 0
+        if pool_key in self.pool_balance_b:
+            balance_b = self.pool_balance_b[pool_key].get(address, 0)
 
         # Calculate share
         share = 0
-        if self.pool_total_liquidity[pool_key] > 0:
-            share = liquidity * 100 // self.pool_total_liquidity[pool_key]
+        total_liquidity = self.pool_total_liquidity.get(pool_key, 0)
+        if total_liquidity > 0:
+            share = liquidity * 100 // total_liquidity
 
         # Calculate token amounts based on share
-        token_a_amount = (
-            self.pool_reserve_a[pool_key]
-            * liquidity
-            // self.pool_total_liquidity[pool_key]
-        )
-        token_b_amount = (
-            self.pool_reserve_b[pool_key]
-            * liquidity
-            // self.pool_total_liquidity[pool_key]
-        )
+        reserve_a = self.pool_reserve_a.get(pool_key, 0)
+        reserve_b = self.pool_reserve_b.get(pool_key, 0)
+        token_a_amount = 0
+        token_b_amount = 0
+        if total_liquidity > 0:
+            token_a_amount = reserve_a * liquidity // total_liquidity
+            token_b_amount = reserve_b * liquidity // total_liquidity
 
         return UserInfo(
             liquidity=Amount(liquidity),
