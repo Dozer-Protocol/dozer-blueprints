@@ -1175,3 +1175,205 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(new_balance_b, 0)
 
         self._check_balance()
+
+    def test_token_price_calculation(self):
+        """Test token price calculation in USD and HTR"""
+        # Create HTR-USD pool
+        # Let's say 1 HTR = 10 USD (for easier math)
+        # Reserve: 1000 HTR, 10000 USD
+        htr_token = HTR_UID
+        usd_token = self.token_a  # token_a will be our USD token
+
+        htr_usd_pool_key, _ = self._create_pool(
+            htr_token, usd_token, fee=3, reserve_a=1000_00, reserve_b=10000_00
+        )
+
+        # Create HTR-TOKEN_B pool
+        # Let's say 1 HTR = 5 TOKEN_B
+        # Reserve: 2000 HTR, 10000 TOKEN_B
+        htr_token_b_pool_key, _ = self._create_pool(
+            htr_token, self.token_b, fee=3, reserve_a=2000_00, reserve_b=10000_00
+        )
+
+        # Set the HTR-USD pool as reference
+        tx = self._get_any_tx()
+        owner_context = self.create_context(
+            [], tx, Address(self.owner_address), timestamp=self.get_current_timestamp()
+        )
+
+        self.runner.call_public_method(
+            self.nc_id, "set_htr_usd_pool", owner_context, htr_token, usd_token, 3
+        )
+
+        # Debug: Check if pathfinding works
+        swap_path = self.runner.call_view_method(
+            self.nc_id, "find_best_swap_path", 100_00, usd_token, self.token_b, 3
+        )
+        # logger.error(f"Swap path from USD to TOKEN_B: {swap_path}")
+
+        # Verify HTR-USD pool was set
+        htr_usd_pool = self.runner.call_view_method(self.nc_id, "get_htr_usd_pool")
+        self.assertEqual(htr_usd_pool, htr_usd_pool_key)
+
+        # Test 1: Get USD token price (should always be 1.00)
+        usd_price = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_usd", usd_token
+        )
+        self.assertEqual(usd_price, 100_000000)  # 1.00 with 8 decimal places
+
+        # Test 2: Get HTR price in USD
+        # Based on reserves: 1000 HTR / 10000 USD = 0.1 HTR per USD
+        # So 1 HTR = 10 USD
+        htr_price_usd = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_usd", htr_token
+        )
+        # Expected: 10.00 USD with 8 decimal places = 1000_000000
+        self.assertGreater(htr_price_usd, 0)
+        # Allow for small rounding differences
+        self.assertAlmostEqual(htr_price_usd, 1000_000000, delta=10_000000)
+
+        # Test 3: Get TOKEN_B price in USD
+        # 1 HTR = 10 USD (from HTR-USD pool)
+        # 1 HTR = 5 TOKEN_B (from HTR-TOKEN_B pool)
+        # Therefore: 1 TOKEN_B = 10 USD / 5 = 2 USD
+        token_b_price_usd = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_usd", self.token_b
+        )
+        # Expected: 2.00 USD with 8 decimal places = 200_000000
+        self.assertGreater(token_b_price_usd, 0)
+        # Allow for small rounding differences
+        self.assertAlmostEqual(token_b_price_usd, 200_000000, delta=20_000000)
+
+        # Test 4: Get HTR price in HTR (should always be 1.00)
+        htr_price_htr = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_htr", htr_token
+        )
+        self.assertEqual(htr_price_htr, 100_000000)  # 1.00 with 8 decimal places
+
+        # Test 5: Get TOKEN_B price in HTR
+        # 1 HTR = 5 TOKEN_B, so 1 TOKEN_B = 0.2 HTR
+        token_b_price_htr = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_htr", self.token_b
+        )
+        # Expected: 0.20 HTR with 8 decimal places = 20_000000
+        self.assertGreater(token_b_price_htr, 0)
+        # Allow for small rounding differences
+        self.assertAlmostEqual(token_b_price_htr, 20_000000, delta=2_000000)
+
+        # Test 6: Get all token prices in USD
+        all_prices_usd = self.runner.call_view_method(
+            self.nc_id, "get_all_token_prices_in_usd"
+        )
+        self.assertIsInstance(all_prices_usd, dict)
+        self.assertIn(usd_token.hex(), all_prices_usd)
+        self.assertIn(htr_token.hex(), all_prices_usd)
+        self.assertIn(self.token_b.hex(), all_prices_usd)
+
+        # Test 7: Get all token prices in HTR
+        all_prices_htr = self.runner.call_view_method(
+            self.nc_id, "get_all_token_prices_in_htr"
+        )
+        self.assertIsInstance(all_prices_htr, dict)
+        self.assertIn(htr_token.hex(), all_prices_htr)
+        self.assertIn(self.token_b.hex(), all_prices_htr)
+        self.assertEqual(all_prices_htr[htr_token.hex()], 100_000000)
+
+        self._check_balance()
+
+    def test_token_price_with_multi_hop_path(self):
+        """Test token price calculation with multi-hop paths"""
+        # Create HTR-USD pool
+        # 1 HTR = 10 USD
+        htr_token = HTR_UID
+        usd_token = self.token_a
+
+        htr_usd_pool_key, _ = self._create_pool(
+            htr_token, usd_token, fee=3, reserve_a=1000_00, reserve_b=10000_00
+        )
+
+        # Create HTR-TOKEN_B pool
+        # 1 HTR = 5 TOKEN_B
+        _htr_token_b_pool_key, _ = self._create_pool(
+            htr_token, self.token_b, fee=3, reserve_a=2000_00, reserve_b=10000_00
+        )
+
+        # Create TOKEN_B-TOKEN_C pool
+        # 1 TOKEN_B = 2 TOKEN_C
+        _token_b_c_pool_key, _ = self._create_pool(
+            self.token_b, self.token_c, fee=3, reserve_a=5000_00, reserve_b=10000_00
+        )
+
+        # Set the HTR-USD pool as reference
+        tx = self._get_any_tx()
+        owner_context = self.create_context(
+            [], tx, Address(self.owner_address), timestamp=self.get_current_timestamp()
+        )
+
+        self.runner.call_public_method(
+            self.nc_id, "set_htr_usd_pool", owner_context, htr_token, usd_token, 3
+        )
+
+        # Test TOKEN_C price in USD
+        # Path: TOKEN_C -> TOKEN_B -> HTR -> USD
+        # 1 TOKEN_C = 0.5 TOKEN_B (from TOKEN_B-TOKEN_C pool)
+        # 1 TOKEN_B = 0.2 HTR (from HTR-TOKEN_B pool, since 1 HTR = 5 TOKEN_B)
+        # 1 HTR = 10 USD (from HTR-USD pool)
+        # Therefore: 1 TOKEN_C = 0.5 * 0.2 * 10 = 1 USD
+        token_c_price_usd = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_usd", self.token_c
+        )
+
+        # Expected: 1.00 USD with 8 decimal places = 100_000000
+        self.assertGreater(token_c_price_usd, 0)
+        # Allow for small rounding differences
+        self.assertAlmostEqual(token_c_price_usd, 100_000000, delta=10_000000)
+
+        # Test TOKEN_C price in HTR
+        # 1 TOKEN_C = 0.5 TOKEN_B (from TOKEN_B-TOKEN_C pool)
+        # 1 TOKEN_B = 0.2 HTR (from HTR-TOKEN_B pool)
+        # Therefore: 1 TOKEN_C = 0.5 * 0.2 = 0.1 HTR
+        token_c_price_htr = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_htr", self.token_c
+        )
+
+        # Expected: 0.10 HTR with 8 decimal places = 10_000000
+        self.assertGreater(token_c_price_htr, 0)
+        # Allow for small rounding differences
+        self.assertAlmostEqual(token_c_price_htr, 10_000000, delta=1_000000)
+
+        self._check_balance()
+
+    def test_token_price_without_htr_usd_pool(self):
+        """Test token price calculation when HTR-USD pool is not set"""
+        # Create some pools but don't set HTR-USD pool
+        htr_token = HTR_UID
+
+        _pool_key, _ = self._create_pool(
+            htr_token, self.token_b, fee=3, reserve_a=2000_00, reserve_b=10000_00
+        )
+
+        # Without HTR-USD pool set, prices should return 0
+        token_b_price_usd = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_usd", self.token_b
+        )
+        self.assertEqual(token_b_price_usd, 0)
+
+        # All prices dict should be empty
+        all_prices_usd = self.runner.call_view_method(
+            self.nc_id, "get_all_token_prices_in_usd"
+        )
+        self.assertEqual(all_prices_usd, {})
+
+        # HTR price in HTR should still be 1.00
+        htr_price_htr = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_htr", htr_token
+        )
+        self.assertEqual(htr_price_htr, 100_000000)
+
+        # TOKEN_B price in HTR should be 0 (no HTR-USD pool to derive USD price)
+        token_b_price_htr = self.runner.call_view_method(
+            self.nc_id, "get_token_price_in_htr", self.token_b
+        )
+        self.assertEqual(token_b_price_htr, 0)
+
+        self._check_balance()

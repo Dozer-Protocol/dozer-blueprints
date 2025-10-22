@@ -3241,7 +3241,7 @@ class DozerPoolManager(Blueprint):
         # Calculate cumulative price using reserve ratios with integer precision
         # We want TOKEN_A price in USD, so we calculate in reverse direction
         # Start with 1
-        final_price = int(1)
+        final_price = 1_00000000  # 1 with 8 decimal places
         current_token = token  # Start from TOKEN_A
         
         # Iterate through pools in reverse order (TOKEN_A → USD direction)
@@ -3271,8 +3271,7 @@ class DozerPoolManager(Blueprint):
             # Move to next token in the path
             current_token = next_token
         
-        # Convert final price to integer with 8 decimal places
-        result = Amount(int(final_price * 100_000000))
+        result = Amount(final_price)
         return result
 
     @view
