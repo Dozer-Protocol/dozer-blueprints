@@ -1,24 +1,68 @@
-from typing import Optional
+from typing import NamedTuple
 
-from hathor.conf.get_settings import HathorSettings
-from hathor.nanocontracts.blueprint import Blueprint
-from hathor.nanocontracts.context import Context
-from hathor.nanocontracts.exception import NCFail
-from hathor.nanocontracts.types import (
+from hathor import (
     Address,
     Amount,
+    Blueprint,
+    Context,
+    ContractId,
+    NCDepositAction,
+    NCFail,
+    NCWithdrawalAction,
     TokenUid,
     Timestamp,
-    NCDepositAction,
-    NCWithdrawalAction,
+    export,
     public,
     view,
 )
 
 # Constants
-HTR_UID = HathorSettings().HATHOR_TOKEN_UID
+HTR_UID = b"\x00"
 MIN_PLATFORM_FEE = 100  # 1%
 MAX_PLATFORM_FEE = 1000  # 10%
+
+
+class CrowdsaleSaleInfo(NamedTuple):
+    """General sale information."""
+
+    token_uid: str
+    rate: int
+    soft_cap: int
+    hard_cap: int
+    total_raised: int
+    total_sold: int
+    state: int
+    start_time: int
+    end_time: int
+    participants: int
+
+
+class CrowdsaleParticipantInfo(NamedTuple):
+    """Participant-specific information."""
+
+    deposited: int
+    tokens_due: int
+    has_claimed: bool
+
+
+class CrowdsaleSaleProgress(NamedTuple):
+    """Current sale progress metrics."""
+
+    percent_filled: int
+    percent_soft_cap: int
+    is_successful: bool
+
+
+class CrowdsaleWithdrawalInfo(NamedTuple):
+    """Withdrawal-related information."""
+
+    total_raised: int
+    platform_fees: int
+    withdrawable: int
+    is_withdrawn: bool
+    can_withdraw: bool
+
+
 BASIS_POINTS = 10000  # For fee calculations
 
 
@@ -45,7 +89,7 @@ class CrowdsaleErrors:
     ALREADY_CLAIMED = "Already claimed"
     INVALID_TOKEN = "Invalid token"
 
-
+@export
 class Crowdsale(Blueprint):
     """Blueprint for token sales with platform fees and protection mechanisms."""
 
@@ -72,6 +116,7 @@ class Crowdsale(Blueprint):
     # Access control
     owner: bytes  # Project owner
     platform: Address  # Platform fee recipient
+    creator_contract_id: ContractId  # DozerTools contract that created this
 
     # Participant tracking
     deposits: dict[Address, Amount]  # HTR deposits per address
@@ -94,6 +139,7 @@ class Crowdsale(Blueprint):
         start_time: Timestamp,
         end_time: Timestamp,
         platform_fee: Amount,
+        creator_contract_id: ContractId,
     ) -> None:
         """Initialize the sale contract with configuration parameters."""
         # Validate parameters
@@ -138,8 +184,14 @@ class Crowdsale(Blueprint):
         self.owner = ctx.caller_id
         self.platform = Address(ctx.caller_id)  # TODO: Configure platform address
 
-        # Initialize tracking
-        # Note: deposits and claimed dictionaries are automatically initialized as empty
+        # Set creator_contract_id (for DozerTools routing)
+        self.creator_contract_id = creator_contract_id
+
+        # Initialize tracking dictionaries
+        self.deposits = {}
+        self.claimed = {}
+
+        # Initialize withdrawal tracking
         self.owner_withdrawn = False
         self.platform_fees_withdrawn = False
         self.platform_fees_collected = Amount(0)
@@ -242,7 +294,7 @@ class Crowdsale(Blueprint):
     @public(allow_withdrawal=True)
     def withdraw_raised_htr(self, ctx: Context) -> None:
         """Withdraw raised HTR after successful sale."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -268,7 +320,7 @@ class Crowdsale(Blueprint):
     @public(allow_withdrawal=True)
     def withdraw_remaining_tokens(self, ctx: Context) -> None:
         """Withdraw remaining tokens after successful sale (owner only)."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -286,7 +338,7 @@ class Crowdsale(Blueprint):
     @public(allow_withdrawal=True)
     def withdraw_platform_fees(self, ctx: Context) -> None:
         """Withdraw platform fees after successful sale."""
-        if Address(ctx.address) != self.platform:
+        if Address(ctx.caller_id) != self.platform:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -309,7 +361,7 @@ class Crowdsale(Blueprint):
     @public
     def early_activate(self, ctx: Context) -> None:
         """Activate the sale (owner only)."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.PENDING:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -317,6 +369,10 @@ class Crowdsale(Blueprint):
             self.start_time = Timestamp(ctx.block.timestamp)
 
         self.state = SaleState.ACTIVE
+
+    def _only_creator_contract(self, ctx: Context) -> None:
+        if ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only creator contract can call this method")
 
     def _activate_if_started(self, ctx: Context) -> None:
         """Activate the sale (anyone)"""
@@ -338,7 +394,7 @@ class Crowdsale(Blueprint):
     @public
     def pause(self, ctx: Context) -> None:
         """Pause the sale (only owner)."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.ACTIVE:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -347,7 +403,7 @@ class Crowdsale(Blueprint):
     @public
     def unpause(self, ctx: Context) -> None:
         """Unpause the sale (only owner)."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.PAUSED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -356,7 +412,7 @@ class Crowdsale(Blueprint):
     @public
     def finalize(self, ctx: Context) -> None:
         """Force end sale early (only owner)."""
-        if Address(ctx.address) != self.owner:
+        if Address(ctx.caller_id) != self.owner:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state not in {SaleState.ACTIVE, SaleState.PAUSED}:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -375,51 +431,245 @@ class Crowdsale(Blueprint):
         return Amount(amount * self.platform_fee // BASIS_POINTS)
 
     @view
-    def get_sale_info(self) -> dict:
+    def get_sale_info(self) -> CrowdsaleSaleInfo:
         """Get general sale information."""
-        return {
-            "token_uid": self.token_uid.hex(),
-            "rate": self.rate,
-            "soft_cap": self.soft_cap,
-            "hard_cap": self.hard_cap,
-            "total_raised": self.total_raised,
-            "total_sold": self.total_sold,
-            "state": self.state,
-            "start_time": self.start_time,
-            "end_time": self.end_time,
-            "participants": self.participants_count,
-        }
+        return CrowdsaleSaleInfo(
+            token_uid=self.token_uid.hex(),
+            rate=self.rate,
+            soft_cap=self.soft_cap,
+            hard_cap=self.hard_cap,
+            total_raised=self.total_raised,
+            total_sold=self.total_sold,
+            state=self.state,
+            start_time=self.start_time,
+            end_time=self.end_time,
+            participants=self.participants_count,
+        )
 
     @view
-    def get_participant_info(self, address: Address) -> dict:
+    def get_participant_info(self, address: Address) -> CrowdsaleParticipantInfo:
         """Get participant-specific information."""
         deposit = self.deposits.get(address, Amount(0))
-        return {
-            "deposited": deposit,
-            "tokens_due": self._calculate_tokens(deposit),
-            "has_claimed": self.claimed.get(address, False),
-        }
+        return CrowdsaleParticipantInfo(
+            deposited=deposit,
+            tokens_due=self._calculate_tokens(deposit),
+            has_claimed=self.claimed.get(address, False),
+        )
 
     @view
-    def get_sale_progress(self) -> dict:
+    def get_sale_progress(self) -> CrowdsaleSaleProgress:
         """Get current sale progress metrics."""
-        return {
-            "percent_filled": (self.total_raised * 100) // self.hard_cap,
-            "percent_soft_cap": (self.total_raised * 100) // self.soft_cap,
-            "is_successful": self.state == SaleState.SUCCESS,
-        }
+        return CrowdsaleSaleProgress(
+            percent_filled=(self.total_raised * 100) // self.hard_cap,
+            percent_soft_cap=(self.total_raised * 100) // self.soft_cap,
+            is_successful=self.state == SaleState.SUCCESS,
+        )
 
     @view
-    def get_withdrawal_info(self) -> dict:
+    def get_withdrawal_info(self) -> CrowdsaleWithdrawalInfo:
         """Get withdrawal-related information."""
         platform_fee = self._calculate_platform_fee(self.total_raised)
         withdrawable = self.total_raised - platform_fee
         can_withdraw = self.state == SaleState.SUCCESS and not self.owner_withdrawn
 
-        return {
-            "total_raised": self.total_raised,
-            "platform_fees": platform_fee,
-            "withdrawable": withdrawable,
-            "is_withdrawn": self.owner_withdrawn,
-            "can_withdraw": can_withdraw,
-        }
+        return CrowdsaleWithdrawalInfo(
+            total_raised=self.total_raised,
+            platform_fees=platform_fee,
+            withdrawable=withdrawable,
+            is_withdrawn=self.owner_withdrawn,
+            can_withdraw=can_withdraw,
+        )
+
+    # Routing methods for DozerTools integration
+    @public(allow_deposit=True)
+    def routed_participate(self, ctx: Context, user_address: Address) -> None:
+        """Participate in the sale via DozerTools routing."""
+        self._only_creator_contract(ctx)
+        self._validate_sale_active(ctx)
+
+        # Validate HTR deposit
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCDepositAction):
+            raise NCFail("Expected deposit action")
+
+        amount = Amount(action.amount)
+        if amount < self.min_deposit:
+            raise NCFail(CrowdsaleErrors.BELOW_MIN)
+
+        # Check hard cap
+        if self.total_raised + amount > self.hard_cap:
+            raise NCFail(CrowdsaleErrors.ABOVE_MAX)
+
+        # Update participant tracking
+        if user_address not in self.deposits:
+            self.participants_count += 1
+
+        # Update state
+        self.deposits[user_address] = Amount(
+            self.deposits.get(user_address, Amount(0)) + amount
+        )
+        self.total_raised = Amount(self.total_raised + amount)
+        self.total_sold = Amount(self.total_sold + self._calculate_tokens(amount))
+        self.htr_balance = Amount(self.htr_balance + amount)
+
+        # Check if soft cap reached
+        if self.total_raised >= self.soft_cap:
+            self.state = SaleState.SUCCESS
+
+    @public(allow_withdrawal=True)
+    def routed_claim_tokens(self, ctx: Context, user_address: Address) -> None:
+        """Claim tokens after successful sale via DozerTools routing."""
+        self._only_creator_contract(ctx)
+
+        if self.state != SaleState.SUCCESS:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+
+        if self.claimed.get(user_address, False):
+            raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
+
+        deposit = self.deposits.get(user_address, Amount(0))
+        if deposit == Amount(0):
+            raise NCFail("No tokens to claim")
+
+        tokens_due = self._calculate_tokens(deposit)
+
+        # Validate token withdrawal
+        action = ctx.get_single_action(self.token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
+        if action.amount != tokens_due:
+            raise NCFail("Invalid withdrawal amount")
+
+        self.deposits[user_address] = Amount(self.deposits[user_address] - deposit)
+
+        # Mark as claimed and update balance
+        self.claimed[user_address] = True
+        self.sale_token_balance = Amount(self.sale_token_balance - tokens_due)
+
+    @public(allow_withdrawal=True)
+    def routed_claim_refund(self, ctx: Context, user_address: Address) -> None:
+        """Claim refund if sale failed via DozerTools routing."""
+        self._only_creator_contract(ctx)
+
+        if self.state != SaleState.FAILED:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+
+        if self.claimed.get(user_address, False):
+            raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
+
+        deposit = self.deposits.get(user_address, Amount(0))
+        if deposit == Amount(0):
+            raise NCFail("No refund available")
+
+        # Validate HTR withdrawal
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
+        if action.amount != deposit:
+            raise NCFail("Invalid withdrawal amount")
+
+        self.deposits[user_address] = Amount(self.deposits[user_address] - deposit)
+
+        # Mark as claimed and update balance
+        self.claimed[user_address] = True
+        self.htr_balance = Amount(self.htr_balance - deposit)
+
+    @public
+    def routed_pause(self, ctx: Context, user_address: Address) -> None:
+        """Pause the sale via DozerTools routing (owner only)."""
+        self._only_creator_contract(ctx)
+
+        if user_address != self.owner:
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        if self.state != SaleState.ACTIVE:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+        self.state = SaleState.PAUSED
+
+    @public
+    def routed_unpause(self, ctx: Context, user_address: Address) -> None:
+        """Unpause the sale via DozerTools routing (owner only)."""
+        self._only_creator_contract(ctx)
+
+        if user_address != self.owner:
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        if self.state != SaleState.PAUSED:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+        self.state = SaleState.ACTIVE
+
+    @public
+    def routed_early_activate(self, ctx: Context, user_address: Address) -> None:
+        """Activate the sale early via DozerTools routing (owner only)."""
+        self._only_creator_contract(ctx)
+
+        if user_address != self.owner:
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        if self.state != SaleState.PENDING:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+        if ctx.block.timestamp < self.start_time:
+            self.start_time = Timestamp(ctx.block.timestamp)
+
+        self.state = SaleState.ACTIVE
+
+    @public
+    def routed_finalize(self, ctx: Context, user_address: Address) -> None:
+        """Force end sale early via DozerTools routing (owner only)."""
+        self._only_creator_contract(ctx)
+
+        if user_address != self.owner:
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        if self.state not in {SaleState.ACTIVE, SaleState.PAUSED}:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+
+        if self.total_raised >= self.soft_cap:
+            self.state = SaleState.SUCCESS
+        else:
+            self.state = SaleState.FAILED
+
+    @public(allow_withdrawal=True)
+    def routed_withdraw_raised_htr(self, ctx: Context, user_address: Address) -> None:
+        """Withdraw raised HTR after successful sale via DozerTools routing (owner only)."""
+        self._only_creator_contract(ctx)
+
+        if user_address != self.owner:
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        if self.state != SaleState.SUCCESS:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+        if self.owner_withdrawn:
+            raise NCFail("Already withdrawn")
+
+        # Calculate amounts
+        platform_fee = self._calculate_platform_fee(self.total_raised)
+        withdrawable = self.total_raised - platform_fee
+
+        # Validate owner HTR withdrawal
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
+        if action.amount != withdrawable:
+            raise NCFail("Invalid withdrawal amount")
+
+        # Mark as withdrawn and update balance
+        self.owner_withdrawn = True
+        self.platform_fees_collected = Amount(platform_fee)
+        self.htr_balance = Amount(self.htr_balance - withdrawable)
+
+    @public(allow_withdrawal=True)
+    def routed_withdraw_remaining_tokens(self, ctx: Context, user_address: Address) -> None:
+        """Withdraw remaining tokens after successful sale via DozerTools routing (owner only)."""
+        self._only_creator_contract(ctx)
+
+        if user_address != self.owner:
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        if self.state != SaleState.SUCCESS:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+
+        # Validate token withdrawal action
+        action = ctx.get_single_action(self.token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
+        if action.amount != self.sale_token_balance:
+            raise NCFail("Invalid withdrawal amount")
+
+        # Update balance
+        self.sale_token_balance = Amount(0)
+
