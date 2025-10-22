@@ -272,54 +272,54 @@ class DozerTools(Blueprint):
         self.crowdsale_blueprint_id = null_blueprint
 
         # Initialize legacy permissions and blacklist
-        self.legacy_token_permissions = {}
-        self.blacklisted_tokens = {}
+        self.legacy_token_permissions:dict[TokenUid, Address] = {}
+        self.blacklisted_tokens: dict[TokenUid, bool] = {}
 
         # Initialize project registry
-        self.project_exists = {}
-        self.all_projects = []
-        self.total_projects_count = 0
-        self.used_symbols = {}
+        self.project_exists: dict[TokenUid, bool] = {}
+        self.all_projects: list[TokenUid] = []
+        self.total_projects_count: int = 0
+        self.used_symbols: dict[str, bool] = {}
 
         # Initialize project metadata
-        self.project_name = {}
-        self.project_symbol = {}
-        self.project_dev = {}
-        self.project_created_at = {}
-        self.project_total_supply = {}
-        self.project_description = {}
-        self.project_website = {}
-        self.project_logo_url = {}
-        self.project_twitter = {}
-        self.project_telegram = {}
-        self.project_discord = {}
-        self.project_github = {}
-        self.project_category = {}
-        self.project_whitepaper_url = {}
+        self.project_name: dict[TokenUid, str] = {}
+        self.project_symbol: dict[TokenUid, str] = {}
+        self.project_dev: dict[TokenUid, Address] = {}
+        self.project_created_at: dict[TokenUid, Timestamp] = {}
+        self.project_total_supply: dict[TokenUid, Amount] = {}
+        self.project_description: dict[TokenUid, str] = {}
+        self.project_website: dict[TokenUid, str] = {}
+        self.project_logo_url: dict[TokenUid, str] = {}
+        self.project_twitter: dict[TokenUid, str] = {}
+        self.project_telegram: dict[TokenUid, str] = {}
+        self.project_discord: dict[TokenUid, str] = {}
+        self.project_github: dict[TokenUid, str] = {}
+        self.project_category: dict[TokenUid, str] = {}
+        self.project_whitepaper_url: dict[TokenUid, str] = {}
 
         # Initialize project credit balances
-        self.project_htr_balance = {}
-        self.project_dzr_balance = {}
+        self.project_htr_balance: dict[TokenUid, Amount] = {}
+        self.project_dzr_balance: dict[TokenUid, Amount] = {}
 
         # Initialize all fees to 0 (free initially)
-        self.method_fees_htr = {}
-        self.method_fees_dzr = {}
+        self.method_fees_htr: dict[str, Amount] = {}
+        self.method_fees_dzr: dict[str, Amount] = {}
 
         # Initialize contract registries
-        self.project_vesting_contract = {}
-        self.project_staking_contract = {}
-        self.project_dao_contract = {}
-        self.project_crowdsale_contract = {}
-        self.project_pools = {}
+        self.project_vesting_contract: dict[TokenUid, ContractId] = {}
+        self.project_staking_contract: dict[TokenUid, ContractId] = {}
+        self.project_dao_contract: dict[TokenUid, ContractId] = {}
+        self.project_crowdsale_contract: dict[TokenUid, ContractId] = {}
+        self.project_pools: dict[TokenUid, str] = {}
 
         # Initialize allocation percentages
-        self.project_staking_percentage = {}
-        self.project_public_sale_percentage = {}
-        self.project_dozer_pool_percentage = {}
+        self.project_staking_percentage: dict[TokenUid, int] = {}
+        self.project_public_sale_percentage: dict[TokenUid, int] = {}
+        self.project_dozer_pool_percentage: dict[TokenUid, int] = {}
 
         # Initialize configuration flags
-        self.project_vesting_configured = {}
-        self.project_melt_authority_acquired = {}
+        self.project_vesting_configured: dict[TokenUid, bool] = {}
+        self.project_melt_authority_acquired: dict[TokenUid, bool] = {}
 
     @public(allow_deposit=True, allow_acquire_authority=True)
     def create_project(

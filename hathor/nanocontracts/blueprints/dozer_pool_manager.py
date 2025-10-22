@@ -286,32 +286,33 @@ class DozerPoolManager(Blueprint):
         self.default_protocol_fee = Amount(10)  # 10% of fees
 
         # Initialize dictionaries and lists
-        self.authorized_signers = {}
-        self.pool_exists = {}
-        self.all_pools = []
-        self.token_to_pools = {}
-        self.signed_pools = []
-        self.pool_signers = {}
-        self.htr_token_map = {}
-        self.pool_token_a = {}
-        self.pool_token_b = {}
-        self.pool_reserve_a = {}
-        self.pool_reserve_b = {}
-        self.pool_fee_numerator = {}
-        self.pool_fee_denominator = {}
-        self.pool_total_liquidity = {}
-        self.pool_user_liquidity = {}
-        self.pool_balance_a = {}
-        self.pool_balance_b = {}
-        self.pool_total_balance_a = {}
-        self.pool_total_balance_b = {}
-        self.pool_accumulated_fee = {}
-        self.pool_transactions = {}
-        self.pool_last_activity = {}
-        self.pool_volume_a = {}
-        self.pool_volume_b = {}
-        self.pool_user_deposit_price_usd = {}
-        self.pool_user_last_action_timestamp = {}
+        self.authorized_signers:dict[CallerId, bool] = {}
+        self.pool_exists:dict[str, bool] = {}
+        self.all_pools: list[str] = []
+        self.token_to_pools: dict[TokenUid, list[str]] = {}
+        self.signed_pools: list[str] = []
+        self.pool_signers: dict[str, CallerId] = {}
+        self.htr_token_map: dict[TokenUid, str] = {}
+        self.pool_token_a: dict[str, TokenUid] = {}
+        self.pool_token_b: dict[str, TokenUid] = {}
+        self.pool_reserve_a: dict[str, Amount] = {}
+        self.pool_reserve_b: dict[str, Amount] = {}
+        self.pool_fee_numerator: dict[str, Amount] = {}
+        self.pool_fee_denominator: dict[str, Amount] = {}
+        self.pool_total_liquidity: dict[str, Amount] = {}
+        self.pool_user_liquidity: dict[str, dict[CallerId, Amount]] = {}
+        self.pool_balance_a: dict[str, dict[CallerId, Amount]] = {}
+        self.pool_balance_b: dict[str, dict[CallerId, Amount]] = {}
+        self.pool_total_balance_a: dict[str, Amount] = {}
+        self.pool_total_balance_b: dict[str, Amount] = {}
+        self.pool_accumulated_fee: dict[str, dict[TokenUid, Amount]] = {}
+        self.pool_transactions: dict[str, Amount] = {}
+        self.pool_last_activity: dict[str, int] = {}
+        self.pool_volume_a: dict[str, Amount] = {}
+        self.pool_volume_b: dict[str, Amount] = {}
+        self.pool_user_deposit_price_usd: dict[str, dict[CallerId, Amount]] = {}
+        self.pool_user_last_action_timestamp: dict[str, dict[CallerId, int]] = {}
+
 
         # Add owner as authorized signer
         self.authorized_signers[self.owner] = True

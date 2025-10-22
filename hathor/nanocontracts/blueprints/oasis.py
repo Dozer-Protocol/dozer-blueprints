@@ -130,14 +130,14 @@ class Oasis(Blueprint):
         self.owner_address = Address(ctx.caller_id)
 
         # Initialize all dict fields
-        self.user_deposit_b = {}
-        self.htr_price_in_deposit = {}
-        self.token_price_in_htr_in_deposit = {}
-        self.user_liquidity = {}
-        self.user_withdrawal_time = {}
-        self.user_balances = {}
-        self.user_position_closed = {}
-        self.closed_position_balances = {}
+        self.user_deposit_b: dict[bytes, Amount]= {}
+        self.htr_price_in_deposit: dict[bytes, Amount] = {}
+        self.token_price_in_htr_in_deposit: dict[bytes, Amount] = {}
+        self.user_liquidity: dict[bytes, Amount] = {}
+        self.user_withdrawal_time: dict[bytes, int] = {}
+        self.user_balances:dict[bytes, dict[TokenUid, Amount]] = {}
+        self.user_position_closed: dict[bytes, bool] = {}
+        self.closed_position_balances: dict[bytes, dict[TokenUid, Amount]] = {}
 
     def _get_pool_key(self) -> str:
         """Generate the pool key for the HTR/token_b pair."""
