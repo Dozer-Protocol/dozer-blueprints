@@ -1457,6 +1457,1134 @@ class DozerToolsTest(BlueprintTestCase):
             # Verify stats reflect this user's stake
             self.assertEqual(stats.total_staked, stake_amount)
 
+    def test_crowdsale_successful_lifecycle(self) -> None:
+        """Test complete successful crowdsale lifecycle through DozerTools routing."""
+        # Create project and configure vesting with public sale allocation
+        token_uid = self._create_test_project("CrowdsaleToken", "CROWD")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Configure vesting with 15% public sale allocation
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20,  # staking_percentage
+            15,  # public_sale_percentage
+            5,   # dozer_pool_percentage
+            1000,  # earnings_per_day
+            ["Team"],
+            [60],  # 60% for team
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Create crowdsale contract
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        initial_time = self.get_current_timestamp()
+
+        create_crowdsale_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        rate = 100  # 100 tokens per HTR
+        soft_cap = 1000_00  # 1000 HTR
+        hard_cap = 1500_00  # 1500 HTR
+        min_deposit = 10_00  # 10 HTR
+        platform_fee = 500  # 5%
+        start_time = initial_time + 100
+        end_time = start_time + 86400  # 24 hours
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            create_crowdsale_ctx,
+            token_uid,
+            rate,
+            soft_cap,
+            hard_cap,
+            min_deposit,
+            start_time,
+            end_time,
+            platform_fee,
+        )
+
+        # Get crowdsale contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+
+        # Verify crowdsale info
+        sale_info = self.runner.call_view_method(
+            crowdsale_contract_id, "get_sale_info"
+        )
+        self.assertEqual(sale_info["rate"], rate)
+        self.assertEqual(sale_info["soft_cap"], soft_cap)
+        self.assertEqual(sale_info["hard_cap"], hard_cap)
+        self.assertEqual(sale_info["state"], 0)  # PENDING
+
+        # Activate the sale
+        activate_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time - 1,
+        )
+        self.runner.call_public_method(
+            crowdsale_contract_id, "early_activate", activate_ctx
+        )
+
+        # Verify sale is now ACTIVE
+        sale_info = self.runner.call_view_method(
+            crowdsale_contract_id, "get_sale_info"
+        )
+        self.assertEqual(sale_info["state"], 1)  # ACTIVE
+
+        # Multiple users participate through DozerTools routing
+        participants = []
+        deposit_amounts = [500_00, 300_00, 400_00]  # Total: 1200 HTR (exceeds soft cap)
+
+        for deposit_amount in deposit_amounts:
+            user_addr, _ = self._get_any_address()
+            participants.append((user_addr, deposit_amount))
+
+            participate_ctx = self.create_context(
+                actions=[NCDepositAction(token_uid=htr_uid, amount=deposit_amount)],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=start_time + 100,
+            )
+
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "crowdsale_participate",
+                participate_ctx,
+                token_uid,
+            )
+
+        # Verify sale reached SUCCESS state (soft cap exceeded)
+        sale_info = self.runner.call_view_method(
+            crowdsale_contract_id, "get_sale_info"
+        )
+        self.assertEqual(sale_info["state"], 3)  # SUCCESS
+        self.assertEqual(sale_info["total_raised"], sum(deposit_amounts))
+        self.assertEqual(sale_info["participants"], len(participants))
+
+        # Check sale progress
+        progress = self.runner.call_view_method(
+            crowdsale_contract_id, "get_sale_progress"
+        )
+        self.assertTrue(progress["is_successful"])
+
+        # Each participant claims tokens through DozerTools routing
+        for user_addr, deposit_amount in participants:
+            # Check participant info before claiming
+            participant_info = self.runner.call_view_method(
+                crowdsale_contract_id,
+                "get_participant_info",
+                Address(user_addr),
+            )
+            self.assertEqual(participant_info["deposited"], deposit_amount)
+            self.assertEqual(participant_info["tokens_due"], deposit_amount * rate)
+            self.assertFalse(participant_info["has_claimed"])
+
+            # Claim tokens
+            tokens_due = deposit_amount * rate
+            claim_ctx = self.create_context(
+                actions=[NCWithdrawalAction(token_uid=token_uid, amount=tokens_due)],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=end_time + 100,
+            )
+
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "crowdsale_claim_tokens",
+                claim_ctx,
+                token_uid,
+            )
+
+            # Verify claim status
+            participant_info_after = self.runner.call_view_method(
+                crowdsale_contract_id,
+                "get_participant_info",
+                Address(user_addr),
+            )
+            self.assertTrue(participant_info_after["has_claimed"])
+            self.assertEqual(participant_info_after["tokens_due"], 0)
+
+        # Owner withdraws raised HTR
+        total_raised = sum(deposit_amounts)
+        platform_fee_amount = (total_raised * platform_fee) // 10000
+        withdrawable_htr = total_raised - platform_fee_amount
+
+        owner_withdraw_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=htr_uid, amount=withdrawable_htr)],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=end_time + 200,
+        )
+
+        self.runner.call_public_method(
+            crowdsale_contract_id,
+            "withdraw_raised_htr",
+            owner_withdraw_ctx,
+        )
+
+        # Verify withdrawal info
+        withdrawal_info = self.runner.call_view_method(
+            crowdsale_contract_id, "get_withdrawal_info"
+        )
+        self.assertEqual(withdrawal_info["total_raised"], total_raised)
+        self.assertEqual(withdrawal_info["platform_fees"], platform_fee_amount)
+        self.assertTrue(withdrawal_info["is_withdrawn"])
+
+#     def test_crowdsale_failed_sale_with_refunds(self) -> None:
+#         """Test failed crowdsale with refund claims through DozerTools."""
+#         # Create project and configure vesting
+#         token_uid = self._create_test_project("FailedSaleToken", "FAIL")
+
+#         tx = self._get_any_tx()
+#         context = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=self.get_current_timestamp(),
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "configure_project_vesting",
+#             context,
+#             token_uid,
+#             10,  # staking_percentage
+#             20,  # public_sale_percentage
+#             5,   # dozer_pool_percentage
+#             500,
+#             ["Team"],
+#             [65],
+#             [self.dev_address],
+#             [12],
+#             [36],
+#         )
+
+#         # Create crowdsale
+#         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+#         initial_time = self.get_current_timestamp()
+
+#         create_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=initial_time,
+#         )
+
+#         rate = 50
+#         soft_cap = 2000_00  # 2000 HTR
+#         hard_cap = 10000_00  # 10000 HTR
+#         min_deposit = 50_00
+#         platform_fee = 300
+#         start_time = initial_time + 100
+#         end_time = start_time + 3600
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "create_crowdsale",
+#             create_ctx,
+#             token_uid,
+#             rate,
+#             soft_cap,
+#             hard_cap,
+#             min_deposit,
+#             start_time,
+#             end_time,
+#             platform_fee,
+#         )
+
+#         # Get crowdsale contract
+#         contracts = self.runner.call_view_method(
+#             self.dozer_tools_nc_id, "get_project_contracts", token_uid
+#         )
+#         crowdsale_contract_id = ContractId(
+#             VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+#         )
+
+#         # Activate sale
+#         activate_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=start_time - 1,
+#         )
+#         self.runner.call_public_method(
+#             crowdsale_contract_id, "early_activate", activate_ctx
+#         )
+
+#         # Users participate but don't reach soft cap
+#         participants = []
+#         deposit_amounts = [500_00, 400_00, 300_00]  # Total: 1200 HTR (below soft cap of 2000)
+
+#         for deposit_amount in deposit_amounts:
+#             user_addr, _ = self._get_any_address()
+#             participants.append((user_addr, deposit_amount))
+
+#             participate_ctx = self.create_context(
+#                 actions=[NCDepositAction(token_uid=htr_uid, amount=deposit_amount)],
+#                 vertex=self._get_any_tx(),
+#                 caller_id=Address(user_addr),
+#                 timestamp=start_time + 100,
+#             )
+
+#             self.runner.call_public_method(
+#                 self.dozer_tools_nc_id,
+#                 "crowdsale_participate",
+#                 participate_ctx,
+#                 token_uid,
+#             )
+
+#         # Verify sale is still ACTIVE (not reached soft cap)
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["state"], 1)  # ACTIVE
+#         self.assertEqual(sale_info["total_raised"], sum(deposit_amounts))
+#         self.assertLess(sale_info["total_raised"], soft_cap)
+
+#         # Owner finalizes sale (failed)
+#         finalize_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=end_time + 100,
+#         )
+#         self.runner.call_public_method(
+#             crowdsale_contract_id, "finalize", finalize_ctx
+#         )
+
+#         # Verify sale is FAILED
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["state"], 4)  # FAILED
+
+#         # Participants claim refunds through DozerTools
+#         for user_addr, deposit_amount in participants:
+#             # Check participant info before refund
+#             participant_info = self.runner.call_view_method(
+#                 crowdsale_contract_id,
+#                 "get_participant_info",
+#                 Address(user_addr),
+#             )
+#             self.assertEqual(participant_info["deposited"], deposit_amount)
+#             self.assertFalse(participant_info["has_claimed"])
+
+#             # Claim refund
+#             refund_ctx = self.create_context(
+#                 actions=[NCWithdrawalAction(token_uid=htr_uid, amount=deposit_amount)],
+#                 vertex=self._get_any_tx(),
+#                 caller_id=Address(user_addr),
+#                 timestamp=end_time + 200,
+#             )
+
+#             self.runner.call_public_method(
+#                 self.dozer_tools_nc_id,
+#                 "crowdsale_claim_refund",
+#                 refund_ctx,
+#                 token_uid,
+#             )
+
+#             # Verify refund claimed
+#             participant_info_after = self.runner.call_view_method(
+#                 crowdsale_contract_id,
+#                 "get_participant_info",
+#                 Address(user_addr),
+#             )
+#             self.assertTrue(participant_info_after["has_claimed"])
+#             self.assertEqual(participant_info_after["deposited"], 0)
+
+#     def test_crowdsale_pause_unpause_operations(self) -> None:
+#         """Test crowdsale pause/unpause functionality."""
+#         # Create project and crowdsale
+#         token_uid = self._create_test_project("PauseToken", "PAUSE")
+
+#         tx = self._get_any_tx()
+#         context = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=self.get_current_timestamp(),
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "configure_project_vesting",
+#             context,
+#             token_uid,
+#             15,
+#             25,
+#             5,
+#             800,
+#             ["Team"],
+#             [55],
+#             [self.dev_address],
+#             [6],
+#             [24],
+#         )
+
+#         # Create crowdsale
+#         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+#         initial_time = self.get_current_timestamp()
+#         start_time = initial_time + 100
+#         end_time = start_time + 7200
+
+#         create_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=initial_time,
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "create_crowdsale",
+#             create_ctx,
+#             token_uid,
+#             75,  # rate
+#             800_00,  # soft_cap
+#             4000_00,  # hard_cap
+#             20_00,  # min_deposit
+#             400,  # platform_fee (4%)
+#             start_time,
+#             end_time,
+#             400,
+#         )
+
+#         # Get crowdsale contract
+#         contracts = self.runner.call_view_method(
+#             self.dozer_tools_nc_id, "get_project_contracts", token_uid
+#         )
+#         crowdsale_contract_id = ContractId(
+#             VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+#         )
+
+#         # Activate sale
+#         activate_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=start_time - 1,
+#         )
+#         self.runner.call_public_method(
+#             crowdsale_contract_id, "early_activate", activate_ctx
+#         )
+
+#         # Verify ACTIVE state
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["state"], 1)  # ACTIVE
+
+#         # User participates
+#         user_addr, _ = self._get_any_address()
+#         participate_ctx = self.create_context(
+#             actions=[NCDepositAction(token_uid=htr_uid, amount=200_00)],
+#             vertex=self._get_any_tx(),
+#             caller_id=Address(user_addr),
+#             timestamp=start_time + 50,
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "crowdsale_participate",
+#             participate_ctx,
+#             token_uid,
+#         )
+
+#         # Owner pauses the sale
+#         pause_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=start_time + 100,
+#         )
+#         self.runner.call_public_method(
+#             crowdsale_contract_id, "pause", pause_ctx
+#         )
+
+#         # Verify PAUSED state
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["state"], 2)  # PAUSED
+
+#         # Try to participate while paused (should fail)
+#         from hathor.nanocontracts.exception import NCFail
+
+#         user_addr2, _ = self._get_any_address()
+#         participate_paused_ctx = self.create_context(
+#             actions=[NCDepositAction(token_uid=htr_uid, amount=100_00)],
+#             vertex=self._get_any_tx(),
+#             caller_id=Address(user_addr2),
+#             timestamp=start_time + 150,
+#         )
+
+#         with self.assertRaises(NCFail):
+#             self.runner.call_public_method(
+#                 self.dozer_tools_nc_id,
+#                 "crowdsale_participate",
+#                 participate_paused_ctx,
+#                 token_uid,
+#             )
+
+#         # Owner unpauses the sale
+#         unpause_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=start_time + 200,
+#         )
+#         self.runner.call_public_method(
+#             crowdsale_contract_id, "unpause", unpause_ctx
+#         )
+
+#         # Verify ACTIVE state again
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["state"], 1)  # ACTIVE
+
+#         # Now participation should work again
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "crowdsale_participate",
+#             participate_paused_ctx,
+#             token_uid,
+#         )
+
+#         # Verify second user participated
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["total_raised"], 300_00)
+#         self.assertEqual(sale_info["participants"], 2)
+
+#     def test_crowdsale_edge_cases(self) -> None:
+#         """Test crowdsale edge cases: minimum deposit, hard cap limit, multiple deposits."""
+#         # Create project and crowdsale
+#         token_uid = self._create_test_project("EdgeToken", "EDGE")
+
+#         tx = self._get_any_tx()
+#         context = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=self.get_current_timestamp(),
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "configure_project_vesting",
+#             context,
+#             token_uid,
+#             10,
+#             30,
+#             5,
+#             1200,
+#             ["Team"],
+#             [55],
+#             [self.dev_address],
+#             [9],
+#             [30],
+#         )
+
+#         # Create crowdsale with specific constraints
+#         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+#         initial_time = self.get_current_timestamp()
+#         start_time = initial_time + 100
+#         end_time = start_time + 3600
+
+#         create_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=initial_time,
+#         )
+
+#         min_deposit = 100_00  # 100 HTR minimum
+#         soft_cap = 500_00
+#         hard_cap = 1000_00
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "create_crowdsale",
+#             create_ctx,
+#             token_uid,
+#             200,  # rate
+#             soft_cap,
+#             hard_cap,
+#             min_deposit,
+#             start_time,
+#             end_time,
+#             250,  # platform_fee
+#         )
+
+#         # Get crowdsale contract
+#         contracts = self.runner.call_view_method(
+#             self.dozer_tools_nc_id, "get_project_contracts", token_uid
+#         )
+#         crowdsale_contract_id = ContractId(
+#             VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+#         )
+
+#         # Activate sale
+#         activate_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=start_time - 1,
+#         )
+#         self.runner.call_public_method(
+#             crowdsale_contract_id, "early_activate", activate_ctx
+#         )
+
+#         # Test 1: Try to participate with amount below minimum (should fail)
+#         from hathor.nanocontracts.exception import NCFail
+
+#         user_addr1, _ = self._get_any_address()
+#         below_min_ctx = self.create_context(
+#             actions=[NCDepositAction(token_uid=htr_uid, amount=50_00)],  # Below 100 HTR
+#             vertex=self._get_any_tx(),
+#             caller_id=Address(user_addr1),
+#             timestamp=start_time + 10,
+#         )
+
+#         with self.assertRaises(NCFail):
+#             self.runner.call_public_method(
+#                 self.dozer_tools_nc_id,
+#                 "crowdsale_participate",
+#                 below_min_ctx,
+#                 token_uid,
+#             )
+
+#         # Test 2: Same user makes multiple deposits
+#         user_addr2, _ = self._get_any_address()
+#         first_deposit = 200_00
+#         second_deposit = 150_00
+
+#         first_deposit_ctx = self.create_context(
+#             actions=[NCDepositAction(token_uid=htr_uid, amount=first_deposit)],
+#             vertex=self._get_any_tx(),
+#             caller_id=Address(user_addr2),
+#             timestamp=start_time + 20,
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "crowdsale_participate",
+#             first_deposit_ctx,
+#             token_uid,
+#         )
+
+#         # Verify first deposit
+#         participant_info = self.runner.call_view_method(
+#             crowdsale_contract_id,
+#             "get_participant_info",
+#             Address(user_addr2),
+#         )
+#         self.assertEqual(participant_info["deposited"], first_deposit)
+
+#         # Second deposit from same user
+#         second_deposit_ctx = self.create_context(
+#             actions=[NCDepositAction(token_uid=htr_uid, amount=second_deposit)],
+#             vertex=self._get_any_tx(),
+#             caller_id=Address(user_addr2),
+#             timestamp=start_time + 30,
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "crowdsale_participate",
+#             second_deposit_ctx,
+#             token_uid,
+#         )
+
+#         # Verify cumulative deposit
+#         participant_info = self.runner.call_view_method(
+#             crowdsale_contract_id,
+#             "get_participant_info",
+#             Address(user_addr2),
+#         )
+#         self.assertEqual(participant_info["deposited"], first_deposit + second_deposit)
+
+#         # Verify only counted as 1 participant
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["participants"], 1)
+
+#         # Test 3: Try to exceed hard cap (should fail)
+#         user_addr3, _ = self._get_any_address()
+#         remaining = hard_cap - (first_deposit + second_deposit)
+#         exceed_hardcap_amount = remaining + 100_00  # Exceeds hard cap
+
+#         exceed_ctx = self.create_context(
+#             actions=[NCDepositAction(token_uid=htr_uid, amount=exceed_hardcap_amount)],
+#             vertex=self._get_any_tx(),
+#             caller_id=Address(user_addr3),
+#             timestamp=start_time + 40,
+#         )
+
+#         with self.assertRaises(NCFail):
+#             self.runner.call_public_method(
+#                 self.dozer_tools_nc_id,
+#                 "crowdsale_participate",
+#                 exceed_ctx,
+#                 token_uid,
+#             )
+
+#         # Test 4: Deposit exactly to reach hard cap
+#         exact_remaining_ctx = self.create_context(
+#             actions=[NCDepositAction(token_uid=htr_uid, amount=remaining)],
+#             vertex=self._get_any_tx(),
+#             caller_id=Address(user_addr3),
+#             timestamp=start_time + 50,
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "crowdsale_participate",
+#             exact_remaining_ctx,
+#             token_uid,
+#         )
+
+#         # Verify hard cap reached and sale is SUCCESS
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["total_raised"], hard_cap)
+#         self.assertEqual(sale_info["state"], 3)  # SUCCESS
+
+#     def test_crowdsale_routed_admin_methods(self) -> None:
+#         """Test all crowdsale admin methods through DozerTools routing."""
+#         # Create project and crowdsale
+#         token_uid = self._create_test_project("AdminToken", "ADMIN")
+
+#         tx = self._get_any_tx()
+#         context = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=self.get_current_timestamp(),
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "configure_project_vesting",
+#             context,
+#             token_uid,
+#             10,
+#             20,
+#             5,
+#             1000,
+#             ["Team"],
+#             [65],
+#             [self.dev_address],
+#             [12],
+#             [36],
+#         )
+
+#         # Create crowdsale
+#         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+#         initial_time = self.get_current_timestamp()
+#         start_time = initial_time + 100
+#         end_time = start_time + 7200
+
+#         create_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=initial_time,
+#         )
+
+#         rate = 150
+#         soft_cap = 800_00
+#         hard_cap = 4000_00
+#         min_deposit = 25_00
+#         platform_fee = 400
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "create_crowdsale",
+#             create_ctx,
+#             token_uid,
+#             rate,
+#             soft_cap,
+#             hard_cap,
+#             min_deposit,
+#             start_time,
+#             end_time,
+#             platform_fee,
+#         )
+
+#         # Get crowdsale contract
+#         contracts = self.runner.call_view_method(
+#             self.dozer_tools_nc_id, "get_project_contracts", token_uid
+#         )
+#         crowdsale_contract_id = ContractId(
+#             VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+#         )
+
+#         # Test routed_early_activate
+#         activate_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=start_time - 1,
+#         )
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id, "crowdsale_early_activate", activate_ctx, token_uid
+#         )
+
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["state"], 1)  # ACTIVE
+
+#         # User participates
+#         user_addr, _ = self._get_any_address()
+#         participate_ctx = self.create_context(
+#             actions=[NCDepositAction(token_uid=htr_uid, amount=1000_00)],
+#             vertex=self._get_any_tx(),
+#             caller_id=Address(user_addr),
+#             timestamp=start_time + 50,
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "crowdsale_participate",
+#             participate_ctx,
+#             token_uid,
+#         )
+
+#         # Test routed_pause
+#         pause_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=start_time + 100,
+#         )
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id, "crowdsale_pause", pause_ctx, token_uid
+#         )
+
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["state"], 2)  # PAUSED
+
+#         # Test routed_unpause
+#         unpause_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=start_time + 150,
+#         )
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id, "crowdsale_unpause", unpause_ctx, token_uid
+#         )
+
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["state"], 1)  # ACTIVE
+
+#         # Test routed_finalize (reaching soft cap first)
+#         finalize_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=start_time + 200,
+#         )
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id, "crowdsale_finalize", finalize_ctx, token_uid
+#         )
+
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["state"], 3)  # SUCCESS (soft cap reached)
+
+#     def test_crowdsale_routed_withdrawal_methods(self) -> None:
+#         """Test crowdsale withdrawal methods through DozerTools routing."""
+#         # Create project and crowdsale
+#         token_uid = self._create_test_project("WithdrawToken", "WDRW")
+
+#         tx = self._get_any_tx()
+#         context = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=self.get_current_timestamp(),
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "configure_project_vesting",
+#             context,
+#             token_uid,
+#             15,
+#             25,
+#             5,
+#             800,
+#             ["Team"],
+#             [55],
+#             [self.dev_address],
+#             [6],
+#             [24],
+#         )
+
+#         # Create crowdsale
+#         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+#         initial_time = self.get_current_timestamp()
+#         start_time = initial_time + 100
+#         end_time = start_time + 3600
+
+#         create_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=initial_time,
+#         )
+
+#         rate = 100
+#         soft_cap = 500_00
+#         hard_cap = 2000_00
+#         min_deposit = 50_00
+#         platform_fee = 300  # 3%
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "create_crowdsale",
+#             create_ctx,
+#             token_uid,
+#             rate,
+#             soft_cap,
+#             hard_cap,
+#             min_deposit,
+#             start_time,
+#             end_time,
+#             platform_fee,
+#         )
+
+#         # Get crowdsale contract
+#         contracts = self.runner.call_view_method(
+#             self.dozer_tools_nc_id, "get_project_contracts", token_uid
+#         )
+#         crowdsale_contract_id = ContractId(
+#             VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+#         )
+
+#         # Activate and reach soft cap
+#         activate_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=start_time - 1,
+#         )
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id, "crowdsale_early_activate", activate_ctx, token_uid
+#         )
+
+#         # User participates with enough to reach soft cap
+#         user_addr, _ = self._get_any_address()
+#         participate_ctx = self.create_context(
+#             actions=[NCDepositAction(token_uid=htr_uid, amount=600_00)],
+#             vertex=self._get_any_tx(),
+#             caller_id=Address(user_addr),
+#             timestamp=start_time + 50,
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "crowdsale_participate",
+#             participate_ctx,
+#             token_uid,
+#         )
+
+#         # Verify SUCCESS state
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["state"], 3)  # SUCCESS
+#         total_raised = sale_info["total_raised"]
+
+#         # Calculate platform fee and withdrawable
+#         platform_fee_amount = (total_raised * platform_fee) // 10000
+#         withdrawable_htr = total_raised - platform_fee_amount
+
+#         # Test routed_withdraw_raised_htr
+#         withdraw_htr_ctx = self.create_context(
+#             actions=[NCWithdrawalAction(token_uid=htr_uid, amount=withdrawable_htr)],
+#             vertex=self._get_any_tx(),
+#             caller_id=self.dev_address,
+#             timestamp=end_time + 100,
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "crowdsale_withdraw_raised_htr",
+#             withdraw_htr_ctx,
+#             token_uid,
+#         )
+
+#         # Verify withdrawal
+#         withdrawal_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_withdrawal_info"
+#         )
+#         self.assertTrue(withdrawal_info["is_withdrawn"])
+#         self.assertEqual(withdrawal_info["platform_fees"], platform_fee_amount)
+
+#         # Get remaining tokens and test routed_withdraw_remaining_tokens
+#         contract_state = self.get_readonly_contract(crowdsale_contract_id)
+#         from hathor.nanocontracts.blueprints.crowdsale import Crowdsale
+
+#         assert isinstance(contract_state, Crowdsale)
+#         remaining_tokens = contract_state.sale_token_balance
+
+#         withdraw_tokens_ctx = self.create_context(
+#             actions=[NCWithdrawalAction(token_uid=token_uid, amount=remaining_tokens)],
+#             vertex=self._get_any_tx(),
+#             caller_id=self.dev_address,
+#             timestamp=end_time + 200,
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "crowdsale_withdraw_remaining_tokens",
+#             withdraw_tokens_ctx,
+#             token_uid,
+#         )
+
+#         # Verify remaining tokens withdrawn
+#         contract_state_after = self.get_readonly_contract(crowdsale_contract_id)
+#         assert isinstance(contract_state_after, Crowdsale)
+#         self.assertEqual(contract_state_after.sale_token_balance, 0)
+
+#     def test_crowdsale_unauthorized_routed_calls(self) -> None:
+#         """Test that unauthorized users cannot call owner-only routed methods."""
+#         # Create project and crowdsale
+#         token_uid = self._create_test_project("UnauthorizedToken", "UNAUTH")
+
+#         tx = self._get_any_tx()
+#         context = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=self.get_current_timestamp(),
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "configure_project_vesting",
+#             context,
+#             token_uid,
+#             10,
+#             15,
+#             5,
+#             500,
+#             ["Team"],
+#             [70],
+#             [self.dev_address],
+#             [12],
+#             [36],
+#         )
+
+#         # Create crowdsale
+#         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+#         initial_time = self.get_current_timestamp()
+#         start_time = initial_time + 100
+#         end_time = start_time + 3600
+
+#         create_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=initial_time,
+#         )
+
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id,
+#             "create_crowdsale",
+#             create_ctx,
+#             token_uid,
+#             100,  # rate
+#             500_00,  # soft_cap
+#             2000_00,  # hard_cap
+#             50_00,  # min_deposit
+#             start_time,
+#             end_time,
+#             400,  # platform_fee
+#         )
+
+#         # Get crowdsale contract
+#         contracts = self.runner.call_view_method(
+#             self.dozer_tools_nc_id, "get_project_contracts", token_uid
+#         )
+#         crowdsale_contract_id = ContractId(
+#             VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+#         )
+
+#         # Activate sale (as owner - should work)
+#         activate_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=self.dev_address,
+#             timestamp=start_time - 1,
+#         )
+#         self.runner.call_public_method(
+#             self.dozer_tools_nc_id, "crowdsale_early_activate", activate_ctx, token_uid
+#         )
+
+#         # Try to pause as unauthorized user (should fail)
+#         from hathor.nanocontracts.exception import NCFail
+
+#         unauthorized_addr, _ = self._get_any_address()
+#         unauthorized_pause_ctx = self.create_context(
+#             actions=[],
+#             vertex=tx,
+#             caller_id=Address(unauthorized_addr),
+#             timestamp=start_time + 50,
+#         )
+
+#         with self.assertRaises(NCFail) as cm:
+#             self.runner.call_public_method(
+#                 self.dozer_tools_nc_id,
+#                 "crowdsale_pause",
+#                 unauthorized_pause_ctx,
+#                 token_uid,
+#             )
+#         # Should fail at DozerTools level (not project dev)
+#         self.assertIn("Only project dev", str(cm.exception))
+
+#         # Verify sale is still ACTIVE (pause didn't work)
+#         sale_info = self.runner.call_view_method(
+#             crowdsale_contract_id, "get_sale_info"
+#         )
+#         self.assertEqual(sale_info["state"], 1)  # ACTIVE
 
 if __name__ == "__main__":
     unittest.main()
