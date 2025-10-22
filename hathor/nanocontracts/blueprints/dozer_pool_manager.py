@@ -619,7 +619,8 @@ class DozerPoolManager(Blueprint):
         amount_b = (amount_a * reserve_b) // reserve_a
         return Amount(amount_b)
 
-    
+
+    @view
     def get_amount_out(
         self,
         amount_in: Amount,

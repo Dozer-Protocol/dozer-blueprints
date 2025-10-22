@@ -200,7 +200,7 @@ class Oasis(Blueprint):
 
         # Continue with deposit using reduced amount
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
-        token_price_in_htr = htr_amount * PRICE_PRECISION // deposit_amount if deposit_amount > 0 else 0
+        token_price_in_htr = deposit_amount * PRICE_PRECISION // htr_amount if htr_amount > 0 else 0
         bonus = self._get_user_bonus(timelock, htr_amount)
         now = ctx.block.timestamp
         if htr_amount + bonus > self.oasis_htr_balance:
@@ -386,8 +386,8 @@ class Oasis(Blueprint):
 
         # Keep the deposit amounts for reference, but reset liquidity
         self.total_liquidity = Amount(self.total_liquidity - self.user_liquidity[Address(ctx.caller_id)])
-        self.user_liquidity.__delitem__(Address(ctx.caller_id))
-        self.user_withdrawal_time.__delitem__(Address(ctx.caller_id))
+        del self.user_liquidity[Address(ctx.caller_id)]
+        del self.user_withdrawal_time[Address(ctx.caller_id)]
 
     @public(allow_withdrawal=True)
     def user_withdraw(self, ctx: Context) -> None:
@@ -450,11 +450,11 @@ class Oasis(Blueprint):
             closed_balances.get(self.token_b, 0) == 0
             and closed_balances.get(TokenUid(HTR_UID), 0) == 0
         ):
-            self.user_deposit_b.__delitem__(Address(ctx.caller_id))
-            self.user_withdrawal_time.__delitem__(Address(ctx.caller_id))
-            self.htr_price_in_deposit.__delitem__(Address(ctx.caller_id))
-            self.token_price_in_htr_in_deposit.__delitem__(Address(ctx.caller_id))
-            self.user_position_closed.__delitem__(Address(ctx.caller_id))
+            del self.user_deposit_b[Address(ctx.caller_id)]
+            del self.user_withdrawal_time[Address(ctx.caller_id)]
+            del self.htr_price_in_deposit[Address(ctx.caller_id)]
+            del self.token_price_in_htr_in_deposit[Address(ctx.caller_id)]
+            del self.user_position_closed[Address(ctx.caller_id)]
 
     @public(allow_withdrawal=True)
     def user_withdraw_bonus(self, ctx: Context) -> None:
