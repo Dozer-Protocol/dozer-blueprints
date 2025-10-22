@@ -74,7 +74,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         ctx = self.create_context(
             actions=[NCDepositAction(token_uid=self.token_uid, amount=Amount(amount))],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
 
@@ -96,7 +96,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         ctx = self.create_context(
             actions=[NCDepositAction(token_uid=self.token_uid, amount=Amount(amount))],
             vertex=self.tx,
-            address=Address(address),
+            caller_id=Address(address),
             timestamp=self.clock.seconds(),
         )
 
@@ -137,7 +137,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         unstake_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=initial_time + time_passed,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx)
@@ -221,7 +221,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         unstake_ctx_before = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=initial_time + one_second_before_30_days,
         )
         with self.assertRaises(InvalidTime):
@@ -239,7 +239,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         unstake_ctx_boundary = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(max_withdrawal_boundary))],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=initial_time + exactly_30_days,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx_boundary)
@@ -319,7 +319,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
             unstake_ctx = self.create_context(
                 actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(max_withdrawal))],
                 vertex=self.tx,
-                address=ctx.caller_id,
+                caller_id=Address(ctx.caller_id),
                 timestamp=timestamp,
             )
 
@@ -403,7 +403,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         unstake_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(partial_amount))],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=timestamp,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx)
@@ -439,7 +439,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         final_unstake_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(final_max))],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=timestamp + DAY_IN_SECONDS,
         )
         self.runner.call_public_method(self.contract_id, "unstake", final_unstake_ctx)
@@ -474,7 +474,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         unstake_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=initial_time + time_passed,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx)
@@ -554,7 +554,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         contract_1 = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract_1, Stake)
         self.assertEqual(contract_1.total_staked, stake_amount_1)
-        initial_timestamp = contract_1.user_stake_timestamp[user_address]
+        initial_timestamp = contract_1.user_stake_timestamp[Address(user_address)]
 
         # Advance time 5 days (some rewards accumulate but still locked)
         self.clock.advance(5 * DAY_IN_SECONDS)
@@ -604,7 +604,8 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
             print("⚠️ No auto-compounding detected (or pending was 0)")
 
         # Timestamp should NOT change (keeps original lock time)
-        self.assertEqual(initial_timestamp, contract_2.user_stake_timestamp.get(user_address, 0),
+        if Address(user_address) in contract_2.user_stake_timestamp:
+            self.assertEqual(initial_timestamp, contract_2.user_stake_timestamp[Address(user_address)],
                         "Stake timestamp should not change on subsequent stakes")
 
         print("✓ total_staked correctly excludes compounded rewards")
@@ -633,7 +634,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         unstake_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(max_withdrawal))],
             vertex=self.tx,
-            address=ctx2.caller_id,
+            caller_id=Address(ctx2.caller_id),
             timestamp=final_time,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx)
@@ -731,7 +732,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         unstake_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(max_withdrawal))],
             vertex=self.tx,
-            address=ctx2.caller_id,
+            caller_id=Address(ctx2.caller_id),
             timestamp=final_time,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx)
@@ -815,7 +816,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         unstake_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(partial_amount))],
             vertex=self.tx,
-            address=ctx1.caller_id,
+            caller_id=Address(ctx1.caller_id),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx)
@@ -871,7 +872,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         unstake_ctx_1 = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(unstake_1))],
             vertex=self.tx,
-            address=ctx1.caller_id,
+            caller_id=Address(ctx1.caller_id),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx_1)
@@ -901,7 +902,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         unstake_ctx_2 = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(unstake_2))],
             vertex=self.tx,
-            address=ctx2.caller_id,
+            caller_id=Address(ctx2.caller_id),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx_2)
@@ -939,7 +940,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         final_unstake_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(max_withdrawal))],
             vertex=self.tx,
-            address=ctx3.caller_id,
+            caller_id=Address(ctx3.caller_id),
             timestamp=final_time,
         )
         self.runner.call_public_method(self.contract_id, "unstake", final_unstake_ctx)
@@ -971,7 +972,7 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         unstake_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(unstake_amount))],
             vertex=self.tx,
-            address=ctx1.caller_id,
+            caller_id=Address(ctx1.caller_id),
             timestamp=base_time,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx)
