@@ -135,8 +135,8 @@ class Crowdsale(Blueprint):
         self.htr_balance = Amount(0)
 
         # Set control addresses
-        self.owner = ctx.address
-        self.platform = Address(ctx.address)  # TODO: Configure platform address
+        self.owner = ctx.caller_id
+        self.platform = Address(ctx.caller_id)  # TODO: Configure platform address
 
         # Initialize tracking
         # Note: deposits and claimed dictionaries are automatically initialized as empty
@@ -163,7 +163,7 @@ class Crowdsale(Blueprint):
             raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
         # Update participant tracking
-        participant_address = Address(ctx.address)
+        participant_address = Address(ctx.caller_id)
         if participant_address not in self.deposits:
             self.participants_count += 1
 
@@ -185,7 +185,7 @@ class Crowdsale(Blueprint):
         if self.state != SaleState.SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
-        participant_address = Address(ctx.address)
+        participant_address = Address(ctx.caller_id)
         if self.claimed.get(participant_address, False):
             raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
 
@@ -216,7 +216,7 @@ class Crowdsale(Blueprint):
         if self.state != SaleState.FAILED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
-        participant_address = Address(ctx.address)
+        participant_address = Address(ctx.caller_id)
         if self.claimed.get(participant_address, False):
             raise NCFail(CrowdsaleErrors.ALREADY_CLAIMED)
 

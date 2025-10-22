@@ -1,16 +1,17 @@
 from typing import NamedTuple
 
-from hathor.nanocontracts.blueprint import Blueprint
-from hathor.nanocontracts.context import Context
-from hathor.nanocontracts.exception import NCFail
-from hathor.nanocontracts.types import (
+from hathor import (
     Amount,
+    Blueprint,
+    Context,
     TokenUid,
     Timestamp,
     Address,
     ContractId,
     NCDepositAction,
+    NCFail,
     NCWithdrawalAction,
+    export,
     public,
     view,
 )
@@ -71,7 +72,7 @@ class StakeValidationInfo(NamedTuple):
     min_period_days: int
     is_paused: bool
 
-
+@export
 class Stake(Blueprint):
     """Stake blueprint with enhanced features.
 
@@ -634,6 +635,3 @@ class InvalidState(NCFail):
 
 class InvalidInput(NCFail):
     pass
-
-
-__blueprint__ = Stake

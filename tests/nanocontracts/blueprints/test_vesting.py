@@ -43,7 +43,7 @@ class VestingTestCase(BlueprintTestCase):
         # Set up contract
         self.contract_id = self.gen_random_contract_id()
         self.blueprint_id = self.gen_random_blueprint_id()
-        self.register_blueprint_class(self.blueprint_id, Vesting)
+        self._register_blueprint_class( Vesting,self.blueprint_id)
 
         # Generate test tokens and addresses
         self.token_uid = self.gen_random_token_uid()
@@ -72,13 +72,13 @@ class VestingTestCase(BlueprintTestCase):
         # Create context with token deposit action
         ctx = self.create_context(
             actions=[NCDepositAction(token_uid=self.token_uid, amount=amount)],
-            address=self.admin_address,
+            caller_id=self.admin_address,
             timestamp=self.now,
         )
 
         # Use runner.create_contract to create and initialize the contract
         self.runner.create_contract(
-            self.contract_id, self.blueprint_id, ctx, self.token_uid
+            self.contract_id, self.blueprint_id, ctx, self.token_uid, self.contract_id
         )
 
     def _configure_vesting(
@@ -95,7 +95,7 @@ class VestingTestCase(BlueprintTestCase):
             beneficiary = self._get_any_address()[0]
 
         ctx = self.create_context(
-            address=self.admin_address,
+            caller_id=self.admin_address,
             timestamp=self.now,
         )
 
@@ -124,7 +124,7 @@ class VestingTestCase(BlueprintTestCase):
             actions=[
                 NCDepositAction(token_uid=wrong_token, amount=self.initial_deposit)
             ],
-            address=self.admin_address,
+            caller_id=self.admin_address,
             timestamp=self.now,
         )
 
@@ -158,7 +158,7 @@ class VestingTestCase(BlueprintTestCase):
             self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
         )
 
-        self.assertEqual(info.beneficiary, beneficiary)
+        self.assertEqual(info.beneficiary, beneficiary.hex())
         self.assertEqual(info.amount, amount)
         self.assertEqual(info.withdrawn, 0)
         self.assertEqual(info.vested, 0)
@@ -175,7 +175,7 @@ class VestingTestCase(BlueprintTestCase):
 
         start_time = self.now
         ctx = self.create_context(
-            address=self.admin_address,
+            caller_id=self.admin_address,
             timestamp=start_time,
         )
         self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
@@ -201,7 +201,7 @@ class VestingTestCase(BlueprintTestCase):
         # Start vesting
         start_time = self.now
         ctx = self.create_context(
-            address=self.admin_address,
+            caller_id=self.admin_address,
             timestamp=start_time,
         )
         self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
@@ -209,7 +209,7 @@ class VestingTestCase(BlueprintTestCase):
         # Try claiming before cliff (should fail)
         early_claim_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=1)],
-            address=beneficiary,
+            caller_id=beneficiary,
             timestamp=start_time + (cliff_months * self.month_in_seconds) - 1,
         )
         with self.assertRaises(InsufficientVestedAmount):
@@ -224,7 +224,7 @@ class VestingTestCase(BlueprintTestCase):
             actions=[
                 NCWithdrawalAction(token_uid=self.token_uid, amount=monthly_vesting)
             ],
-            address=beneficiary,
+            caller_id=beneficiary,
             timestamp=after_cliff,
         )
         self.runner.call_public_method(
@@ -246,7 +246,7 @@ class VestingTestCase(BlueprintTestCase):
 
         # Change beneficiary
         ctx = self.create_context(
-            address=old_beneficiary,
+            caller_id=old_beneficiary,
             timestamp=self.now,
         )
         self.runner.call_public_method(
@@ -257,11 +257,11 @@ class VestingTestCase(BlueprintTestCase):
         info = self.runner.call_view_method(
             self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
         )
-        self.assertEqual(info.beneficiary, new_beneficiary)
+        self.assertEqual(info.beneficiary, new_beneficiary.hex())
 
         # Test unauthorized change
         unauthorized_ctx = self.create_context(
-            address=self._get_any_address()[0],
+            caller_id=self._get_any_address()[0],
             timestamp=self.now,
         )
         with self.assertRaises(InvalidBeneficiary):
@@ -281,7 +281,7 @@ class VestingTestCase(BlueprintTestCase):
         deposit_amount = 50_000_00
         deposit_ctx = self.create_context(
             actions=[NCDepositAction(token_uid=self.token_uid, amount=deposit_amount)],
-            address=self.admin_address,
+            caller_id=self.admin_address,
             timestamp=self.now,
         )
         self.runner.call_public_method(self.contract_id, "deposit_tokens", deposit_ctx)
@@ -298,7 +298,7 @@ class VestingTestCase(BlueprintTestCase):
             actions=[
                 NCWithdrawalAction(token_uid=self.token_uid, amount=withdraw_amount)
             ],
-            address=self.admin_address,
+            caller_id=self.admin_address,
             timestamp=self.now,
         )
         self.runner.call_public_method(
@@ -323,7 +323,7 @@ class VestingTestCase(BlueprintTestCase):
         # Start vesting
         start_time = self.now
         ctx = self.create_context(
-            address=self.admin_address,
+            caller_id=self.admin_address,
             timestamp=start_time,
         )
         self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
@@ -365,7 +365,7 @@ class VestingTestCase(BlueprintTestCase):
         # Start vesting
         start_time = self.now
         ctx = self.create_context(
-            address=self.admin_address,
+            caller_id=self.admin_address,
             timestamp=start_time,
         )
         self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
@@ -385,48 +385,9 @@ class VestingTestCase(BlueprintTestCase):
                 actions=[
                     NCWithdrawalAction(token_uid=self.token_uid, amount=expected_vested)
                 ],
-                address=beneficiaries[i],
+                caller_id=beneficiaries[i],
                 timestamp=claim_time,
             )
             self.runner.call_public_method(
                 self.contract_id, "claim_allocation", claim_ctx, index
             )
-
-    # def test_admin_claim_allocation(self):
-    #     """Test admin claiming on behalf of beneficiary."""
-    #     self._initialize_contract()
-    #     amount = 120_000_00
-    #     cliff_months = 6
-    #     vesting_months = 12
-    #     beneficiary = self._configure_vesting(0, amount, cliff_months, vesting_months)
-
-    #     # Start vesting
-    #     start_time = self.now
-    #     ctx = self.create_context(
-    #         address=self.admin_address,
-    #         timestamp=start_time,
-    #     )
-    #     self.runner.call_public_method(self.contract_id, "start_vesting", ctx)
-
-    #     # Move time to after cliff
-    #     claim_time = start_time + ((cliff_months + 1) * self.month_in_seconds)
-    #     expected_vested = amount // vesting_months
-
-    #     # Admin claims on behalf of beneficiary
-    #     admin_claim_ctx = self.create_context(
-    #         actions=[
-    #             NCWithdrawalAction(token_uid=self.token_uid, amount=expected_vested)
-    #         ],
-    #         address=self.admin_address,
-    #         timestamp=claim_time,
-    #     )
-
-    #     self.runner.call_public_method(
-    #         self.contract_id, "admin_claim_allocation", admin_claim_ctx, 0
-    #     )
-
-    #     # Verify withdrawal was successful
-    #     info = self.runner.call_view_method(
-    #         self.contract_id, "get_vesting_info", 0, Timestamp(claim_time)
-    #     )
-    #     self.assertEqual(info.withdrawn, expected_vested)

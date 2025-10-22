@@ -1,16 +1,17 @@
 from typing import NamedTuple
 
-from hathor.nanocontracts.blueprint import Blueprint
-from hathor.nanocontracts.context import Context
-from hathor.nanocontracts.exception import NCFail
-from hathor.nanocontracts.types import (
+from hathor import (
     Address,
-    Amount,
+    Amount, 
+    Blueprint,
+    Context,
     ContractId,
     NCDepositAction,
+    NCFail,
     NCWithdrawalAction,
     TokenUid,
     Timestamp,
+    export,
     public,
     view,
 )
@@ -76,7 +77,7 @@ class InsufficientVestedAmount(NCFail):
 class InvalidBeneficiary(NCFail):
     pass
 
-
+@export
 class Vesting(Blueprint):
     """Vesting blueprint for token distribution with fixed allocation slots.
 
@@ -425,6 +426,3 @@ class Vesting(Blueprint):
             raise InvalidBeneficiary("Only current beneficiary can change")
 
         self.allocation_addresses[index] = new_beneficiary
-
-
-__blueprint__ = Vesting

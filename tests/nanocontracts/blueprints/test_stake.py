@@ -73,7 +73,7 @@ class StakeTestCase(BlueprintTestCase):
         ctx = self.create_context(
             actions=[NCDepositAction(token_uid=self.token_uid, amount=Amount(amount))],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
 
@@ -95,7 +95,7 @@ class StakeTestCase(BlueprintTestCase):
         ctx = self.create_context(
             actions=[NCDepositAction(token_uid=self.token_uid, amount=Amount(amount))],
             vertex=self.tx,
-            address=Address(address),
+            caller_id=Address(address),
             timestamp=self.clock.seconds(),
         )
 
@@ -113,7 +113,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
 
@@ -164,7 +164,7 @@ class StakeTestCase(BlueprintTestCase):
         unstake_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=initial_time + DAY_IN_SECONDS,  # Only 1 day passed
         )
         with self.assertRaises(InvalidTime):
@@ -193,7 +193,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=initial_time + time_passed,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx)
@@ -248,7 +248,7 @@ class StakeTestCase(BlueprintTestCase):
         pause_ctx = self.create_context(
             actions=[],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "pause", pause_ctx)
@@ -260,7 +260,7 @@ class StakeTestCase(BlueprintTestCase):
         emergency_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(
@@ -275,7 +275,7 @@ class StakeTestCase(BlueprintTestCase):
         unpause_ctx = self.create_context(
             actions=[],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "unpause", unpause_ctx)
@@ -290,7 +290,7 @@ class StakeTestCase(BlueprintTestCase):
         deposit_ctx = self.create_context(
             actions=[NCDepositAction(token_uid=self.token_uid, amount=Amount(deposit_amount))],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "owner_deposit", deposit_ctx)
@@ -307,7 +307,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=Address(self.owner_address),
+            caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
         )
         self.runner.call_public_method(self.contract_id, "owner_withdraw", withdraw_ctx)
@@ -324,7 +324,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=Address(self._get_any_address()[0]),
+            caller_id=Address(self._get_any_address()[0]),
             timestamp=self.clock.seconds(),
         )
         with self.assertRaises(Unauthorized):
@@ -400,7 +400,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=initial_time + time_passed,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx)
@@ -463,7 +463,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=current_time,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx_1)
@@ -490,7 +490,7 @@ class StakeTestCase(BlueprintTestCase):
                 )
             ],
             vertex=self.tx,
-            address=ctx.caller_id,
+            caller_id=Address(ctx.caller_id),
             timestamp=current_time,
         )
         self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx_2)
