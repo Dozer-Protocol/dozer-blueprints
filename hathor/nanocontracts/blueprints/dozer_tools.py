@@ -35,6 +35,10 @@ NULL_CONTRACT_ID = ContractId(VertexId(b"\x00" * 32))
 # Placeholder DZR token UID (to be updated later)
 DZR_UID = TokenUid(VertexId(b"\x01" * 32))
 
+# Crowdsale fee limits
+MAX_PLATFORM_FEE = 1000  # 10% in basis points
+MAX_PARTICIPATION_FEE = 300  # 3% in basis points
+
 
 class DozerToolsError(NCFail):
     """Base error for DozerTools operations."""
@@ -115,6 +119,10 @@ class DozerTools(Blueprint):
     staking_blueprint_id: BlueprintId
     dao_blueprint_id: BlueprintId
     crowdsale_blueprint_id: BlueprintId
+
+    # Default crowdsale fee configuration
+    default_crowdsale_platform_fee: Amount  # Default platform fee in basis points (0-1000)
+    default_crowdsale_participation_fee: Amount  # Default participation fee in basis points (0-300)
 
     # Legacy token permissions (admin-controlled)
     legacy_token_permissions: dict[TokenUid, Address]  # token -> authorized_creator
@@ -270,6 +278,10 @@ class DozerTools(Blueprint):
         self.staking_blueprint_id = null_blueprint
         self.dao_blueprint_id = null_blueprint
         self.crowdsale_blueprint_id = null_blueprint
+
+        # Initialize default crowdsale fees (0 = no fee)
+        self.default_crowdsale_platform_fee = Amount(0)
+        self.default_crowdsale_participation_fee = Amount(0)
 
         # Initialize legacy permissions and blacklist
         self.legacy_token_permissions:dict[TokenUid, Address] = {}
@@ -667,9 +679,11 @@ class DozerTools(Blueprint):
         min_deposit: Amount,
         start_time: Timestamp,
         end_time: Timestamp,
-        platform_fee: Amount,
     ) -> ContractId:
         """Create crowdsale contract.
+
+        NOTE: Uses default platform_fee and participation_fee configured in DozerTools.
+        Project dev no longer passes fees - they're set globally by DozerTools owner.
 
         Args:
             ctx: Transaction context
@@ -680,7 +694,6 @@ class DozerTools(Blueprint):
             min_deposit: Minimum purchase in HTR
             start_time: Sale start time
             end_time: Sale end time
-            platform_fee: Platform fee in basis points
 
         Returns:
             ContractId of the created crowdsale contract
@@ -701,6 +714,7 @@ class DozerTools(Blueprint):
         if public_sale_percentage == 0:
             raise InvalidAllocation("No public sale allocation configured")
 
+        # Use configured default fees
         return self._create_crowdsale(
             ctx,
             token_uid,
@@ -710,7 +724,8 @@ class DozerTools(Blueprint):
             min_deposit,
             start_time,
             end_time,
-            platform_fee,
+            self.default_crowdsale_platform_fee,
+            self.default_crowdsale_participation_fee,
         )
 
     def _create_crowdsale(
@@ -724,6 +739,7 @@ class DozerTools(Blueprint):
         start_time: Timestamp,
         end_time: Timestamp,
         platform_fee: Amount,
+        participation_fee: Amount,
     ) -> ContractId:
         """Helper method to create crowdsale contract with tokens from vesting."""
         vesting_contract = self.project_vesting_contract[token_uid]
@@ -765,6 +781,7 @@ class DozerTools(Blueprint):
             start_time,
             end_time,
             platform_fee,
+            participation_fee,
             self.syscall.get_contract_id(),  # Pass DozerTools contract ID as creator
         )
 
@@ -1205,6 +1222,54 @@ class DozerTools(Blueprint):
         if self.crowdsale_blueprint_id == null_blueprint:
             raise FeatureNotAvailable("Crowdsale feature not available")
 
+    # Crowdsale Fee Configuration Methods (Admin Only)
+
+    @public
+    def set_default_crowdsale_platform_fee(
+        self,
+        ctx: Context,
+        platform_fee: Amount,
+    ) -> None:
+        """Set default platform fee for new crowdsales (owner only).
+
+        Args:
+            ctx: Transaction context
+            platform_fee: Platform fee in basis points (0-1000, where 1000 = 10%)
+                         0 means no platform fee
+        """
+        self._only_owner(ctx)
+
+        # Validate fee range (0 is allowed for no fee)
+        if platform_fee > MAX_PLATFORM_FEE:
+            raise DozerToolsError(
+                f"Platform fee cannot exceed {MAX_PLATFORM_FEE} basis points (10%)"
+            )
+
+        self.default_crowdsale_platform_fee = platform_fee
+
+    @public
+    def set_default_crowdsale_participation_fee(
+        self,
+        ctx: Context,
+        participation_fee: Amount,
+    ) -> None:
+        """Set default participation fee for new crowdsales (owner only).
+
+        Args:
+            ctx: Transaction context
+            participation_fee: Participation fee in basis points (0-300, where 300 = 3%)
+                              0 means no participation fee
+        """
+        self._only_owner(ctx)
+
+        # Validate fee range (0 is allowed for no fee)
+        if participation_fee > MAX_PARTICIPATION_FEE:
+            raise DozerToolsError(
+                f"Participation fee cannot exceed {MAX_PARTICIPATION_FEE} basis points (3%)"
+            )
+
+        self.default_crowdsale_participation_fee = participation_fee
+
     # Admin Methods
 
     @public
@@ -1509,6 +1574,42 @@ class DozerTools(Blueprint):
             "minimum_deposit": str(self.minimum_deposit),
             "total_projects": str(self.total_projects_count),
         }
+
+    @view
+    def get_crowdsale_fee_config(self) -> dict[str, str]:
+        """Get current default crowdsale fee configuration.
+
+        Returns:
+            Dictionary with fee configuration in basis points
+        """
+        return {
+            "default_platform_fee_bp": str(self.default_crowdsale_platform_fee),
+            "default_participation_fee_bp": str(self.default_crowdsale_participation_fee),
+            "platform_fee": str(self.default_crowdsale_platform_fee),
+            "participation_fee": str(self.default_crowdsale_participation_fee),
+        }
+
+    @view
+    def get_crowdsale_fees_info(self, token_uid: TokenUid) -> dict[str, str]:
+        """Get fee information for a specific crowdsale.
+
+        Args:
+            token_uid: Project token UID
+
+        Returns:
+            Dictionary with crowdsale fee details
+        """
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Call crowdsale's view method to get fee info
+        return self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).view().get_fee_info()
 
     @view
     def get_project_vesting_overview(self, token_uid: TokenUid) -> dict[str, str]:
@@ -2397,4 +2498,69 @@ class DozerTools(Blueprint):
             ).public(action).routed_withdraw_remaining_tokens(
             Address(ctx.caller_id),
         )
+
+    @public(allow_withdrawal=True)
+    def crowdsale_withdraw_participation_fees(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> None:
+        """Withdraw participation fees from crowdsale contract (DozerTools owner only).
+
+        This allows the DozerTools owner to collect all participation fees that have
+        been accumulated from users participating in the crowdsale.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID to identify which crowdsale
+        """
+        self._only_owner(ctx)  # Only DozerTools owner
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Get the withdrawal action (should be HTR for fees)
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCWithdrawalAction):
+            raise DozerToolsError("HTR withdrawal action required")
+
+        # Route to crowdsale's withdraw_participation_fees
+        # Platform address in crowdsale is DozerTools owner, so this will succeed
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public(action).withdraw_participation_fees()
+
+    @public(allow_withdrawal=True)
+    def crowdsale_withdraw_platform_fees(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> None:
+        """Withdraw platform fees from successful crowdsale (DozerTools owner only).
+
+        Platform fees are only available after a crowdsale reaches SUCCESS state.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID to identify which crowdsale
+        """
+        self._only_owner(ctx)  # Only DozerTools owner
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Get the withdrawal action (should be HTR for fees)
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCWithdrawalAction):
+            raise DozerToolsError("HTR withdrawal action required")
+
+        # Route to crowdsale's withdraw_platform_fees (existing method)
+        # Platform address in crowdsale is DozerTools owner, so this will succeed
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public(action).withdraw_platform_fees()
 

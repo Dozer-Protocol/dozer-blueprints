@@ -19,8 +19,10 @@ from hathor import (
 
 # Constants
 HTR_UID = b"\x00"
-MIN_PLATFORM_FEE = 100  # 1%
+MIN_PLATFORM_FEE = 0  # 0% (allow no platform fee)
 MAX_PLATFORM_FEE = 1000  # 10%
+MIN_PARTICIPATION_FEE = 0  # 0% (allow no participation fee)
+MAX_PARTICIPATION_FEE = 300  # 3%
 
 
 class CrowdsaleSaleInfo(NamedTuple):
@@ -102,7 +104,8 @@ class Crowdsale(Blueprint):
     min_deposit: Amount  # Minimum purchase in HTR
     start_time: Timestamp  # Sale start time
     end_time: Timestamp  # Sale end time
-    platform_fee: Amount  # Fee in basis points
+    platform_fee: Amount  # Fee in basis points (0-1000, 0 = no fee)
+    participation_fee: Amount  # Fee in basis points for each participation (0-300, 0 = no fee)
 
     # Sale state
     state: int
@@ -128,6 +131,10 @@ class Crowdsale(Blueprint):
     platform_fees_withdrawn: bool  # Whether platform fees have been withdrawn
     platform_fees_collected: Amount  # Total fees collected
 
+    # Participation fee tracking
+    total_participation_fees_collected: Amount  # Total participation fees collected
+    participation_fees_withdrawn: bool  # Whether participation fees have been withdrawn
+
     @public(allow_deposit=True)
     def initialize(
         self,
@@ -140,6 +147,7 @@ class Crowdsale(Blueprint):
         start_time: Timestamp,
         end_time: Timestamp,
         platform_fee: Amount,
+        participation_fee: Amount,
         creator_contract_id: ContractId,
     ) -> None:
         """Initialize the sale contract with configuration parameters."""
@@ -150,6 +158,8 @@ class Crowdsale(Blueprint):
             raise NCFail("Invalid time range")
         if platform_fee < MIN_PLATFORM_FEE or platform_fee > MAX_PLATFORM_FEE:
             raise NCFail("Invalid platform fee")
+        if participation_fee < MIN_PARTICIPATION_FEE or participation_fee > MAX_PARTICIPATION_FEE:
+            raise NCFail("Invalid participation fee")
         if rate <= 0 or min_deposit <= 0:
             raise NCFail("Invalid rate or minimum deposit")
 
@@ -172,6 +182,7 @@ class Crowdsale(Blueprint):
         self.start_time = start_time
         self.end_time = end_time
         self.platform_fee = platform_fee
+        self.participation_fee = participation_fee
 
         # Initialize state
         self.state = SaleState.PENDING
@@ -206,6 +217,8 @@ class Crowdsale(Blueprint):
         self.owner_withdrawn = False
         self.platform_fees_withdrawn = False
         self.platform_fees_collected = Amount(0)
+        self.total_participation_fees_collected = Amount(0)
+        self.participation_fees_withdrawn = False
 
     @public(allow_deposit=True)
     def participate(self, ctx: Context) -> None:
@@ -217,12 +230,17 @@ class Crowdsale(Blueprint):
         if not isinstance(action, NCDepositAction):
             raise NCFail("Expected deposit action")
 
-        amount = Amount(action.amount)
-        if amount < self.min_deposit:
+        gross_amount = Amount(action.amount)
+
+        # Calculate and deduct participation fee
+        participation_fee = self._calculate_participation_fee(gross_amount)
+        net_amount = Amount(gross_amount - participation_fee)
+
+        if net_amount < self.min_deposit:
             raise NCFail(CrowdsaleErrors.BELOW_MIN)
 
-        # Check hard cap
-        if self.total_raised + amount > self.hard_cap:
+        # Check hard cap with NET amount
+        if self.total_raised + net_amount > self.hard_cap:
             raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
         # Update participant tracking
@@ -230,15 +248,20 @@ class Crowdsale(Blueprint):
         if participant_address not in self.deposits:
             self.participants_count += 1
 
-        # Update state
+        # Update state with NET amount for token calculations
         self.deposits[participant_address] = Amount(
-            self.deposits.get(participant_address, Amount(0)) + amount
+            self.deposits.get(participant_address, Amount(0)) + net_amount
         )
-        self.total_raised = Amount(self.total_raised + amount)
-        self.total_sold = Amount(self.total_sold + self._calculate_tokens(amount))
-        self.htr_balance = Amount(self.htr_balance + amount)
+        self.total_raised = Amount(self.total_raised + net_amount)
+        self.total_sold = Amount(self.total_sold + self._calculate_tokens(net_amount))
 
-        # Check if soft cap reached
+        # Track GROSS amount in HTR balance and participation fees separately
+        self.htr_balance = Amount(self.htr_balance + gross_amount)
+        self.total_participation_fees_collected = Amount(
+            self.total_participation_fees_collected + participation_fee
+        )
+
+        # Check if soft cap reached (using net amount)
         if self.total_raised >= self.soft_cap:
             self.state = SaleState.SUCCESS
 
@@ -373,6 +396,31 @@ class Crowdsale(Blueprint):
         self.platform_fees_withdrawn = True
         self.htr_balance = Amount(self.htr_balance - platform_fee)
 
+    @public(allow_withdrawal=True)
+    def withdraw_participation_fees(self, ctx: Context) -> None:
+        """Withdraw participation fees (platform/DozerTools owner only).
+
+        Can be called at any time, regardless of sale state.
+        Works even if participation_fee is 0 (will withdraw 0).
+        """
+        if Address(ctx.caller_id) != self.platform:
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        if self.participation_fees_withdrawn:
+            raise NCFail("Participation fees already withdrawn")
+
+        total_fees = self.total_participation_fees_collected
+
+        # Validate withdrawal
+        action = ctx.get_single_action(TokenUid(HTR_UID))
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
+        if action.amount != total_fees:
+            raise NCFail(f"Invalid withdrawal amount. Expected: {total_fees}, Got: {action.amount}")
+
+        # Mark as withdrawn and update balance
+        self.participation_fees_withdrawn = True
+        self.htr_balance = Amount(self.htr_balance - total_fees)
+
     @public
     def early_activate(self, ctx: Context) -> None:
         """Activate the sale (owner only)."""
@@ -441,8 +489,22 @@ class Crowdsale(Blueprint):
         """Calculate tokens to be received for HTR amount."""
         return Amount(htr_amount * self.rate)
 
+    def _calculate_participation_fee(self, amount: Amount) -> Amount:
+        """Calculate participation fee for given amount.
+
+        Returns 0 if participation_fee is 0 (no fee configured).
+        """
+        if self.participation_fee == 0:
+            return Amount(0)
+        return Amount(amount * self.participation_fee // BASIS_POINTS)
+
     def _calculate_platform_fee(self, amount: Amount) -> Amount:
-        """Calculate platform fee for given amount."""
+        """Calculate platform fee for given amount.
+
+        Returns 0 if platform_fee is 0 (no fee configured).
+        """
+        if self.platform_fee == 0:
+            return Amount(0)
         return Amount(amount * self.platform_fee // BASIS_POINTS)
 
     @view
@@ -495,6 +557,20 @@ class Crowdsale(Blueprint):
             can_withdraw=can_withdraw,
         )
 
+    @view
+    def get_fee_info(self) -> dict[str, str]:
+        """Get comprehensive fee information."""
+        return {
+            "participation_fee_bp": str(self.participation_fee),
+            "platform_fee_bp": str(self.platform_fee),
+            "participation_fee": str(self.participation_fee),
+            "platform_fee": str(self.platform_fee) ,
+            "total_participation_fees_collected": str(self.total_participation_fees_collected),
+            "participation_fees_withdrawn": str(self.participation_fees_withdrawn).lower(),
+            "platform_fees_collected": str(self.platform_fees_collected),
+            "platform_fees_withdrawn": str(self.platform_fees_withdrawn).lower(),
+        }
+
     # Routing methods for DozerTools integration
     @public(allow_deposit=True)
     def routed_participate(self, ctx: Context, user_address: Address) -> None:
@@ -507,27 +583,37 @@ class Crowdsale(Blueprint):
         if not isinstance(action, NCDepositAction):
             raise NCFail("Expected deposit action")
 
-        amount = Amount(action.amount)
-        if amount < self.min_deposit:
+        gross_amount = Amount(action.amount)
+
+        # Calculate and deduct participation fee
+        participation_fee = self._calculate_participation_fee(gross_amount)
+        net_amount = Amount(gross_amount - participation_fee)
+
+        if net_amount < self.min_deposit:
             raise NCFail(CrowdsaleErrors.BELOW_MIN)
 
-        # Check hard cap
-        if self.total_raised + amount > self.hard_cap:
+        # Check hard cap with NET amount
+        if self.total_raised + net_amount > self.hard_cap:
             raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
         # Update participant tracking
         if user_address not in self.deposits:
             self.participants_count += 1
 
-        # Update state
+        # Update state with NET amount for token calculations
         self.deposits[user_address] = Amount(
-            self.deposits.get(user_address, Amount(0)) + amount
+            self.deposits.get(user_address, Amount(0)) + net_amount
         )
-        self.total_raised = Amount(self.total_raised + amount)
-        self.total_sold = Amount(self.total_sold + self._calculate_tokens(amount))
-        self.htr_balance = Amount(self.htr_balance + amount)
+        self.total_raised = Amount(self.total_raised + net_amount)
+        self.total_sold = Amount(self.total_sold + self._calculate_tokens(net_amount))
 
-        # Check if soft cap reached
+        # Track GROSS amount in HTR balance and participation fees separately
+        self.htr_balance = Amount(self.htr_balance + gross_amount)
+        self.total_participation_fees_collected = Amount(
+            self.total_participation_fees_collected + participation_fee
+        )
+
+        # Check if soft cap reached (using net amount)
         if self.total_raised >= self.soft_cap:
             self.state = SaleState.SUCCESS
 

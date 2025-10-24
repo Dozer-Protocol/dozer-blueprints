@@ -1502,9 +1502,30 @@ class DozerToolsTest(BlueprintTestCase):
         soft_cap = 90_00  # 90 HTR
         hard_cap = 100_00  # 100 HTR
         min_deposit = 10_00  # 10 HTR
-        platform_fee = 500  # 5%
         start_time = initial_time + 100
         end_time = start_time + 86400  # 24 hours
+
+        # Configure default fees in DozerTools (optional, defaults to 0)
+        platform_fee = 500  # 5% - store for later calculations
+        participation_fee = 200  # 2% - store for later calculations
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            platform_fee,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_participation_fee",
+            fee_config_ctx,
+            participation_fee,
+        )
 
         self.runner.call_public_method(
             self.dozer_tools_nc_id,
@@ -1517,7 +1538,6 @@ class DozerToolsTest(BlueprintTestCase):
             min_deposit,
             start_time,
             end_time,
-            platform_fee,
         )
 
         # Get crowdsale contract
@@ -1581,7 +1601,12 @@ class DozerToolsTest(BlueprintTestCase):
             crowdsale_contract_id, "get_sale_info"
         )
         self.assertEqual(sale_info.state, 3)  # SUCCESS
-        self.assertEqual(sale_info.total_raised, sum(deposit_amounts))
+        # total_raised is NET amount after participation fee (2%)
+        participation_fee = 200
+        expected_net_total = sum(
+            amount - (amount * participation_fee // 10000) for amount in deposit_amounts
+        )
+        self.assertEqual(sale_info.total_raised, expected_net_total)
         self.assertEqual(sale_info.participants, len(participants))
 
         # Check sale progress
@@ -1591,19 +1616,23 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertTrue(progress.is_successful)
 
         # Each participant claims tokens through DozerTools routing
-        for user_addr, deposit_amount in participants:
+        for user_addr, gross_deposit in participants:
+            # Calculate NET amount (what user actually contributed after fees)
+            net_deposit = gross_deposit - (gross_deposit * participation_fee // 10000)
+
             # Check participant info before claiming
             participant_info = self.runner.call_view_method(
                 crowdsale_contract_id,
                 "get_participant_info",
                 Address(user_addr),
             )
-            self.assertEqual(participant_info.deposited, deposit_amount)
-            self.assertEqual(participant_info.tokens_due, deposit_amount * rate)
+            # deposited and tokens_due are based on NET amount
+            self.assertEqual(participant_info.deposited, net_deposit)
+            self.assertEqual(participant_info.tokens_due, net_deposit * rate)
             self.assertFalse(participant_info.has_claimed)
 
-            # Claim tokens
-            tokens_due = deposit_amount * rate
+            # Claim tokens (based on NET deposit)
+            tokens_due = net_deposit * rate
             claim_ctx = self.create_context(
                 actions=[NCWithdrawalAction(token_uid=token_uid, amount=tokens_due)],
                 vertex=self._get_any_tx(),
@@ -1628,9 +1657,10 @@ class DozerToolsTest(BlueprintTestCase):
             self.assertEqual(participant_info_after.tokens_due, 0)
 
         # Owner withdraws raised HTR (use routed method through dozer_tools)
-        total_raised = sum(deposit_amounts)
-        platform_fee_amount = (total_raised * platform_fee) // 10000
-        withdrawable_htr = total_raised - platform_fee_amount
+        # total_raised in contract is NET amount (after participation fees)
+        total_raised_net = expected_net_total
+        platform_fee_amount = (total_raised_net * platform_fee) // 10000
+        withdrawable_htr = total_raised_net - platform_fee_amount
 
         owner_withdraw_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=htr_uid, amount=withdrawable_htr)],
@@ -1650,7 +1680,7 @@ class DozerToolsTest(BlueprintTestCase):
         withdrawal_info = self.runner.call_view_method(
             crowdsale_contract_id, "get_withdrawal_info"
         )
-        self.assertEqual(withdrawal_info.total_raised, total_raised)
+        self.assertEqual(withdrawal_info.total_raised, total_raised_net)
         self.assertEqual(withdrawal_info.platform_fees, platform_fee_amount)
         self.assertTrue(withdrawal_info.is_withdrawn)
 
@@ -1700,9 +1730,28 @@ class DozerToolsTest(BlueprintTestCase):
         soft_cap = 150_00  # 150 HTR
         hard_cap = 200_00  # 200 HTR (200 * 100 = 20,000 tokens = 2,000,000 units)
         min_deposit = 50_00
-        platform_fee = 300
         start_time = initial_time + 100
         end_time = start_time + 3600
+
+        # Configure fees
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            300,  # 3%
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_participation_fee",
+            fee_config_ctx,
+            150,  # 1.5%
+        )
 
         self.runner.call_public_method(
             self.dozer_tools_nc_id,
@@ -1715,7 +1764,6 @@ class DozerToolsTest(BlueprintTestCase):
             min_deposit,
             start_time,
             end_time,
-            platform_fee,
         )
 
         # Get crowdsale contract
@@ -1738,8 +1786,13 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Users participate but don't reach soft cap
+        # Need to deposit enough so NET amount >= min_deposit (50_00)
+        # With 1.5% fee: gross = min_deposit / (1 - 0.015) = 50_00 / 0.985 = ~50_76
+        # Using integer math: gross = (net * 10000) // (10000 - participation_fee)
+        participation_fee = 150
+        gross_min = (min_deposit * 10000) // (10000 - participation_fee)
         participants = []
-        deposit_amounts = [50_00, 50_00]  # Total: 100 HTR (below soft cap of 150)
+        deposit_amounts = [gross_min, gross_min]  # Total will still be below soft cap
 
         for deposit_amount in deposit_amounts:
             user_addr, _ = self._get_any_address()
@@ -1764,7 +1817,11 @@ class DozerToolsTest(BlueprintTestCase):
             crowdsale_contract_id, "get_sale_info"
         )
         self.assertEqual(sale_info.state, 1)  # ACTIVE
-        self.assertEqual(sale_info.total_raised, sum(deposit_amounts))
+        # total_raised is NET amount after participation fee
+        expected_net_total = sum(
+            amount - (amount * participation_fee // 10000) for amount in deposit_amounts
+        )
+        self.assertEqual(sale_info.total_raised, expected_net_total)
         self.assertLess(sale_info.total_raised, soft_cap)
 
         # Owner finalizes sale (failed) - use routed method through dozer_tools
@@ -1785,19 +1842,23 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertEqual(sale_info.state, 4)  # FAILED
 
         # Participants claim refunds through DozerTools
-        for user_addr, deposit_amount in participants:
+        for user_addr, gross_deposit in participants:
+            # Calculate NET amount (what user actually contributed after fees)
+            net_deposit = gross_deposit - (gross_deposit * participation_fee // 10000)
+
             # Check participant info before refund
             participant_info = self.runner.call_view_method(
                 crowdsale_contract_id,
                 "get_participant_info",
                 Address(user_addr),
             )
-            self.assertEqual(participant_info.deposited, deposit_amount)
+            # deposited stores NET amount
+            self.assertEqual(participant_info.deposited, net_deposit)
             self.assertFalse(participant_info.has_claimed)
 
-            # Claim refund
+            # Claim refund - users get back their NET amount (participation fee not refunded)
             refund_ctx = self.create_context(
-                actions=[NCWithdrawalAction(token_uid=htr_uid, amount=deposit_amount)],
+                actions=[NCWithdrawalAction(token_uid=htr_uid, amount=net_deposit)],
                 vertex=self._get_any_tx(),
                 caller_id=Address(user_addr),
                 timestamp=end_time + 200,
@@ -1863,6 +1924,20 @@ class DozerToolsTest(BlueprintTestCase):
 
         # Available tokens: 10,000,000 * 25% = 2,500,000 tokens
         # hard_cap * rate must be <= 2,500,000
+        # Configure fees before creating crowdsale
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            400,  # 4%
+        )
+
         self.runner.call_public_method(
             self.dozer_tools_nc_id,
             "create_crowdsale",
@@ -1874,7 +1949,6 @@ class DozerToolsTest(BlueprintTestCase):
             20_00,  # min_deposit
             start_time,
             end_time,
-            400,  # platform_fee (4%)
         )
 
         # Get crowdsale contract
@@ -2034,6 +2108,20 @@ class DozerToolsTest(BlueprintTestCase):
         soft_cap = 250_00  # 250 HTR
         hard_cap = 300_00  # 300 HTR
 
+        # Configure fees before creating crowdsale
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            250,  # 2.5%
+        )
+
         self.runner.call_public_method(
             self.dozer_tools_nc_id,
             "create_crowdsale",
@@ -2045,7 +2133,6 @@ class DozerToolsTest(BlueprintTestCase):
             min_deposit,
             start_time,
             end_time,
-            250,  # platform_fee
         )
 
         # Get crowdsale contract
@@ -2245,7 +2332,6 @@ class DozerToolsTest(BlueprintTestCase):
             min_deposit,
             start_time,
             end_time,
-            platform_fee,
         )
 
         # Get crowdsale contract
@@ -2384,7 +2470,21 @@ class DozerToolsTest(BlueprintTestCase):
         soft_cap = 180_00  # 180 HTR
         hard_cap = 250_00  # 250 HTR * 100 = 25,000 tokens = 2,500,000 units
         min_deposit = 50_00
-        platform_fee = 300  # 3%
+
+        # Configure fees
+        platform_fee = 300  # 3% - store for later calculations
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            platform_fee,
+        )
 
         self.runner.call_public_method(
             self.dozer_tools_nc_id,
@@ -2397,7 +2497,6 @@ class DozerToolsTest(BlueprintTestCase):
             min_deposit,
             start_time,
             end_time,
-            platform_fee,
         )
 
         # Get crowdsale contract
@@ -2538,6 +2637,20 @@ class DozerToolsTest(BlueprintTestCase):
 
         # Available tokens: 10,000,000 * 15% = 1,500,000 tokens
         # hard_cap * rate must be <= 1,500,000
+        # Configure fees before creating crowdsale
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            400,  # 4%
+        )
+
         self.runner.call_public_method(
             self.dozer_tools_nc_id,
             "create_crowdsale",
@@ -2549,7 +2662,6 @@ class DozerToolsTest(BlueprintTestCase):
             50_00,  # min_deposit
             start_time,
             end_time,
-            400,  # platform_fee
         )
 
         # Get crowdsale contract

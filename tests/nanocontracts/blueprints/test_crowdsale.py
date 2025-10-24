@@ -52,6 +52,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
         self.hard_cap = 5000_00  # 5000 HTR
         self.min_deposit = 10_00  # 10 HTR
         self.platform_fee = 500  # 5%
+        self.participation_fee = 200  # 2%
         self.start_time = int(time.time())
         self.end_time = self.start_time + 86400  # 24 hours
 
@@ -79,6 +80,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
         start_time = params.get("start_time", self.start_time)
         end_time = params.get("end_time", self.end_time)
         platform_fee = params.get("platform_fee", self.platform_fee)
+        participation_fee = params.get("participation_fee", self.participation_fee)
 
         # Create context with token deposit action
         init_ctx = self.create_context(
@@ -104,6 +106,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
             start_time,
             end_time,
             platform_fee,
+            participation_fee,
             creator_contract_id,
         )
 
@@ -137,6 +140,15 @@ class CrowdsaleTestCase(BlueprintTestCase):
     def _calculate_platform_fee(self, amount: int) -> int:
         """Helper to calculate platform fee."""
         return amount * self.platform_fee // 10000
+
+    def _calculate_participation_fee(self, amount: int) -> int:
+        """Helper to calculate participation fee."""
+        return amount * self.participation_fee // 10000
+
+    def _calculate_net_amount(self, gross_amount: int) -> int:
+        """Helper to calculate net amount after participation fee."""
+        participation_fee = self._calculate_participation_fee(gross_amount)
+        return gross_amount - participation_fee
 
     def _check_contract_balances(self) -> None:
         """Verify contract balances match registered token states."""
@@ -195,9 +207,13 @@ class CrowdsaleTestCase(BlueprintTestCase):
                 {"start_time": self.end_time, "end_time": self.start_time}
             )
 
-        # Test invalid platform fee
+        # Test invalid platform fee (above maximum)
         with self.assertRaises(NCFail):
-            self._initialize_sale({"platform_fee": 50})  # Below minimum
+            self._initialize_sale({"platform_fee": 1500})  # Above maximum (10%)
+
+        # Test invalid participation fee (above maximum)
+        with self.assertRaises(NCFail):
+            self._initialize_sale({"participation_fee": 500})  # Above maximum (3%)
 
     def test_initialize_invalid_token_deposit(self):
         """Test initialization with insufficient or invalid token deposit."""
@@ -227,6 +243,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
                 self.start_time,
                 self.end_time,
                 self.platform_fee,
+                self.participation_fee,
                 creator_contract_id,
             )
 
@@ -255,6 +272,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
                 self.start_time,
                 self.end_time,
                 self.platform_fee,
+                self.participation_fee,
                 creator_contract_id,
             )
 
@@ -294,7 +312,9 @@ class CrowdsaleTestCase(BlueprintTestCase):
         self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
-        self.assertEqual(contract.total_raised, deposit_amount)
+        # total_raised stores NET amount (after participation fee)
+        net_amount = self._calculate_net_amount(deposit_amount)
+        self.assertEqual(contract.total_raised, net_amount)
 
         # Test pause -> PAUSED
         pause_ctx = self.create_context(
@@ -317,9 +337,14 @@ class CrowdsaleTestCase(BlueprintTestCase):
         # Test reaching soft cap -> SUCCESS
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
-        remaining = self.soft_cap - contract.total_raised
-        if remaining > 0:
-            ctx = self._create_deposit_context(remaining)
+        # total_raised is NET amount, need to calculate GROSS amount to reach soft_cap
+        net_remaining = self.soft_cap - contract.total_raised
+        if net_remaining > 0:
+            # Calculate gross amount needed so that after fee deduction, we reach soft_cap
+            # gross * (1 - fee_rate) = net_remaining
+            # gross = net_remaining / (1 - fee_rate) = net_remaining * 10000 / (10000 - participation_fee)
+            gross_remaining = (net_remaining * 10000) // (10000 - self.participation_fee)
+            ctx = self._create_deposit_context(gross_remaining)
             self.runner.call_public_method(self.contract_id, "participate", ctx)
             contract = self.get_readonly_contract(self.contract_id)
             assert isinstance(contract, Crowdsale)
@@ -332,10 +357,10 @@ class CrowdsaleTestCase(BlueprintTestCase):
         """Test basic participation functionality."""
         # Initialize and activate sale
         self._initialize_sale(activate=True)
-        deposit_amount = 100_00
+        gross_amount = 100_00
 
         # Create participation context
-        ctx = self._create_deposit_context(deposit_amount)
+        ctx = self._create_deposit_context(gross_amount)
 
         # Verify sale is in active state
         contract = self.get_readonly_contract(self.contract_id)
@@ -345,12 +370,18 @@ class CrowdsaleTestCase(BlueprintTestCase):
         # Participate in sale
         self.runner.call_public_method(self.contract_id, "participate", ctx)
 
+        # Calculate expected values
+        participation_fee = self._calculate_participation_fee(gross_amount)
+        net_amount = self._calculate_net_amount(gross_amount)
+
         # Verify state changes
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
-        self.assertEqual(contract.total_raised, deposit_amount)
-        self.assertEqual(contract.total_sold, deposit_amount * self.rate)
+        self.assertEqual(contract.total_raised, net_amount)  # NET amount
+        self.assertEqual(contract.total_sold, net_amount * self.rate)  # Based on NET
         self.assertEqual(contract.participants_count, 1)
+        self.assertEqual(contract.total_participation_fees_collected, participation_fee)
+        self.assertEqual(contract.htr_balance, gross_amount)  # GROSS in balance
 
         # Verify contract balances
         self._check_contract_balances()
@@ -359,16 +390,22 @@ class CrowdsaleTestCase(BlueprintTestCase):
         """Test participation from multiple users."""
         self._initialize_sale()
         num_users = 5
-        deposit_amount = 100_00
+        gross_amount = 100_00
 
         for _ in range(num_users):
-            ctx = self._create_deposit_context(deposit_amount)
+            ctx = self._create_deposit_context(gross_amount)
             self.runner.call_public_method(self.contract_id, "participate", ctx)
+
+        # Calculate expected values
+        net_amount_per_user = self._calculate_net_amount(gross_amount)
+        total_net = net_amount_per_user * num_users
+        total_fees = self._calculate_participation_fee(gross_amount) * num_users
 
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
-        self.assertEqual(contract.total_raised, deposit_amount * num_users)
+        self.assertEqual(contract.total_raised, total_net)  # Total NET amount
         self.assertEqual(contract.participants_count, num_users)
+        self.assertEqual(contract.total_participation_fees_collected, total_fees)
 
         # Verify contract balances
         self._check_contract_balances()
@@ -377,13 +414,19 @@ class CrowdsaleTestCase(BlueprintTestCase):
         """Test sale state transition when soft cap is reached."""
         self._initialize_sale()
 
-        # Deposit enough to reach soft cap
-        ctx = self._create_deposit_context(self.soft_cap)
+        # Need to deposit GROSS amount such that NET amount >= soft_cap
+        # net = gross * (1 - participation_fee_rate)
+        # gross = soft_cap / (1 - participation_fee_rate)
+        # With 2% fee: gross = soft_cap / 0.98
+        gross_needed = (self.soft_cap * 10000) // (10000 - self.participation_fee) + 1
+
+        ctx = self._create_deposit_context(gross_needed)
         self.runner.call_public_method(self.contract_id, "participate", ctx)
 
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.SUCCESS)
+        self.assertGreaterEqual(contract.total_raised, self.soft_cap)
         # Verify contract balances
         self._check_contract_balances()
 
@@ -391,12 +434,14 @@ class CrowdsaleTestCase(BlueprintTestCase):
         """Test token claiming after successful sale."""
         self._initialize_sale()
 
-        # Reach soft cap
-        deposit_ctx = self._create_deposit_context(self.soft_cap)
+        # Reach soft cap (need gross amount that gives net >= soft_cap)
+        gross_amount = (self.soft_cap * 10000) // (10000 - self.participation_fee) + 1
+        deposit_ctx = self._create_deposit_context(gross_amount)
         self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
 
-        # Calculate tokens due
-        tokens_due = self.soft_cap * self.rate
+        # Calculate tokens due based on NET amount
+        net_amount = self._calculate_net_amount(gross_amount)
+        tokens_due = net_amount * self.rate
 
         # Attempt to claim tokens
         claim_ctx = self.create_context(
@@ -419,11 +464,14 @@ class CrowdsaleTestCase(BlueprintTestCase):
     def test_claim_refund(self):
         """Test refund claiming after failed sale."""
         self._initialize_sale()
-        deposit_amount = self.soft_cap // 2  # Below soft cap
+        gross_amount = self.soft_cap // 2  # Below soft cap
 
         # Make deposit
-        deposit_ctx = self._create_deposit_context(deposit_amount)
+        deposit_ctx = self._create_deposit_context(gross_amount)
         self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
+
+        # Calculate net amount (what user actually contributed after fee)
+        net_amount = self._calculate_net_amount(gross_amount)
 
         # Force sale to failed state
         finalize_ctx = self.create_context(
@@ -434,9 +482,9 @@ class CrowdsaleTestCase(BlueprintTestCase):
         )
         self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
 
-        # Claim refund
+        # Claim refund (user gets back NET amount, participation fee is not refunded)
         refund_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=deposit_amount)],  # type: ignore
+            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=net_amount)],  # type: ignore
             vertex=self.tx,
             caller_id=Address(deposit_ctx.caller_id),
             timestamp=self.end_time + 200,
@@ -517,7 +565,9 @@ class CrowdsaleTestCase(BlueprintTestCase):
         # Verify participation succeeded
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
-        self.assertEqual(contract.total_raised, deposit_amount)
+        # total_raised stores NET amount (after participation fee)
+        net_amount = self._calculate_net_amount(deposit_amount)
+        self.assertEqual(contract.total_raised, net_amount)
 
         # Verify contract balances
         self._check_contract_balances()
@@ -533,27 +583,34 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Test get_sale_info
         sale_info = self.runner.call_view_method(self.contract_id, "get_sale_info")
-        self.assertEqual(sale_info.total_raised, deposit_amount)
+        # total_raised stores NET amount (after participation fee)
+        net_amount = self._calculate_net_amount(deposit_amount)
+        self.assertEqual(sale_info.total_raised, net_amount)
         self.assertEqual(sale_info.participants, 1)
 
         # Test get_participant_info
         participant_info = self.runner.call_view_method(
             self.contract_id, "get_participant_info", Address(ctx.caller_id)
         )
-        self.assertEqual(participant_info.deposited, deposit_amount)
-        self.assertEqual(participant_info.tokens_due, deposit_amount * self.rate)
+        # deposited stores NET amount (used for token calculations)
+        self.assertEqual(participant_info.deposited, net_amount)
+        self.assertEqual(participant_info.tokens_due, net_amount * self.rate)
 
         # Test get_sale_progress
         progress = self.runner.call_view_method(self.contract_id, "get_sale_progress")
-        expected_percent = (deposit_amount * 100) // self.hard_cap
+        # Progress is based on NET amount
+        expected_percent = (net_amount * 100) // self.hard_cap
         self.assertEqual(progress.percent_filled, expected_percent)
 
     def test_withdraw_remaining_tokens(self):
         """Test withdrawal of remaining tokens after successful sale."""
         self._initialize_sale()
 
-        # Reach soft cap
-        ctx_deposit = self._create_deposit_context(self.soft_cap)
+        # Reach soft cap - need to deposit enough GROSS amount so NET reaches soft_cap
+        # With 2% fee: gross * 0.98 = soft_cap, so gross = soft_cap / 0.98
+        # Using integer math: gross = (soft_cap * 10000) // (10000 - participation_fee)
+        gross_amount_needed = (self.soft_cap * 10000) // (10000 - self.participation_fee)
+        ctx_deposit = self._create_deposit_context(gross_amount_needed)
         self.runner.call_public_method(self.contract_id, "participate", ctx_deposit)
 
         # Try to withdraw before SUCCESS state
@@ -630,27 +687,33 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Multiple participants
         participants = []
-        total_raised = 0
-        individual_deposit = (self.soft_cap // 2) + 100_00
+        total_gross = 0
+        total_net = 0
+        gross_deposit = (self.soft_cap // 2) + 100_00
 
         # Two participants to reach success
         for _ in range(2):
             participant_addr = self._get_any_address()[0]
-            participants.append(participant_addr)
+            participants.append((participant_addr, gross_deposit))
             ctx = self._create_deposit_context(
-                individual_deposit, address=Address(participant_addr)
+                gross_deposit, address=Address(participant_addr)
             )
             self.runner.call_public_method(self.contract_id, "participate", ctx)
-            total_raised += individual_deposit
+            total_gross += gross_deposit
+            total_net += self._calculate_net_amount(gross_deposit)
+
+        # Calculate total participation fees
+        total_participation_fees = total_gross - total_net
 
         # Verify sale reached SUCCESS state
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.SUCCESS)
-        self.assertEqual(contract.total_raised, total_raised)
+        self.assertEqual(contract.total_raised, total_net)  # Total NET
+        self.assertEqual(contract.total_participation_fees_collected, total_participation_fees)
 
         # Participants claim tokens first
-        for participant in participants:
+        for participant, _ in participants:
             participant_info = self.runner.call_view_method(
                 self.contract_id, "get_participant_info", Address(participant)
             )
@@ -665,9 +728,9 @@ class CrowdsaleTestCase(BlueprintTestCase):
             )
             self.runner.call_public_method(self.contract_id, "claim_tokens", claim_ctx)
 
-        # Calculate platform fee and withdrawable HTR
-        platform_fee = total_raised * self.platform_fee // 10000
-        withdrawable_htr = total_raised - platform_fee
+        # Calculate platform fee and withdrawable HTR (based on NET amount)
+        platform_fee = total_net * self.platform_fee // 10000
+        withdrawable_htr = total_net - platform_fee
 
         # Owner withdraws HTR
         owner_withdrawal_ctx = self.create_context(
@@ -680,7 +743,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
             self.contract_id, "withdraw_raised_htr", owner_withdrawal_ctx
         )
 
-        # Platform withdraws fees
+        # Platform withdraws platform fees (from successful sale)
         platform_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=platform_fee)],  # type: ignore
             vertex=self.tx,
@@ -689,6 +752,17 @@ class CrowdsaleTestCase(BlueprintTestCase):
         )
         self.runner.call_public_method(
             self.contract_id, "withdraw_platform_fees", platform_ctx
+        )
+
+        # Platform withdraws participation fees
+        participation_fee_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=total_participation_fees)],  # type: ignore
+            vertex=self.tx,
+            caller_id=Address(self.platform_address),
+            timestamp=self.end_time + 100,
+        )
+        self.runner.call_public_method(
+            self.contract_id, "withdraw_participation_fees", participation_fee_ctx
         )
 
         # Get remaining tokens and withdraw
@@ -716,6 +790,78 @@ class CrowdsaleTestCase(BlueprintTestCase):
         self.assertEqual(contract.sale_token_balance, 0)
         self.assertTrue(contract.owner_withdrawn)
         self.assertTrue(contract.platform_fees_withdrawn)
+        self.assertTrue(contract.participation_fees_withdrawn)
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+    def test_zero_fees(self):
+        """Test crowdsale with zero participation and platform fees."""
+        # Initialize with zero fees
+        self._initialize_sale({"participation_fee": 0, "platform_fee": 0})
+
+        # Participate with 100 HTR
+        gross_amount = 100_00
+        deposit_ctx = self._create_deposit_context(gross_amount)
+        self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
+
+        # With zero participation fee, net = gross
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.total_raised, gross_amount)  # No fee deducted
+        self.assertEqual(contract.total_participation_fees_collected, 0)
+        self.assertEqual(contract.htr_balance, gross_amount)
+
+        # Test fee info view
+        fee_info = self.runner.call_view_method(self.contract_id, "get_fee_info")
+        self.assertEqual(fee_info["participation_fee_bp"], "0")
+        self.assertEqual(fee_info["platform_fee_bp"], "0")
+        self.assertEqual(fee_info["total_participation_fees_collected"], "0")
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+    def test_participation_fee_withdrawal(self):
+        """Test participation fee withdrawal functionality."""
+        self._initialize_sale()
+
+        # Multiple users participate
+        num_participants = 3
+        gross_amount = 100_00
+        for _ in range(num_participants):
+            ctx = self._create_deposit_context(gross_amount)
+            self.runner.call_public_method(self.contract_id, "participate", ctx)
+
+        # Calculate total participation fees
+        total_fees = self._calculate_participation_fee(gross_amount) * num_participants
+
+        # Verify fees collected
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.total_participation_fees_collected, total_fees)
+        self.assertFalse(contract.participation_fees_withdrawn)
+
+        # Platform withdraws participation fees
+        withdraw_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=total_fees)],  # type: ignore
+            vertex=self.tx,
+            caller_id=Address(self.platform_address),
+            timestamp=self.start_time + 200,
+        )
+        self.runner.call_public_method(
+            self.contract_id, "withdraw_participation_fees", withdraw_ctx
+        )
+
+        # Verify withdrawal status
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertTrue(contract.participation_fees_withdrawn)
+
+        # Try to withdraw again (should fail)
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.contract_id, "withdraw_participation_fees", withdraw_ctx
+            )
 
         # Verify contract balances
         self._check_contract_balances()
