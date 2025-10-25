@@ -1,5 +1,6 @@
 from hathor import (
     Blueprint,
+    BlueprintId,
     Context,
     NCFail,
     Address,
@@ -108,6 +109,9 @@ class DozerTools(Blueprint):
     project creators to create tokens and manage their entire ecosystem through
     a single interface with a credit-based fee system.
     """
+
+    # Version control
+    contract_version: str
 
     # Global administration
     owner: Address
@@ -266,7 +270,7 @@ class DozerTools(Blueprint):
             dzr_token_uid: TokenUid of the DZR token for cheaper fees
             minimum_deposit: Minimum deposit required to enable contract usage
         """
-
+        self.contract_version = "1.0.0"
         self.owner = Address(ctx.caller_id)
         self.dozer_pool_manager_id = dozer_pool_manager_id
         self.dzr_token_uid = dzr_token_uid
@@ -2564,3 +2568,80 @@ class DozerTools(Blueprint):
             blueprint_id=None,
         ).public(action).withdraw_platform_fees()
 
+
+    @public
+    def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:
+        """Upgrade the contract to a new blueprint version.
+
+        Args:
+            ctx: Transaction context
+            new_blueprint_id: The blueprint ID to upgrade to
+            new_version: Version string for the new blueprint (e.g., "1.1.0")
+
+        Raises:
+            DozerToolsError: If caller is not the owner
+            InvalidVersion: If new version is not higher than current version
+        """
+        # Only owner can upgrade
+        if ctx.caller_id != self.owner:
+            raise DozerToolsError("Only owner can upgrade contract")
+
+        # Validate version is newer
+        if not self._is_version_higher(new_version, self.contract_version):
+            raise InvalidVersion(f"New version {new_version} must be higher than current {self.contract_version}")
+
+        # Perform the upgrade
+        contract_id = self.syscall.get_contract_id()
+        self.syscall.change_blueprint(new_blueprint_id)
+
+        # Call post-upgrade initialization on the new blueprint (optional)
+        # The new blueprint can implement this method to handle migrations
+        # self.syscall.get_contract(contract_id, blueprint_id=None).public().post_upgrade_init(new_version)
+
+    def _is_version_higher(self, new_version: str, current_version: str) -> bool:
+        """Compare semantic versions (e.g., "1.2.3").
+
+        Returns True if new_version > current_version.
+        Returns False if versions are malformed or equal.
+        """
+        # Split versions by '.'
+        new_parts_str = new_version.split('.')
+        current_parts_str = current_version.split('.')
+        
+        # Check if all parts are valid integers
+        new_parts: list[int] = []
+        for part in new_parts_str:
+            # Simple check: all characters must be digits
+            if not part or not all(c in '0123456789' for c in part):
+                return False  # Invalid format
+            new_parts.append(int(part))
+        
+        current_parts: list[int] = []
+        for part in current_parts_str:
+            if not part or not all(c in '0123456789' for c in part):
+                return False  # Invalid format
+            current_parts.append(int(part))
+
+        # Pad shorter version with zeros
+        max_len = len(new_parts) if len(new_parts) > len(current_parts) else len(current_parts)
+        while len(new_parts) < max_len:
+            new_parts.append(0)
+        while len(current_parts) < max_len:
+            current_parts.append(0)
+
+        # Compare versions
+        return new_parts > current_parts
+
+    @view
+    def get_contract_version(self) -> str:
+        """Get the current contract version.
+
+        Returns:
+            Version string (e.g., "1.0.0")
+        """
+        return self.contract_version
+
+
+
+class InvalidVersion(NCFail):
+    pass
