@@ -396,7 +396,7 @@ _openapi_example_response = {
 }
 
 NanoContractStateBatchResource.openapi = {
-    '/nano_contract/state/batch': {
+    '/nano_contract/state_batch': {
         'x-visibility': 'private',  # Mark as private - for owned nodes only
         'x-rate-limit': {
             'global': [

@@ -272,12 +272,12 @@ class ResourcesBuilder:
             blueprint_resource.putChild(b'source', BlueprintSourceCodeResource(self.manager))
             nc_resource.putChild(b'history', NanoContractHistoryResource(self.manager))
 
-            # State endpoints: both regular and batch are GET endpoints
-            # We need a parent resource to handle both /state and /state/batch
-            state_parent = Resource()
-            state_parent.putChild(b'', NanoContractStateResource(self.manager))
-            state_parent.putChild(b'batch', NanoContractStateBatchResource(self.manager))
-            nc_resource.putChild(b'state', state_parent)
+            # Regular state endpoint - this handles /nano_contract/state
+            nc_resource.putChild(b'state', NanoContractStateResource(self.manager))
+
+            # Batch state endpoint - register at a different path /nano_contract/state_batch
+            # (not as a child of state, since state is isLeaf=True)
+            nc_resource.putChild(b'state_batch', NanoContractStateBatchResource(self.manager))
 
             nc_resource.putChild(b'creation', NCCreationResource(self.manager))
             nc_resource.putChild(b'logs', NCExecLogsResource(self.manager))
