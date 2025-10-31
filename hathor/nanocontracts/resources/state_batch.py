@@ -35,7 +35,7 @@ from hathor.nanocontracts.api_arguments_parser import parse_nc_method_call
 from hathor.nanocontracts.exception import NanoContractDoesNotExist
 from hathor.nanocontracts.nc_types import make_nc_type_for_field_type
 from hathor.nanocontracts.types import ContractId, VertexId
-from hathor.utils.api import ErrorResponse, Response
+from hathor.utils.api import ErrorResponse, QueryParams, Response
 from hathor.wallet.exceptions import InvalidAddress
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ class NanoContractStateBatchResource(Resource):
 
     You must run with option `--status <PORT>`.
     """
-    isLeaf = True
+    isLeaf = True  # This is a leaf endpoint - no children allowed
 
     # Maximum blocks per request to prevent memory issues
     MAX_BLOCKS_PER_REQUEST = 100
@@ -67,17 +67,15 @@ class NanoContractStateBatchResource(Resource):
         super().__init__()
         self.manager = manager
 
-    def render_POST(self, request: 'Request') -> bytes:
-        """Handle POST request for batch state queries.
+    def render_GET(self, request: 'Request') -> bytes:
+        """Handle GET request for batch state queries.
 
-        Request body (JSON):
-        {
-            "id": "contract_id_hex",
-            "block_heights": [123, 124, 125, ...],  // Up to 100 blocks
-            "calls": ["method1()", "method2(arg)"],  // Optional
-            "fields": ["field1", "field2"],          // Optional
-            "balances": ["token_uid"],               // Optional
-        }
+        Query parameters:
+            id: contract_id_hex (required)
+            block_heights[]: array of block heights (required, up to 100)
+            calls[]: array of method calls (optional)
+            fields[]: array of field names (optional)
+            balances[]: array of token UIDs (optional)
 
         Response (JSON):
         {
@@ -99,41 +97,27 @@ class NanoContractStateBatchResource(Resource):
         }
         """
         request.setHeader(b'content-type', b'application/json; charset=utf-8')
-        set_cors(request, 'POST')
+        set_cors(request, 'GET')
 
-        # Parse JSON body
-        try:
-            body_bytes = request.content.read()
-            body = json.loads(body_bytes)
-        except (ValueError, json.JSONDecodeError) as e:
+        # Parse query parameters
+        params = NCStateBatchParams.from_request(request)
+        if isinstance(params, ErrorResponse):
             request.setResponseCode(400)
-            error_response = ErrorResponse(success=False, error=f'Invalid JSON: {str(e)}')
-            return error_response.json_dumpb()
-
-        # Validate required fields
-        if 'id' not in body:
-            request.setResponseCode(400)
-            error_response = ErrorResponse(success=False, error='Missing required field: id')
-            return error_response.json_dumpb()
-
-        if 'block_heights' not in body:
-            request.setResponseCode(400)
-            error_response = ErrorResponse(success=False, error='Missing required field: block_heights')
-            return error_response.json_dumpb()
+            return params.json_dumpb()
 
         # Parse contract ID
         try:
-            nc_id_bytes = ContractId(VertexId(bytes.fromhex(body['id'])))
+            nc_id_bytes = ContractId(VertexId(bytes.fromhex(params.id)))
         except ValueError:
             request.setResponseCode(400)
-            error_response = ErrorResponse(success=False, error=f'Invalid contract id: {body["id"]}')
+            error_response = ErrorResponse(success=False, error=f'Invalid contract id: {params.id}')
             return error_response.json_dumpb()
 
-        # Parse block heights
-        block_heights = body['block_heights']
-        if not isinstance(block_heights, list):
+        # Validate block_heights
+        block_heights = params.block_heights
+        if not block_heights:
             request.setResponseCode(400)
-            error_response = ErrorResponse(success=False, error='block_heights must be an array')
+            error_response = ErrorResponse(success=False, error='Missing required parameter: block_heights[]')
             return error_response.json_dumpb()
 
         # Enforce maximum batch size
@@ -145,10 +129,10 @@ class NanoContractStateBatchResource(Resource):
             )
             return error_response.json_dumpb()
 
-        # Parse optional parameters
-        calls = body.get('calls', [])
-        fields = body.get('fields', [])
-        balances = body.get('balances', [])
+        # Get optional parameters
+        calls = params.calls
+        fields = params.fields
+        balances = params.balances
 
         # Check if indexes are enabled (needed for block_height lookup)
         if self.manager.tx_storage.indexes is None:
@@ -354,6 +338,15 @@ class NanoContractStateBatchResource(Resource):
         return field
 
 
+class NCStateBatchParams(QueryParams):
+    """Query parameters for batch state queries."""
+    id: str
+    block_heights: list[int] = Field(alias='block_heights[]', default_factory=list)
+    fields: list[str] = Field(alias='fields[]', default_factory=list)
+    balances: list[str] = Field(alias='balances[]', default_factory=list)
+    calls: list[str] = Field(alias='calls[]', default_factory=list)
+
+
 class NCStateBatchResponse(Response):
     """Response model for batch state queries."""
     success: bool
@@ -421,7 +414,7 @@ NanoContractStateBatchResource.openapi = {
                 }
             ]
         },
-        'post': {
+        'get': {
             'tags': ['nano_contracts'],
             'operationId': 'nano_contracts_state_batch',
             'summary': 'Batch query nano contract state across multiple blocks',
@@ -431,45 +424,56 @@ NanoContractStateBatchResource.openapi = {
                 'data backfilling. IMPORTANT: This endpoint should NOT be enabled on public nodes '
                 'as it can be resource-intensive.'
             ),
-            'requestBody': {
-                'required': True,
-                'content': {
-                    'application/json': {
-                        'schema': {
-                            'type': 'object',
-                            'required': ['id', 'block_heights'],
-                            'properties': {
-                                'id': {
-                                    'type': 'string',
-                                    'description': 'ID of the nano contract'
-                                },
-                                'block_heights': {
-                                    'type': 'array',
-                                    'items': {'type': 'integer'},
-                                    'description': f'Array of block heights (max {NanoContractStateBatchResource.MAX_BLOCKS_PER_REQUEST})',
-                                    'maxItems': NanoContractStateBatchResource.MAX_BLOCKS_PER_REQUEST
-                                },
-                                'calls': {
-                                    'type': 'array',
-                                    'items': {'type': 'string'},
-                                    'description': 'List of view method calls (same format as /nano_contract/state)'
-                                },
-                                'fields': {
-                                    'type': 'array',
-                                    'items': {'type': 'string'},
-                                    'description': 'Fields to get from nano contract state'
-                                },
-                                'balances': {
-                                    'type': 'array',
-                                    'items': {'type': 'string'},
-                                    'description': 'Token UIDs to get balances for (or "__all__")'
-                                }
-                            }
-                        },
-                        'example': _openapi_example_request
+            'parameters': [
+                {
+                    'name': 'id',
+                    'in': 'query',
+                    'description': 'ID of the nano contract',
+                    'required': True,
+                    'schema': {'type': 'string'}
+                },
+                {
+                    'name': 'block_heights[]',
+                    'in': 'query',
+                    'description': f'Array of block heights to query (max {NanoContractStateBatchResource.MAX_BLOCKS_PER_REQUEST})',
+                    'required': True,
+                    'schema': {
+                        'type': 'array',
+                        'items': {'type': 'integer'},
+                        'maxItems': NanoContractStateBatchResource.MAX_BLOCKS_PER_REQUEST
+                    }
+                },
+                {
+                    'name': 'calls[]',
+                    'in': 'query',
+                    'description': 'List of view method calls (same format as /nano_contract/state)',
+                    'required': False,
+                    'schema': {
+                        'type': 'array',
+                        'items': {'type': 'string'}
+                    }
+                },
+                {
+                    'name': 'fields[]',
+                    'in': 'query',
+                    'description': 'Fields to get from nano contract state',
+                    'required': False,
+                    'schema': {
+                        'type': 'array',
+                        'items': {'type': 'string'}
+                    }
+                },
+                {
+                    'name': 'balances[]',
+                    'in': 'query',
+                    'description': 'Token UIDs to get balances for (or "__all__")',
+                    'required': False,
+                    'schema': {
+                        'type': 'array',
+                        'items': {'type': 'string'}
                     }
                 }
-            },
+            ],
             'responses': {
                 '200': {
                     'description': 'Success',
