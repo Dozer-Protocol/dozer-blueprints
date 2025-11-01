@@ -1478,7 +1478,7 @@ class DozerToolsTest(BlueprintTestCase):
             token_uid,
             20,  # staking_percentage
             15,  # public_sale_percentage
-            5,   # dozer_pool_percentage
+            5,  # dozer_pool_percentage
             1000,  # earnings_per_day
             ["Team"],
             [60],  # 60% for team
@@ -1549,9 +1549,7 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Verify crowdsale info
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.rate, rate)
         self.assertEqual(sale_info.soft_cap, soft_cap)
         self.assertEqual(sale_info.hard_cap, hard_cap)
@@ -1569,14 +1567,16 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Verify sale is now ACTIVE
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 1)  # ACTIVE
 
         # Multiple users participate through DozerTools routing
         participants = []
-        deposit_amounts = [50_00, 30_00, 15_00]  # Total: 95 HTR (exceeds soft cap of 90 HTR)
+        deposit_amounts = [
+            50_00,
+            30_00,
+            15_00,
+        ]  # Total: 95 HTR (exceeds soft cap of 90 HTR)
 
         for deposit_amount in deposit_amounts:
             user_addr, _ = self._get_any_address()
@@ -1596,11 +1596,9 @@ class DozerToolsTest(BlueprintTestCase):
                 token_uid,
             )
 
-        # Verify sale reached SUCCESS state (soft cap exceeded)
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
-        self.assertEqual(sale_info.state, 3)  # SUCCESS
+        # Verify sale reached SOFT_CAP_REACHED state (soft cap exceeded)
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 3)  # SOFT_CAP_REACHED
         # total_raised is NET amount after participation fee (2%)
         participation_fee = 200
         expected_net_total = sum(
@@ -1609,7 +1607,22 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertEqual(sale_info.total_raised, expected_net_total)
         self.assertEqual(sale_info.participants, len(participants))
 
-        # Check sale progress
+        # Finalize the sale to transition to COMPLETED_SUCCESS
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=end_time + 50,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_finalize", finalize_ctx, token_uid
+        )
+
+        # Verify sale is now COMPLETED_SUCCESS
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 5)  # COMPLETED_SUCCESS
+
+        # Check sale progress - now should be successful
         progress = self.runner.call_view_method(
             crowdsale_contract_id, "get_sale_progress"
         )
@@ -1704,7 +1717,7 @@ class DozerToolsTest(BlueprintTestCase):
             token_uid,
             20,  # staking_percentage (keep staking like successful test)
             20,  # public_sale_percentage
-            5,   # dozer_pool_percentage
+            5,  # dozer_pool_percentage
             1000,  # earnings_per_day
             ["Team"],
             [55],  # 55% for team (20% + 20% + 5% = 45%, so 55% remaining)
@@ -1813,9 +1826,7 @@ class DozerToolsTest(BlueprintTestCase):
             )
 
         # Verify sale is still ACTIVE (not reached soft cap)
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 1)  # ACTIVE
         # total_raised is NET amount after participation fee
         expected_net_total = sum(
@@ -1836,9 +1847,7 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Verify sale is FAILED
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 4)  # FAILED
 
         # Participants claim refunds through DozerTools
@@ -1971,15 +1980,15 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Verify ACTIVE state
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 1)  # ACTIVE
 
         # User participates (below soft cap to allow pause)
         user_addr, _ = self._get_any_address()
         participate_ctx = self.create_context(
-            actions=[NCDepositAction(token_uid=htr_uid, amount=100_00)],  # Below soft_cap of 180
+            actions=[
+                NCDepositAction(token_uid=htr_uid, amount=100_00)
+            ],  # Below soft_cap of 180
             vertex=self._get_any_tx(),
             caller_id=Address(user_addr),
             timestamp=start_time + 50,
@@ -2004,9 +2013,7 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Verify PAUSED state
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 2)  # PAUSED
 
         # Try to participate while paused (should fail)
@@ -2014,7 +2021,9 @@ class DozerToolsTest(BlueprintTestCase):
 
         user_addr2, _ = self._get_any_address()
         participate_paused_ctx = self.create_context(
-            actions=[NCDepositAction(token_uid=htr_uid, amount=150_00)],  # 100 + 150 = 250 (reaches hard_cap)
+            actions=[
+                NCDepositAction(token_uid=htr_uid, amount=150_00)
+            ],  # 100 + 150 = 250 (reaches hard_cap)
             vertex=self._get_any_tx(),
             caller_id=Address(user_addr2),
             timestamp=start_time + 150,
@@ -2040,9 +2049,7 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Verify ACTIVE state again
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 1)  # ACTIVE
 
         # Now participation should work again
@@ -2054,9 +2061,7 @@ class DozerToolsTest(BlueprintTestCase):
         )
 
         # Verify second user participated
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.total_raised, 250_00)  # Hard cap reached
         self.assertEqual(sale_info.participants, 2)
 
@@ -2224,9 +2229,7 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertEqual(participant_info.deposited, first_deposit + second_deposit)
 
         # Verify only counted as 1 participant
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.participants, 1)
 
         # Test 3: Try to exceed hard cap (should fail)
@@ -2264,12 +2267,11 @@ class DozerToolsTest(BlueprintTestCase):
             token_uid,
         )
 
-        # Verify hard cap reached and sale is SUCCESS
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        # Verify hard cap reached and sale is SOFT_CAP_REACHED (not auto-finalized yet)
+        # Auto-finalization only happens when hard_cap + 0.5% margin is reached
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.total_raised, hard_cap)
-        self.assertEqual(sale_info.state, 3)  # SUCCESS
+        self.assertEqual(sale_info.state, 3)  # SOFT_CAP_REACHED
 
     def test_crowdsale_routed_admin_methods(self) -> None:
         """Test all crowdsale admin methods through DozerTools routing."""
@@ -2353,15 +2355,15 @@ class DozerToolsTest(BlueprintTestCase):
             self.dozer_tools_nc_id, "crowdsale_early_activate", activate_ctx, token_uid
         )
 
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 1)  # ACTIVE
 
         # User participates (below soft cap to allow pause)
         user_addr, _ = self._get_any_address()
         participate_ctx = self.create_context(
-            actions=[NCDepositAction(token_uid=htr_uid, amount=100_00)],  # Below soft_cap of 150
+            actions=[
+                NCDepositAction(token_uid=htr_uid, amount=100_00)
+            ],  # Below soft_cap of 150
             vertex=self._get_any_tx(),
             caller_id=Address(user_addr),
             timestamp=start_time + 50,
@@ -2385,9 +2387,7 @@ class DozerToolsTest(BlueprintTestCase):
             self.dozer_tools_nc_id, "crowdsale_pause", pause_ctx, token_uid
         )
 
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 2)  # PAUSED
 
         # Test routed_unpause
@@ -2401,9 +2401,7 @@ class DozerToolsTest(BlueprintTestCase):
             self.dozer_tools_nc_id, "crowdsale_unpause", unpause_ctx, token_uid
         )
 
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 1)  # ACTIVE
 
         # Test routed_finalize (below soft cap, so will be FAILED)
@@ -2417,9 +2415,7 @@ class DozerToolsTest(BlueprintTestCase):
             self.dozer_tools_nc_id, "crowdsale_finalize", finalize_ctx, token_uid
         )
 
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 4)  # FAILED (soft cap not reached)
 
     def test_crowdsale_routed_withdrawal_methods(self) -> None:
@@ -2521,7 +2517,9 @@ class DozerToolsTest(BlueprintTestCase):
         # User participates with enough to reach soft cap
         user_addr, _ = self._get_any_address()
         participate_ctx = self.create_context(
-            actions=[NCDepositAction(token_uid=htr_uid, amount=200_00)],  # Exceeds soft cap of 180
+            actions=[
+                NCDepositAction(token_uid=htr_uid, amount=200_00)
+            ],  # Exceeds soft cap of 180
             vertex=self._get_any_tx(),
             caller_id=Address(user_addr),
             timestamp=start_time + 50,
@@ -2534,12 +2532,25 @@ class DozerToolsTest(BlueprintTestCase):
             token_uid,
         )
 
-        # Verify SUCCESS state
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
-        self.assertEqual(sale_info.state, 3)  # SUCCESS
+        # Verify SOFT_CAP_REACHED state (soft cap exceeded)
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 3)  # SOFT_CAP_REACHED
         total_raised = sale_info.total_raised
+
+        # Finalize the sale to transition to COMPLETED_SUCCESS
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=end_time + 50,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_finalize", finalize_ctx, token_uid
+        )
+
+        # Verify sale is now COMPLETED_SUCCESS
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 5)  # COMPLETED_SUCCESS
 
         # Calculate platform fee and withdrawable
         platform_fee_amount = (total_raised * platform_fee) // 10000
@@ -2705,10 +2716,9 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertIn("Only project dev", str(cm.exception))
 
         # Verify sale is still ACTIVE (pause didn't work)
-        sale_info = self.runner.call_view_method(
-            crowdsale_contract_id, "get_sale_info"
-        )
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 1)  # ACTIVE
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -67,6 +67,7 @@ class CrowdsaleWithdrawalInfo(NamedTuple):
 
 
 BASIS_POINTS = 10000  # For fee calculations
+HARD_CAP_MARGIN_BP = 50  # 0.5% margin for hard cap (in basis points)
 
 
 class SaleState:
@@ -75,8 +76,9 @@ class SaleState:
     PENDING = 0  # Configured but not started
     ACTIVE = 1  # Accepting deposits
     PAUSED = 2  # Temporarily halted
-    SUCCESS = 3  # Reached soft cap
-    FAILED = 4  # Ended below soft cap
+    SOFT_CAP_REACHED = 3  # Soft cap reached, still accepting participants
+    COMPLETED_FAILED = 4  # Sale ended below soft cap
+    COMPLETED_SUCCESS = 5  # Sale ended above soft cap
 
 
 class CrowdsaleErrors:
@@ -92,6 +94,7 @@ class CrowdsaleErrors:
     ALREADY_CLAIMED = "Already claimed"
     INVALID_TOKEN = "Invalid token"
 
+
 @export
 class Crowdsale(Blueprint):
     """Blueprint for token sales with platform fees and protection mechanisms."""
@@ -105,7 +108,9 @@ class Crowdsale(Blueprint):
     start_time: Timestamp  # Sale start time
     end_time: Timestamp  # Sale end time
     platform_fee: Amount  # Fee in basis points (0-1000, 0 = no fee)
-    participation_fee: Amount  # Fee in basis points for each participation (0-300, 0 = no fee)
+    participation_fee: (
+        Amount  # Fee in basis points for each participation (0-300, 0 = no fee)
+    )
 
     # Sale state
     state: int
@@ -158,7 +163,10 @@ class Crowdsale(Blueprint):
             raise NCFail("Invalid time range")
         if platform_fee < MIN_PLATFORM_FEE or platform_fee > MAX_PLATFORM_FEE:
             raise NCFail("Invalid platform fee")
-        if participation_fee < MIN_PARTICIPATION_FEE or participation_fee > MAX_PARTICIPATION_FEE:
+        if (
+            participation_fee < MIN_PARTICIPATION_FEE
+            or participation_fee > MAX_PARTICIPATION_FEE
+        ):
             raise NCFail("Invalid participation fee")
         if rate <= 0 or min_deposit <= 0:
             raise NCFail("Invalid rate or minimum deposit")
@@ -171,7 +179,9 @@ class Crowdsale(Blueprint):
         # Validate sufficient tokens for hard cap
         tokens_needed = hard_cap * rate
         if action.amount < tokens_needed:
-            raise NCFail(f"Insufficient tokens deposited. Need {tokens_needed}. Deposited {action.amount}.")
+            raise NCFail(
+                f"Insufficient tokens deposited. Need {tokens_needed}. Deposited {action.amount}."
+            )
 
         # Initialize configuration
         self.token_uid = token_uid
@@ -202,7 +212,9 @@ class Crowdsale(Blueprint):
         else:
             # Created through dozer_tools contract - get platform owner
             tools_contract_id = ctx.caller_id
-            tools_contract = self.syscall.get_contract(tools_contract_id, blueprint_id=None)
+            tools_contract = self.syscall.get_contract(
+                tools_contract_id, blueprint_id=None
+            )
             platform_hex = tools_contract.view().get_contract_info()["owner"]
             self.platform = Address(bytes.fromhex(platform_hex))
 
@@ -239,7 +251,10 @@ class Crowdsale(Blueprint):
         if net_amount < self.min_deposit:
             raise NCFail(CrowdsaleErrors.BELOW_MIN)
 
-        # Check hard cap with NET amount
+        # Check hard cap with margin to allow deposits up to hard cap + margin
+        # hard_cap_with_margin = self.hard_cap + (
+        #     self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
+        # )
         if self.total_raised + net_amount > self.hard_cap:
             raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
@@ -261,14 +276,21 @@ class Crowdsale(Blueprint):
             self.total_participation_fees_collected + participation_fee
         )
 
-        # Check if soft cap reached (using net amount)
-        if self.total_raised >= self.soft_cap:
-            self.state = SaleState.SUCCESS
+        # Check if soft cap reached (using net amount) - transition to SOFT_CAP_REACHED
+        if self.total_raised >= self.soft_cap and self.state == SaleState.ACTIVE:
+            self.state = SaleState.SOFT_CAP_REACHED
+
+        # Check if hard cap reached with margin - auto-finalize to success
+        hard_cap_with_margin = self.hard_cap - (
+            self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
+        )
+        if self.total_raised >= hard_cap_with_margin:
+            self.state = SaleState.COMPLETED_SUCCESS
 
     @public(allow_withdrawal=True)
     def claim_tokens(self, ctx: Context) -> None:
         """Claim tokens after successful sale."""
-        if self.state != SaleState.SUCCESS:
+        if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
         participant_address = Address(ctx.caller_id)
@@ -299,7 +321,7 @@ class Crowdsale(Blueprint):
     @public(allow_withdrawal=True)
     def claim_refund(self, ctx: Context) -> None:
         """Claim refund if sale failed."""
-        if self.state != SaleState.FAILED:
+        if self.state != SaleState.COMPLETED_FAILED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
         participant_address = Address(ctx.caller_id)
@@ -334,7 +356,7 @@ class Crowdsale(Blueprint):
         """Withdraw raised HTR after successful sale."""
         if not self._is_owner(ctx):
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
-        if self.state != SaleState.SUCCESS:
+        if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.owner_withdrawn:
             raise NCFail("Already withdrawn")
@@ -360,7 +382,7 @@ class Crowdsale(Blueprint):
         """Withdraw remaining tokens after successful sale (owner only)."""
         if not self._is_owner(ctx):
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
-        if self.state != SaleState.SUCCESS:
+        if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
         # Validate token withdrawal action
@@ -378,7 +400,7 @@ class Crowdsale(Blueprint):
         """Withdraw platform fees after successful sale."""
         if Address(ctx.caller_id) != self.platform:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
-        if self.state != SaleState.SUCCESS:
+        if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.platform_fees_withdrawn:
             raise NCFail("Platform fees already withdrawn")
@@ -415,7 +437,9 @@ class Crowdsale(Blueprint):
         if not isinstance(action, NCWithdrawalAction):
             raise NCFail("Expected withdrawal action")
         if action.amount != total_fees:
-            raise NCFail(f"Invalid withdrawal amount. Expected: {total_fees}, Got: {action.amount}")
+            raise NCFail(
+                f"Invalid withdrawal amount. Expected: {total_fees}, Got: {action.amount}"
+            )
 
         # Mark as withdrawn and update balance
         self.participation_fees_withdrawn = True
@@ -447,19 +471,24 @@ class Crowdsale(Blueprint):
     def _validate_sale_active(self, ctx: Context) -> None:
         """Validate sale is in active state and within time bounds."""
         self._activate_if_started(ctx)
-        if self.state != SaleState.ACTIVE:
-            raise NCFail(CrowdsaleErrors.INVALID_STATE)
-        if ctx.block.timestamp < self.start_time:
-            raise NCFail(CrowdsaleErrors.NOT_STARTED)
+
+        # Check if end time passed - reject participation
         if ctx.block.timestamp > self.end_time:
             raise NCFail(CrowdsaleErrors.SALE_ACTIVE)
+
+        # Allow participation in ACTIVE or SOFT_CAP_REACHED states
+        if self.state not in {SaleState.ACTIVE, SaleState.SOFT_CAP_REACHED}:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+
+        if ctx.block.timestamp < self.start_time:
+            raise NCFail(CrowdsaleErrors.NOT_STARTED)
 
     @public
     def pause(self, ctx: Context) -> None:
         """Pause the sale (only owner)."""
         if not self._is_owner(ctx):
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
-        if self.state != SaleState.ACTIVE:
+        if self.state not in {SaleState.ACTIVE, SaleState.SOFT_CAP_REACHED}:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
         self.state = SaleState.PAUSED
 
@@ -470,20 +499,28 @@ class Crowdsale(Blueprint):
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.PAUSED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
-        self.state = SaleState.ACTIVE
+        # Return to SOFT_CAP_REACHED if soft cap was already reached, otherwise ACTIVE
+        if self.total_raised >= self.soft_cap:
+            self.state = SaleState.SOFT_CAP_REACHED
+        else:
+            self.state = SaleState.ACTIVE
 
     @public
     def finalize(self, ctx: Context) -> None:
         """Force end sale early (only owner)."""
         if not self._is_owner(ctx):
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
-        if self.state not in {SaleState.ACTIVE, SaleState.PAUSED}:
+        if self.state not in {
+            SaleState.ACTIVE,
+            SaleState.PAUSED,
+            SaleState.SOFT_CAP_REACHED,
+        }:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
         if self.total_raised >= self.soft_cap:
-            self.state = SaleState.SUCCESS
+            self.state = SaleState.COMPLETED_SUCCESS
         else:
-            self.state = SaleState.FAILED
+            self.state = SaleState.COMPLETED_FAILED
 
     def _calculate_tokens(self, htr_amount: Amount) -> Amount:
         """Calculate tokens to be received for HTR amount."""
@@ -539,7 +576,7 @@ class Crowdsale(Blueprint):
         return CrowdsaleSaleProgress(
             percent_filled=(self.total_raised * 100) // self.hard_cap,
             percent_soft_cap=(self.total_raised * 100) // self.soft_cap,
-            is_successful=self.state == SaleState.SUCCESS,
+            is_successful=self.state == SaleState.COMPLETED_SUCCESS,
         )
 
     @view
@@ -547,7 +584,9 @@ class Crowdsale(Blueprint):
         """Get withdrawal-related information."""
         platform_fee = self._calculate_platform_fee(self.total_raised)
         withdrawable = self.total_raised - platform_fee
-        can_withdraw = self.state == SaleState.SUCCESS and not self.owner_withdrawn
+        can_withdraw = (
+            self.state == SaleState.COMPLETED_SUCCESS and not self.owner_withdrawn
+        )
 
         return CrowdsaleWithdrawalInfo(
             total_raised=self.total_raised,
@@ -564,9 +603,13 @@ class Crowdsale(Blueprint):
             "participation_fee_bp": str(self.participation_fee),
             "platform_fee_bp": str(self.platform_fee),
             "participation_fee": str(self.participation_fee),
-            "platform_fee": str(self.platform_fee) ,
-            "total_participation_fees_collected": str(self.total_participation_fees_collected),
-            "participation_fees_withdrawn": str(self.participation_fees_withdrawn).lower(),
+            "platform_fee": str(self.platform_fee),
+            "total_participation_fees_collected": str(
+                self.total_participation_fees_collected
+            ),
+            "participation_fees_withdrawn": str(
+                self.participation_fees_withdrawn
+            ).lower(),
             "platform_fees_collected": str(self.platform_fees_collected),
             "platform_fees_withdrawn": str(self.platform_fees_withdrawn).lower(),
         }
@@ -592,7 +635,10 @@ class Crowdsale(Blueprint):
         if net_amount < self.min_deposit:
             raise NCFail(CrowdsaleErrors.BELOW_MIN)
 
-        # Check hard cap with NET amount
+        # Check hard cap with margin to allow deposits up to hard cap + margin
+        # hard_cap_with_margin = self.hard_cap + (
+        #     self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
+        # )
         if self.total_raised + net_amount > self.hard_cap:
             raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
@@ -613,16 +659,23 @@ class Crowdsale(Blueprint):
             self.total_participation_fees_collected + participation_fee
         )
 
-        # Check if soft cap reached (using net amount)
-        if self.total_raised >= self.soft_cap:
-            self.state = SaleState.SUCCESS
+        # Check if soft cap reached (using net amount) - transition to SOFT_CAP_REACHED
+        if self.total_raised >= self.soft_cap and self.state == SaleState.ACTIVE:
+            self.state = SaleState.SOFT_CAP_REACHED
+
+        # Check if hard cap reached with margin - auto-finalize to success
+        hard_cap_with_margin = self.hard_cap - (
+            self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
+        )
+        if self.total_raised >= hard_cap_with_margin:
+            self.state = SaleState.COMPLETED_SUCCESS
 
     @public(allow_withdrawal=True)
     def routed_claim_tokens(self, ctx: Context, user_address: Address) -> None:
         """Claim tokens after successful sale via DozerTools routing."""
         self._only_creator_contract(ctx)
 
-        if self.state != SaleState.SUCCESS:
+        if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
         if self.claimed.get(user_address, False):
@@ -652,7 +705,7 @@ class Crowdsale(Blueprint):
         """Claim refund if sale failed via DozerTools routing."""
         self._only_creator_contract(ctx)
 
-        if self.state != SaleState.FAILED:
+        if self.state != SaleState.COMPLETED_FAILED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
         if self.claimed.get(user_address, False):
@@ -681,7 +734,7 @@ class Crowdsale(Blueprint):
         self._only_creator_contract(ctx)
 
         # DozerTools is responsible for authorization - just execute the action
-        if self.state != SaleState.ACTIVE:
+        if self.state not in {SaleState.ACTIVE, SaleState.SOFT_CAP_REACHED}:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
         self.state = SaleState.PAUSED
 
@@ -693,7 +746,11 @@ class Crowdsale(Blueprint):
         # DozerTools is responsible for authorization - just execute the action
         if self.state != SaleState.PAUSED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
-        self.state = SaleState.ACTIVE
+        # Return to SOFT_CAP_REACHED if soft cap was already reached, otherwise ACTIVE
+        if self.total_raised >= self.soft_cap:
+            self.state = SaleState.SOFT_CAP_REACHED
+        else:
+            self.state = SaleState.ACTIVE
 
     @public
     def routed_early_activate(self, ctx: Context, user_address: Address) -> None:
@@ -714,13 +771,17 @@ class Crowdsale(Blueprint):
         self._only_creator_contract(ctx)
 
         # DozerTools is responsible for authorization - just execute the action
-        if self.state not in {SaleState.ACTIVE, SaleState.PAUSED}:
+        if self.state not in {
+            SaleState.ACTIVE,
+            SaleState.PAUSED,
+            SaleState.SOFT_CAP_REACHED,
+        }:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
         if self.total_raised >= self.soft_cap:
-            self.state = SaleState.SUCCESS
+            self.state = SaleState.COMPLETED_SUCCESS
         else:
-            self.state = SaleState.FAILED
+            self.state = SaleState.COMPLETED_FAILED
 
     @public(allow_withdrawal=True)
     def routed_withdraw_raised_htr(self, ctx: Context, user_address: Address) -> None:
@@ -728,7 +789,7 @@ class Crowdsale(Blueprint):
         self._only_creator_contract(ctx)
 
         # DozerTools is responsible for authorization - just execute the action
-        if self.state != SaleState.SUCCESS:
+        if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.owner_withdrawn:
             raise NCFail("Already withdrawn")
@@ -750,12 +811,14 @@ class Crowdsale(Blueprint):
         self.htr_balance = Amount(self.htr_balance - withdrawable)
 
     @public(allow_withdrawal=True)
-    def routed_withdraw_remaining_tokens(self, ctx: Context, user_address: Address) -> None:
+    def routed_withdraw_remaining_tokens(
+        self, ctx: Context, user_address: Address
+    ) -> None:
         """Withdraw remaining tokens after successful sale via DozerTools routing (DozerTools handles authorization)."""
         self._only_creator_contract(ctx)
 
         # DozerTools is responsible for authorization - just execute the action
-        if self.state != SaleState.SUCCESS:
+        if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
         # Validate token withdrawal action
@@ -767,4 +830,3 @@ class Crowdsale(Blueprint):
 
         # Update balance
         self.sale_token_balance = Amount(0)
-

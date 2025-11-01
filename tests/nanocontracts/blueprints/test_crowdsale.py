@@ -334,7 +334,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
         assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.ACTIVE)
 
-        # Test reaching soft cap -> SUCCESS
+        # Test reaching soft cap -> SOFT_CAP_REACHED
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
         # total_raised is NET amount, need to calculate GROSS amount to reach soft_cap
@@ -343,12 +343,14 @@ class CrowdsaleTestCase(BlueprintTestCase):
             # Calculate gross amount needed so that after fee deduction, we reach soft_cap
             # gross * (1 - fee_rate) = net_remaining
             # gross = net_remaining / (1 - fee_rate) = net_remaining * 10000 / (10000 - participation_fee)
-            gross_remaining = (net_remaining * 10000) // (10000 - self.participation_fee)
+            gross_remaining = (net_remaining * 10000) // (
+                10000 - self.participation_fee
+            )
             ctx = self._create_deposit_context(gross_remaining)
             self.runner.call_public_method(self.contract_id, "participate", ctx)
             contract = self.get_readonly_contract(self.contract_id)
             assert isinstance(contract, Crowdsale)
-            self.assertEqual(contract.state, SaleState.SUCCESS)
+            self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
 
         # Verify contract balances
         self._check_contract_balances()
@@ -425,7 +427,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
-        self.assertEqual(contract.state, SaleState.SUCCESS)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
         self.assertGreaterEqual(contract.total_raised, self.soft_cap)
         # Verify contract balances
         self._check_contract_balances()
@@ -438,6 +440,25 @@ class CrowdsaleTestCase(BlueprintTestCase):
         gross_amount = (self.soft_cap * 10000) // (10000 - self.participation_fee) + 1
         deposit_ctx = self._create_deposit_context(gross_amount)
         self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
+
+        # Verify state is SOFT_CAP_REACHED
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+
+        # Finalize the sale to transition to COMPLETED_SUCCESS
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=self.tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.end_time + 50,
+        )
+        self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
+
+        # Verify state is now COMPLETED_SUCCESS
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.COMPLETED_SUCCESS)
 
         # Calculate tokens due based on NET amount
         net_amount = self._calculate_net_amount(gross_amount)
@@ -473,6 +494,11 @@ class CrowdsaleTestCase(BlueprintTestCase):
         # Calculate net amount (what user actually contributed after fee)
         net_amount = self._calculate_net_amount(gross_amount)
 
+        # Verify state is ACTIVE (soft cap not reached)
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.ACTIVE)
+
         # Force sale to failed state
         finalize_ctx = self.create_context(
             actions=[],
@@ -481,6 +507,11 @@ class CrowdsaleTestCase(BlueprintTestCase):
             timestamp=self.end_time + 100,
         )
         self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
+
+        # Verify state is now COMPLETED_FAILED
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.COMPLETED_FAILED)
 
         # Claim refund (user gets back NET amount, participation fee is not refunded)
         refund_ctx = self.create_context(
@@ -609,11 +640,18 @@ class CrowdsaleTestCase(BlueprintTestCase):
         # Reach soft cap - need to deposit enough GROSS amount so NET reaches soft_cap
         # With 2% fee: gross * 0.98 = soft_cap, so gross = soft_cap / 0.98
         # Using integer math: gross = (soft_cap * 10000) // (10000 - participation_fee)
-        gross_amount_needed = (self.soft_cap * 10000) // (10000 - self.participation_fee)
+        gross_amount_needed = (self.soft_cap * 10000) // (
+            10000 - self.participation_fee
+        )
         ctx_deposit = self._create_deposit_context(gross_amount_needed)
         self.runner.call_public_method(self.contract_id, "participate", ctx_deposit)
 
-        # Try to withdraw before SUCCESS state
+        # Verify state is SOFT_CAP_REACHED
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+
+        # Try to withdraw before COMPLETED_SUCCESS state (should fail in SOFT_CAP_REACHED)
         ctx_withdraw = self.create_context(
             actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=1000)],
             vertex=self.tx,
@@ -624,6 +662,20 @@ class CrowdsaleTestCase(BlueprintTestCase):
             self.runner.call_public_method(
                 self.contract_id, "withdraw_remaining_tokens", ctx_withdraw
             )
+
+        # Finalize the sale
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=self.tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.end_time + 50,
+        )
+        self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
+
+        # Verify state is now COMPLETED_SUCCESS
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.COMPLETED_SUCCESS)
 
         # Get initial token balance
         contract = self.get_readonly_contract(self.contract_id)
@@ -705,12 +757,28 @@ class CrowdsaleTestCase(BlueprintTestCase):
         # Calculate total participation fees
         total_participation_fees = total_gross - total_net
 
-        # Verify sale reached SUCCESS state
+        # Verify sale reached SOFT_CAP_REACHED state
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
-        self.assertEqual(contract.state, SaleState.SUCCESS)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
         self.assertEqual(contract.total_raised, total_net)  # Total NET
-        self.assertEqual(contract.total_participation_fees_collected, total_participation_fees)
+        self.assertEqual(
+            contract.total_participation_fees_collected, total_participation_fees
+        )
+
+        # Finalize the sale to COMPLETED_SUCCESS
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=self.tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.end_time + 50,
+        )
+        self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
+
+        # Verify state is now COMPLETED_SUCCESS
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.COMPLETED_SUCCESS)
 
         # Participants claim tokens first
         for participant, _ in participants:
@@ -747,7 +815,9 @@ class CrowdsaleTestCase(BlueprintTestCase):
         platform_ctx = self.create_context(
             actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=platform_fee)],  # type: ignore
             vertex=self.tx,
-            caller_id=Address(self.platform_address),  # Using platform address from setUp
+            caller_id=Address(
+                self.platform_address
+            ),  # Using platform address from setUp
             timestamp=self.end_time + 100,
         )
         self.runner.call_public_method(
@@ -862,6 +932,309 @@ class CrowdsaleTestCase(BlueprintTestCase):
             self.runner.call_public_method(
                 self.contract_id, "withdraw_participation_fees", withdraw_ctx
             )
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+    def test_continued_participation_after_soft_cap(self):
+        """Test that participation continues after soft cap is reached."""
+        self._initialize_sale()
+
+        # First participant reaches soft cap
+        gross_to_soft_cap = (self.soft_cap * 10000) // (
+            10000 - self.participation_fee
+        ) + 1
+        ctx1 = self._create_deposit_context(gross_to_soft_cap)
+        self.runner.call_public_method(self.contract_id, "participate", ctx1)
+
+        # Verify state is SOFT_CAP_REACHED
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+        initial_raised = contract.total_raised
+
+        # Second participant joins AFTER soft cap reached
+        additional_gross = 500_00
+        ctx2 = self._create_deposit_context(additional_gross)
+        self.runner.call_public_method(self.contract_id, "participate", ctx2)
+
+        # Verify participation was successful and state still SOFT_CAP_REACHED
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+        additional_net = self._calculate_net_amount(additional_gross)
+        self.assertEqual(contract.total_raised, initial_raised + additional_net)
+        self.assertEqual(contract.participants_count, 2)
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+        # def test_hard_cap_with_margin_auto_finalize(self):
+        """Test that reaching hard cap + 0.5% margin auto-finalizes to COMPLETED_SUCCESS."""
+        self._initialize_sale()
+
+        # Calculate amount to reach hard cap with margin
+        # Hard cap margin is 0.5% = 50 basis points
+        # hard_cap_with_margin = hard_cap + (hard_cap * 50 / 10000)
+        hard_cap_with_margin = self.hard_cap + (self.hard_cap * 50 // 10000)
+
+        # Participate with amount that reaches hard cap margin (considering participation fee)
+        gross_needed = (hard_cap_with_margin * 10000) // (
+            10000 - self.participation_fee
+        )
+        ctx = self._create_deposit_context(gross_needed)
+        self.runner.call_public_method(self.contract_id, "participate", ctx)
+
+        # Verify state auto-finalized to COMPLETED_SUCCESS
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.COMPLETED_SUCCESS)
+        self.assertGreaterEqual(contract.total_raised, hard_cap_with_margin)
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+    def test_participation_rejected_after_end_time(self):
+        """Test that participation is rejected after end_time."""
+        self._initialize_sale()
+
+        # Participate to reach soft cap
+        gross_to_soft_cap = (self.soft_cap * 10000) // (
+            10000 - self.participation_fee
+        ) + 1
+        ctx = self._create_deposit_context(
+            gross_to_soft_cap, timestamp=self.start_time + 100
+        )
+        self.runner.call_public_method(self.contract_id, "participate", ctx)
+
+        # Verify state is SOFT_CAP_REACHED
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+
+        # Try to participate after end_time - should be rejected
+        late_ctx = self._create_deposit_context(100_00, timestamp=self.end_time + 100)
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.contract_id, "participate", late_ctx)
+
+        # Manual finalization required to transition to COMPLETED_SUCCESS
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=self.tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.end_time + 100,
+        )
+        self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
+
+        # Verify state is now COMPLETED_SUCCESS
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.COMPLETED_SUCCESS)
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+    def test_participation_rejected_after_end_time_without_soft_cap(self):
+        """Test that participation is rejected after end_time when soft cap not reached."""
+        self._initialize_sale()
+
+        # Participate below soft cap
+        gross_amount = self.soft_cap // 3
+        ctx = self._create_deposit_context(
+            gross_amount, timestamp=self.start_time + 100
+        )
+        self.runner.call_public_method(self.contract_id, "participate", ctx)
+
+        # Verify state is ACTIVE
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.ACTIVE)
+        self.assertLess(contract.total_raised, self.soft_cap)
+
+        # Try to participate after end_time - should be rejected
+        late_ctx = self._create_deposit_context(100_00, timestamp=self.end_time + 100)
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.contract_id, "participate", late_ctx)
+
+        # Manual finalization required to transition to COMPLETED_FAILED
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=self.tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.end_time + 100,
+        )
+        self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
+
+        # Verify state is now COMPLETED_FAILED
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.COMPLETED_FAILED)
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+    def test_withdrawals_blocked_in_soft_cap_reached(self):
+        """Test that withdrawals are blocked in SOFT_CAP_REACHED state."""
+        self._initialize_sale()
+
+        # Reach soft cap
+        gross_to_soft_cap = (self.soft_cap * 10000) // (
+            10000 - self.participation_fee
+        ) + 1
+        participant_ctx = self._create_deposit_context(gross_to_soft_cap)
+        self.runner.call_public_method(self.contract_id, "participate", participant_ctx)
+
+        # Verify state is SOFT_CAP_REACHED
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+
+        # Try to claim tokens - should fail (not COMPLETED_SUCCESS yet)
+        net_amount = self._calculate_net_amount(gross_to_soft_cap)
+        tokens_due = net_amount * self.rate
+        claim_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=tokens_due)],
+            vertex=self.tx,
+            caller_id=Address(participant_ctx.caller_id),
+            timestamp=self.start_time + 200,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.contract_id, "claim_tokens", claim_ctx)
+
+        # Try to withdraw raised HTR as owner - should fail
+        platform_fee = self._calculate_platform_fee(net_amount)
+        withdrawable = net_amount - platform_fee
+        withdraw_htr_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=withdrawable)],  # type: ignore
+            vertex=self.tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.start_time + 200,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.contract_id, "withdraw_raised_htr", withdraw_htr_ctx
+            )
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+    def test_pause_unpause_in_soft_cap_reached(self):
+        """Test pause/unpause functionality in SOFT_CAP_REACHED state."""
+        self._initialize_sale()
+
+        # Reach soft cap
+        gross_to_soft_cap = (self.soft_cap * 10000) // (
+            10000 - self.participation_fee
+        ) + 1
+        ctx = self._create_deposit_context(gross_to_soft_cap)
+        self.runner.call_public_method(self.contract_id, "participate", ctx)
+
+        # Verify state is SOFT_CAP_REACHED
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+
+        # Pause the sale
+        pause_ctx = self.create_context(
+            actions=[],
+            vertex=self.tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.start_time + 200,
+        )
+        self.runner.call_public_method(self.contract_id, "pause", pause_ctx)
+
+        # Verify paused
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.PAUSED)
+
+        # Unpause - should return to SOFT_CAP_REACHED (not ACTIVE)
+        self.runner.call_public_method(self.contract_id, "unpause", pause_ctx)
+
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+    def test_finalize_from_soft_cap_reached(self):
+        """Test manual finalization from SOFT_CAP_REACHED state."""
+        self._initialize_sale()
+
+        # Reach soft cap
+        gross_to_soft_cap = (self.soft_cap * 10000) // (
+            10000 - self.participation_fee
+        ) + 1
+        ctx = self._create_deposit_context(gross_to_soft_cap)
+        self.runner.call_public_method(self.contract_id, "participate", ctx)
+
+        # Verify state is SOFT_CAP_REACHED
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+
+        # Manually finalize
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=self.tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.start_time + 500,
+        )
+        self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
+
+        # Verify transitioned to COMPLETED_SUCCESS
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.COMPLETED_SUCCESS)
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+    def test_hard_cap_boundary(self):
+        """Test that hard cap (without margin) is still enforced."""
+        self._initialize_sale()
+
+        # Try to participate with amount that exceeds hard cap (without margin)
+        gross_over_hard_cap = (self.hard_cap * 10000) // (
+            10000 - self.participation_fee
+        ) + 500_00
+        ctx = self._create_deposit_context(gross_over_hard_cap)
+
+        # Should fail because it exceeds hard cap
+        with self.assertRaises(NCFail) as cm:
+            self.runner.call_public_method(self.contract_id, "participate", ctx)
+        self.assertEqual(str(cm.exception), CrowdsaleErrors.ABOVE_MAX)
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+    def test_multiple_participations_reaching_states(self):
+        """Test multiple small participations gradually reaching soft cap and beyond."""
+        self._initialize_sale()
+
+        # Multiple small deposits
+        num_deposits = 15
+        gross_each = 100_00
+
+        for i in range(num_deposits):
+            ctx = self._create_deposit_context(gross_each)
+            self.runner.call_public_method(self.contract_id, "participate", ctx)
+
+            contract = self.get_readonly_contract(self.contract_id)
+            assert isinstance(contract, Crowdsale)
+
+            # Check state transitions appropriately
+            if contract.total_raised < self.soft_cap:
+                self.assertEqual(contract.state, SaleState.ACTIVE)
+            else:
+                self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+
+        # Verify final state
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+        self.assertEqual(contract.participants_count, num_deposits)
 
         # Verify contract balances
         self._check_contract_balances()
