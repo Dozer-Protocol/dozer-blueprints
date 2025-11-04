@@ -32,6 +32,7 @@ class CrowdsaleSaleInfo(NamedTuple):
     rate: int
     soft_cap: int
     hard_cap: int
+    min_deposit: int
     total_raised: int
     total_sold: int
     state: int
@@ -252,10 +253,10 @@ class Crowdsale(Blueprint):
             raise NCFail(CrowdsaleErrors.BELOW_MIN)
 
         # Check hard cap with margin to allow deposits up to hard cap + margin
-        # hard_cap_with_margin = self.hard_cap + (
-        #     self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
-        # )
-        if self.total_raised + net_amount > self.hard_cap:
+        hard_cap_with_margin = self.hard_cap + (
+            self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
+        )
+        if self.total_raised + net_amount > hard_cap_with_margin:
             raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
         # Update participant tracking
@@ -281,7 +282,7 @@ class Crowdsale(Blueprint):
             self.state = SaleState.SOFT_CAP_REACHED
 
         # Check if hard cap reached with margin - auto-finalize to success
-        hard_cap_with_margin = self.hard_cap - (
+        hard_cap_with_margin = self.hard_cap + (
             self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
         )
         if self.total_raised >= hard_cap_with_margin:
@@ -552,6 +553,7 @@ class Crowdsale(Blueprint):
             rate=self.rate,
             soft_cap=self.soft_cap,
             hard_cap=self.hard_cap,
+            min_deposit=self.min_deposit,
             total_raised=self.total_raised,
             total_sold=self.total_sold,
             state=self.state,
@@ -636,10 +638,10 @@ class Crowdsale(Blueprint):
             raise NCFail(CrowdsaleErrors.BELOW_MIN)
 
         # Check hard cap with margin to allow deposits up to hard cap + margin
-        # hard_cap_with_margin = self.hard_cap + (
-        #     self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
-        # )
-        if self.total_raised + net_amount > self.hard_cap:
+        hard_cap_with_margin = self.hard_cap + (
+            self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
+        )
+        if self.total_raised + net_amount > hard_cap_with_margin:
             raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
         # Update participant tracking
@@ -664,7 +666,7 @@ class Crowdsale(Blueprint):
             self.state = SaleState.SOFT_CAP_REACHED
 
         # Check if hard cap reached with margin - auto-finalize to success
-        hard_cap_with_margin = self.hard_cap - (
+        hard_cap_with_margin = self.hard_cap + (
             self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
         )
         if self.total_raised >= hard_cap_with_margin:
