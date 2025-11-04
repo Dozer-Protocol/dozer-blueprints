@@ -969,7 +969,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
         # Verify contract balances
         self._check_contract_balances()
 
-        # def test_hard_cap_with_margin_auto_finalize(self):
+    def test_hard_cap_with_margin_auto_finalize(self):
         """Test that reaching hard cap + 0.5% margin auto-finalizes to COMPLETED_SUCCESS."""
         self._initialize_sale()
 
