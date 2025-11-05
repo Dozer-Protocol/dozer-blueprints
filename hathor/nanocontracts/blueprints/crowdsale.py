@@ -120,6 +120,7 @@ class Crowdsale(Blueprint):
     participants_count: int  # Number of unique participants
 
     # Token balances
+    initial_token_deposit: Amount  # Initial tokens deposited by owner
     sale_token_balance: Amount  # Balance of tokens being sold
     htr_balance: Amount  # Balance of HTR
 
@@ -133,7 +134,8 @@ class Crowdsale(Blueprint):
     claimed: dict[Address, bool]  # Claim status per address
 
     # Withdrawal tracking
-    owner_withdrawn: bool  # Whether owner has withdrawn
+    owner_withdrawn: bool  # Whether owner has withdrawn HTR
+    unsold_tokens_withdrawn: bool  # Whether unsold tokens have been withdrawn
     platform_fees_withdrawn: bool  # Whether platform fees have been withdrawn
     platform_fees_collected: Amount  # Total fees collected
 
@@ -200,6 +202,7 @@ class Crowdsale(Blueprint):
         self.total_raised = Amount(0)
         self.total_sold = Amount(0)
         self.participants_count = 0
+        self.initial_token_deposit = Amount(action.amount)
         self.sale_token_balance = Amount(action.amount)
         self.htr_balance = Amount(0)
 
@@ -228,6 +231,7 @@ class Crowdsale(Blueprint):
 
         # Initialize withdrawal tracking
         self.owner_withdrawn = False
+        self.unsold_tokens_withdrawn = False
         self.platform_fees_withdrawn = False
         self.platform_fees_collected = Amount(0)
         self.total_participation_fees_collected = Amount(0)
@@ -377,21 +381,33 @@ class Crowdsale(Blueprint):
 
     @public(allow_withdrawal=True)
     def withdraw_remaining_tokens(self, ctx: Context) -> None:
-        """Withdraw remaining tokens after successful sale (owner only)."""
+        """Withdraw unsold tokens after successful sale (owner only).
+
+        This withdraws only tokens that were never sold to participants.
+        Users can still claim their allocated tokens after this withdrawal.
+        """
         if not self._is_owner(ctx):
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
+        if self.unsold_tokens_withdrawn:
+            raise NCFail("Unsold tokens already withdrawn")
+
+        # Calculate unsold tokens (tokens never allocated to participants)
+        unsold_tokens = Amount(self.initial_token_deposit - self.total_sold)
+        if unsold_tokens == 0:
+            raise NCFail("No unsold tokens to withdraw")
 
         # Validate token withdrawal action
         action = ctx.get_single_action(self.token_uid)
         if not isinstance(action, NCWithdrawalAction):
             raise NCFail("Expected withdrawal action")
-        if action.amount != self.sale_token_balance:
-            raise NCFail("Invalid withdrawal amount")
+        if action.amount != unsold_tokens:
+            raise NCFail(f"Invalid withdrawal amount. Expected {unsold_tokens}")
 
-        # Update balance
-        self.sale_token_balance = Amount(0)
+        # Update balance and mark as withdrawn
+        self.sale_token_balance = Amount(self.sale_token_balance - unsold_tokens)
+        self.unsold_tokens_withdrawn = True
 
     @public(allow_withdrawal=True)
     def withdraw_platform_fees(self, ctx: Context) -> None:
@@ -594,6 +610,24 @@ class Crowdsale(Blueprint):
             is_withdrawn=self.owner_withdrawn,
             can_withdraw=can_withdraw,
         )
+
+    @view
+    def get_unsold_token_info(self) -> dict[str, str]:
+        """Get information about unsold tokens available for withdrawal."""
+        unsold_tokens = Amount(self.initial_token_deposit - self.total_sold)
+        can_withdraw_unsold = (
+            self.state == SaleState.COMPLETED_SUCCESS
+            and not self.unsold_tokens_withdrawn
+            and unsold_tokens > 0
+        )
+        return {
+            "initial_token_deposit": str(self.initial_token_deposit),
+            "total_sold": str(self.total_sold),
+            "unsold_tokens": str(unsold_tokens),
+            "unsold_tokens_withdrawn": str(self.unsold_tokens_withdrawn).lower(),
+            "can_withdraw_unsold": str(can_withdraw_unsold).lower(),
+            "sale_token_balance": str(self.sale_token_balance),
+        }
 
     @view
     def get_fee_info(self) -> dict[str, str]:
@@ -810,19 +844,32 @@ class Crowdsale(Blueprint):
     def routed_withdraw_remaining_tokens(
         self, ctx: Context, user_address: Address
     ) -> None:
-        """Withdraw remaining tokens after successful sale via DozerTools routing (DozerTools handles authorization)."""
+        """Withdraw unsold tokens after successful sale via DozerTools routing.
+
+        This withdraws only tokens that were never sold to participants.
+        Users can still claim their allocated tokens after this withdrawal.
+        DozerTools handles authorization.
+        """
         self._only_creator_contract(ctx)
 
         # DozerTools is responsible for authorization - just execute the action
         if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
+        if self.unsold_tokens_withdrawn:
+            raise NCFail("Unsold tokens already withdrawn")
+
+        # Calculate unsold tokens (tokens never allocated to participants)
+        unsold_tokens = Amount(self.initial_token_deposit - self.total_sold)
+        if unsold_tokens == 0:
+            raise NCFail("No unsold tokens to withdraw")
 
         # Validate token withdrawal action
         action = ctx.get_single_action(self.token_uid)
         if not isinstance(action, NCWithdrawalAction):
             raise NCFail("Expected withdrawal action")
-        if action.amount != self.sale_token_balance:
-            raise NCFail("Invalid withdrawal amount")
+        if action.amount != unsold_tokens:
+            raise NCFail(f"Invalid withdrawal amount. Expected {unsold_tokens}")
 
-        # Update balance
-        self.sale_token_balance = Amount(0)
+        # Update balance and mark as withdrawn
+        self.sale_token_balance = Amount(self.sale_token_balance - unsold_tokens)
+        self.unsold_tokens_withdrawn = True

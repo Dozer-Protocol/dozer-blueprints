@@ -125,8 +125,12 @@ class DozerTools(Blueprint):
     crowdsale_blueprint_id: BlueprintId
 
     # Default crowdsale fee configuration
-    default_crowdsale_platform_fee: Amount  # Default platform fee in basis points (0-1000)
-    default_crowdsale_participation_fee: Amount  # Default participation fee in basis points (0-300)
+    default_crowdsale_platform_fee: (
+        Amount  # Default platform fee in basis points (0-1000)
+    )
+    default_crowdsale_participation_fee: (
+        Amount  # Default participation fee in basis points (0-300)
+    )
 
     # Legacy token permissions (admin-controlled)
     legacy_token_permissions: dict[TokenUid, Address]  # token -> authorized_creator
@@ -288,7 +292,7 @@ class DozerTools(Blueprint):
         self.default_crowdsale_participation_fee = Amount(0)
 
         # Initialize legacy permissions and blacklist
-        self.legacy_token_permissions:dict[TokenUid, Address] = {}
+        self.legacy_token_permissions: dict[TokenUid, Address] = {}
         self.blacklisted_tokens: dict[TokenUid, bool] = {}
 
         # Initialize project registry
@@ -1588,7 +1592,9 @@ class DozerTools(Blueprint):
         """
         return {
             "default_platform_fee_bp": str(self.default_crowdsale_platform_fee),
-            "default_participation_fee_bp": str(self.default_crowdsale_participation_fee),
+            "default_participation_fee_bp": str(
+                self.default_crowdsale_participation_fee
+            ),
             "platform_fee": str(self.default_crowdsale_platform_fee),
             "participation_fee": str(self.default_crowdsale_participation_fee),
         }
@@ -1610,10 +1616,14 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Crowdsale contract does not exist")
 
         # Call crowdsale's view method to get fee info
-        return self.syscall.get_contract(
-            crowdsale_contract,
-            blueprint_id=None,
-        ).view().get_fee_info()
+        return (
+            self.syscall.get_contract(
+                crowdsale_contract,
+                blueprint_id=None,
+            )
+            .view()
+            .get_fee_info()
+        )
 
     @view
     def get_project_vesting_overview(self, token_uid: TokenUid) -> dict[str, str]:
@@ -1918,7 +1928,7 @@ class DozerTools(Blueprint):
                 staking_amount,
                 Address(
                     ctx.caller_id
-                ),  # DozerTools is beneficiary for special allocations
+                ),  # Use dev address as placeholder, creator_contract can claim
                 0,  # cliff_months = 0 (unlocked)
                 0,  # vesting_months = 0 (immediately available)
                 "Staking",
@@ -1934,7 +1944,7 @@ class DozerTools(Blueprint):
                 public_sale_amount,
                 Address(
                     ctx.caller_id
-                ),  # DozerTools is beneficiary for special allocations
+                ),  # Use dev address as placeholder, creator_contract can claim
                 0,  # cliff_months = 0 (unlocked)
                 0,  # vesting_months = 0 (immediately available)
                 "Public Sale",
@@ -1950,7 +1960,7 @@ class DozerTools(Blueprint):
                 dozer_pool_amount,
                 Address(
                     ctx.caller_id
-                ),  # DozerTools is beneficiary for special allocations
+                ),  # Use dev address as placeholder, creator_contract can claim
                 0,  # cliff_months = 0 (unlocked)
                 0,  # vesting_months = 0 (immediately available)
                 "Dozer Pool",
@@ -2354,7 +2364,6 @@ class DozerTools(Blueprint):
             Address(ctx.caller_id),
         )
 
-
     @public
     def crowdsale_unpause(self, ctx: Context, token_uid: TokenUid) -> None:
         """Route unpause to crowdsale contract.
@@ -2381,7 +2390,6 @@ class DozerTools(Blueprint):
         ).public().routed_unpause(
             Address(ctx.caller_id),
         )
-
 
     @public
     def crowdsale_early_activate(self, ctx: Context, token_uid: TokenUid) -> None:
@@ -2430,7 +2438,7 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Crowdsale contract does not exist")
 
         # Route to crowdsale contract with user address
-        self.syscall.get_contract( 
+        self.syscall.get_contract(
             crowdsale_contract,
             blueprint_id=None,
         ).public().routed_finalize(
@@ -2496,10 +2504,9 @@ class DozerTools(Blueprint):
             raise DozerToolsError("Token withdrawal action required")
 
         # Route to crowdsale contract with user address
-        self.syscall.get_contract(
-            crowdsale_contract,
-            blueprint_id=None
-            ).public(action).routed_withdraw_remaining_tokens(
+        self.syscall.get_contract(crowdsale_contract, blueprint_id=None).public(
+            action
+        ).routed_withdraw_remaining_tokens(
             Address(ctx.caller_id),
         )
 
@@ -2568,9 +2575,10 @@ class DozerTools(Blueprint):
             blueprint_id=None,
         ).public(action).withdraw_platform_fees()
 
-
     @public
-    def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:
+    def upgrade_contract(
+        self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str
+    ) -> None:
         """Upgrade the contract to a new blueprint version.
 
         Args:
@@ -2588,7 +2596,9 @@ class DozerTools(Blueprint):
 
         # Validate version is newer
         if not self._is_version_higher(new_version, self.contract_version):
-            raise InvalidVersion(f"New version {new_version} must be higher than current {self.contract_version}")
+            raise InvalidVersion(
+                f"New version {new_version} must be higher than current {self.contract_version}"
+            )
 
         # Perform the upgrade
         contract_id = self.syscall.get_contract_id()
@@ -2605,25 +2615,29 @@ class DozerTools(Blueprint):
         Returns False if versions are malformed or equal.
         """
         # Split versions by '.'
-        new_parts_str = new_version.split('.')
-        current_parts_str = current_version.split('.')
-        
+        new_parts_str = new_version.split(".")
+        current_parts_str = current_version.split(".")
+
         # Check if all parts are valid integers
         new_parts: list[int] = []
         for part in new_parts_str:
             # Simple check: all characters must be digits
-            if not part or not all(c in '0123456789' for c in part):
+            if not part or not all(c in "0123456789" for c in part):
                 return False  # Invalid format
             new_parts.append(int(part))
-        
+
         current_parts: list[int] = []
         for part in current_parts_str:
-            if not part or not all(c in '0123456789' for c in part):
+            if not part or not all(c in "0123456789" for c in part):
                 return False  # Invalid format
             current_parts.append(int(part))
 
         # Pad shorter version with zeros
-        max_len = len(new_parts) if len(new_parts) > len(current_parts) else len(current_parts)
+        max_len = (
+            len(new_parts)
+            if len(new_parts) > len(current_parts)
+            else len(current_parts)
+        )
         while len(new_parts) < max_len:
             new_parts.append(0)
         while len(current_parts) < max_len:
@@ -2640,7 +2654,6 @@ class DozerTools(Blueprint):
             Version string (e.g., "1.0.0")
         """
         return self.contract_version
-
 
 
 class InvalidVersion(NCFail):

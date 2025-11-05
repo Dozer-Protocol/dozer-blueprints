@@ -2719,6 +2719,481 @@ class DozerToolsTest(BlueprintTestCase):
         sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 1)  # ACTIVE
 
+    def test_special_allocation_beneficiaries_and_creator_contract_can_claim(self) -> None:
+        """Test that special allocations have placeholder beneficiary but creator contract can claim them."""
+        # Create project and configure vesting with all special allocations
+        token_uid = self._create_test_project("BeneficiaryToken", "BENEF")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Configure vesting with all three special allocations
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20,  # staking_percentage
+            15,  # public_sale_percentage
+            10,  # dozer_pool_percentage
+            500,  # earnings_per_day
+            ["Team", "Advisors"],
+            [35, 20],  # Total: 20 + 15 + 10 + 35 + 20 = 100%
+            [self.dev_address, self.user_address],
+            [12, 6],
+            [36, 24],
+        )
+
+        # Get vesting contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        vesting_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["vesting_contract"]))
+        )
+
+        # Verify staking allocation (index 0) has dev_address as placeholder beneficiary
+        staking_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            0,  # STAKING_ALLOCATION_INDEX
+            self.get_current_timestamp(),
+        )
+        self.assertEqual(
+            staking_info.beneficiary,
+            self.dev_address.hex(),
+            "Staking allocation has dev_address as placeholder",
+        )
+
+        # Verify public sale allocation (index 1) has dev_address as placeholder
+        public_sale_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            1,  # PUBLIC_SALE_ALLOCATION_INDEX
+            self.get_current_timestamp(),
+        )
+        self.assertEqual(
+            public_sale_info.beneficiary,
+            self.dev_address.hex(),
+            "Public sale allocation has dev_address as placeholder",
+        )
+
+        # Verify dozer pool allocation (index 2) has dev_address as placeholder
+        dozer_pool_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            2,  # DOZER_POOL_ALLOCATION_INDEX
+            self.get_current_timestamp(),
+        )
+        self.assertEqual(
+            dozer_pool_info.beneficiary,
+            self.dev_address.hex(),
+            "Dozer pool allocation has dev_address as placeholder",
+        )
+
+        # Verify regular allocations (index 3+) have correct user beneficiaries
+        team_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            3,  # First regular allocation
+            self.get_current_timestamp(),
+        )
+        self.assertEqual(
+            team_info.beneficiary,
+            self.dev_address.hex(),
+            "Team allocation should have dev_address as beneficiary",
+        )
+
+        advisors_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            4,  # Second regular allocation
+            self.get_current_timestamp(),
+        )
+        self.assertEqual(
+            advisors_info.beneficiary,
+            self.user_address.hex(),
+            "Advisors allocation should have user_address as beneficiary",
+        )
+
+        # Verify that staking contract was created (proves creator_contract could claim)
+        self.assertNotEqual(
+            contracts["staking_contract"],
+            "",
+            "Staking contract should be created, proving creator_contract can claim special allocations",
+        )
+
+    def test_dozer_tools_can_claim_staking_allocation_during_setup(self) -> None:
+        """Test that DozerTools can successfully claim staking allocation when creating staking contract.
+
+        This test verifies the fix for the issue where DozerTools would fail with
+        InvalidBeneficiary error when trying to claim special allocations during setup.
+        """
+        # Create project and configure vesting with staking allocation
+        token_uid = self._create_test_project("StakingClaimToken", "SCLM")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # This should succeed now - DozerTools claims staking allocation internally
+        # to create the staking contract
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            25,  # staking_percentage - this triggers staking contract creation
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            1000,  # earnings_per_day
+            ["Team"],
+            [75],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Verify staking contract was created (proves claim succeeded)
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        self.assertNotEqual(
+            contracts["staking_contract"],
+            "",
+            "Staking contract should be created after successful claim",
+        )
+
+        # Verify staking contract has the tokens (proves claim transferred tokens)
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+        total_supply = Amount(10000000)  # Default from _create_test_project
+        expected_staking_amount = (total_supply * 25) // 100
+
+        staking_balance = self.runner.get_current_balance(
+            staking_contract_id, token_uid
+        )
+        self.assertEqual(
+            staking_balance.value,
+            expected_staking_amount,
+            "Staking contract should have 25% of total supply",
+        )
+
+    def test_dozer_tools_can_claim_public_sale_allocation_for_crowdsale(self) -> None:
+        """Test that DozerTools can successfully claim public sale allocation when creating crowdsale."""
+        # Create project and configure vesting with public sale allocation
+        token_uid = self._create_test_project("CrowdsaleClaimToken", "CCLM")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Configure vesting with public sale allocation
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            0,  # staking_percentage
+            30,  # public_sale_percentage - will be claimed for crowdsale
+            0,  # dozer_pool_percentage
+            0,  # earnings_per_day
+            ["Team"],
+            [70],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Create crowdsale - this should claim public sale allocation from vesting
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        initial_time = self.get_current_timestamp()
+        start_time = initial_time + 100
+        end_time = start_time + 3600
+
+        create_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        # This should succeed - DozerTools claims public sale allocation internally
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            create_ctx,
+            token_uid,
+            100,  # rate
+            100_00,  # soft_cap
+            150_00,  # hard_cap
+            10_00,  # min_deposit
+            start_time,
+            end_time,
+        )
+
+        # Verify crowdsale contract was created (proves claim succeeded)
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        self.assertNotEqual(
+            contracts["crowdsale_contract"],
+            "",
+            "Crowdsale contract should be created after successful claim",
+        )
+
+        # Verify crowdsale contract has the tokens
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+        total_supply = Amount(10000000)
+        expected_sale_amount = (total_supply * 30) // 100
+
+        crowdsale_balance = self.runner.get_current_balance(
+            crowdsale_contract_id, token_uid
+        )
+        self.assertEqual(
+            crowdsale_balance.value,
+            expected_sale_amount,
+            "Crowdsale contract should have 30% of total supply",
+        )
+
+    def test_regular_beneficiaries_cannot_claim_before_cliff(self) -> None:
+        """Test that regular allocation beneficiaries can only claim after cliff period."""
+        # Create project and configure vesting
+        token_uid = self._create_test_project("CliffToken", "CLIFF")
+
+        tx = self._get_any_tx()
+        initial_time = self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        cliff_months = 6
+        vesting_months = 12
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            0,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            0,  # earnings_per_day
+            ["Developer"],
+            [100],  # All tokens to developer
+            [self.user_address],  # user_address is the beneficiary
+            [cliff_months],
+            [vesting_months],
+        )
+
+        # Get vesting contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        vesting_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["vesting_contract"]))
+        )
+
+        # Try to claim before cliff period ends (should fail)
+        from hathor.nanocontracts.blueprints.vesting import InsufficientVestedAmount
+
+        total_supply = Amount(10000000)
+        before_cliff_time = initial_time + (3 * 30 * 24 * 3600)  # 3 months
+
+        claim_ctx = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=token_uid, amount=Amount(1000))
+            ],
+            vertex=self._get_any_tx(),
+            caller_id=self.user_address,  # Correct beneficiary
+            timestamp=before_cliff_time,
+        )
+
+        with self.assertRaises(InsufficientVestedAmount):
+            self.runner.call_public_method(
+                vesting_contract_id,
+                "claim_allocation",
+                claim_ctx,
+                3,  # Developer allocation is at index 3
+            )
+
+        # After cliff period, beneficiary should be able to claim vested tokens
+        after_cliff_time = initial_time + ((cliff_months + 1) * 30 * 24 * 3600)
+
+        # Calculate vested amount (1 month of vesting after cliff)
+        monthly_vesting = total_supply // vesting_months
+
+        claim_ctx_after = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)
+            ],
+            vertex=self._get_any_tx(),
+            caller_id=self.user_address,
+            timestamp=after_cliff_time,
+        )
+
+        # This should succeed
+        self.runner.call_public_method(
+            vesting_contract_id,
+            "claim_allocation",
+            claim_ctx_after,
+            3,  # Developer allocation
+        )
+
+        # Verify tokens were claimed
+        vesting_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            3,
+            after_cliff_time,
+        )
+        self.assertEqual(vesting_info.withdrawn, monthly_vesting)
+
+    def test_developer_as_beneficiary_can_claim_allocation(self) -> None:
+        """Test that the project developer (creator) can claim their own allocation as beneficiary."""
+        # Create project where dev_address is both creator and beneficiary
+        token_uid = self._create_test_project("DevToken", "DEVTK")
+
+        tx = self._get_any_tx()
+        initial_time = self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,  # Developer creates the vesting
+            timestamp=initial_time,
+        )
+
+        cliff_months = 3
+        vesting_months = 12
+
+        # Configure vesting where dev_address is the beneficiary of their own tokens
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            0,  # No staking
+            0,  # No public sale
+            0,  # No dozer pool
+            0,  # No earnings_per_day
+            ["Developer Team"],  # Developer's allocation
+            [100],  # 100% to developer
+            [self.dev_address],  # Developer is the beneficiary
+            [cliff_months],
+            [vesting_months],
+        )
+
+        # Get vesting contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        vesting_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["vesting_contract"]))
+        )
+
+        # Verify developer is the beneficiary
+        vesting_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            3,  # First regular allocation (Developer Team)
+            initial_time,
+        )
+        self.assertEqual(
+            vesting_info.beneficiary,
+            self.dev_address.hex(),
+            "Developer should be the beneficiary",
+        )
+
+        # Wait until after cliff period
+        after_cliff_time = initial_time + ((cliff_months + 1) * 30 * 24 * 3600)
+
+        # Calculate vested amount (1 month of vesting after cliff)
+        total_supply = Amount(10000000)
+        monthly_vesting = total_supply // vesting_months
+
+        # Developer claims their own allocation
+        claim_ctx = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)
+            ],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,  # Developer claiming their own tokens
+            timestamp=after_cliff_time,
+        )
+
+        # This should succeed - developer can claim their own allocation
+        self.runner.call_public_method(
+            vesting_contract_id,
+            "claim_allocation",
+            claim_ctx,
+            3,  # Developer Team allocation
+        )
+
+        # Verify tokens were claimed successfully
+        vesting_info_after = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            3,
+            after_cliff_time,
+        )
+        self.assertEqual(
+            vesting_info_after.withdrawn,
+            monthly_vesting,
+            "Developer should have successfully claimed their tokens",
+        )
+
+        # Verify developer can claim more after additional vesting time
+        two_months_after_cliff = initial_time + ((cliff_months + 2) * 30 * 24 * 3600)
+        two_month_vesting = (total_supply * 2) // vesting_months
+
+        claim_ctx2 = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)
+            ],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=two_months_after_cliff,
+        )
+
+        self.runner.call_public_method(
+            vesting_contract_id,
+            "claim_allocation",
+            claim_ctx2,
+            3,
+        )
+
+        # Verify total withdrawn is now 2 months worth
+        vesting_info_final = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            3,
+            two_months_after_cliff,
+        )
+        self.assertEqual(
+            vesting_info_final.withdrawn,
+            monthly_vesting + monthly_vesting,
+            "Developer should have claimed 2 months of vesting",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

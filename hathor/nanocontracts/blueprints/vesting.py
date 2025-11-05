@@ -2,7 +2,7 @@ from typing import NamedTuple
 
 from hathor import (
     Address,
-    Amount, 
+    Amount,
     Blueprint,
     Context,
     ContractId,
@@ -76,6 +76,7 @@ class InsufficientVestedAmount(NCFail):
 
 class InvalidBeneficiary(NCFail):
     pass
+
 
 @export
 class Vesting(Blueprint):
@@ -259,7 +260,14 @@ class Vesting(Blueprint):
             raise NCFail("Vesting not started")
 
         beneficiary = self.allocation_addresses[index]
-        if ctx.caller_id != beneficiary:
+        # Allow creator_contract to claim special allocations (indices 0, 1, 2)
+        is_special_allocation = index in [0, 1, 2]
+        is_creator_contract = ContractId(ctx.caller_id) == self.creator_contract_id
+
+        if is_special_allocation and is_creator_contract:
+            # Creator contract (DozerTools) can claim special allocations
+            pass
+        elif ctx.caller_id != beneficiary:
             raise InvalidBeneficiary("Only beneficiary can claim")
 
         action = self._get_single_withdrawal_action(ctx, self.token_uid)
@@ -394,7 +402,11 @@ class Vesting(Blueprint):
             raise NCFail("Vesting not started")
 
         beneficiary = self.allocation_addresses[index]
-        if user_address != beneficiary:
+        # Special allocations (indices 0, 1, 2) are owned by creator_contract
+        # and don't need user_address validation
+        is_special_allocation = index in [0, 1, 2]
+
+        if not is_special_allocation and user_address != beneficiary:
             raise InvalidBeneficiary("Only beneficiary can claim")
 
         action = self._get_single_withdrawal_action(ctx, self.token_uid)

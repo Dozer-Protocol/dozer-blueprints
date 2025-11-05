@@ -634,7 +634,7 @@ class CrowdsaleTestCase(BlueprintTestCase):
         self.assertEqual(progress.percent_filled, expected_percent)
 
     def test_withdraw_remaining_tokens(self):
-        """Test withdrawal of remaining tokens after successful sale."""
+        """Test withdrawal of unsold tokens after successful sale."""
         self._initialize_sale()
 
         # Reach soft cap - need to deposit enough GROSS amount so NET reaches soft_cap
@@ -677,15 +677,21 @@ class CrowdsaleTestCase(BlueprintTestCase):
         assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.state, SaleState.COMPLETED_SUCCESS)
 
-        # Get initial token balance
+        # Calculate unsold tokens (initial_deposit - total_sold)
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
+        initial_deposit = contract.initial_token_deposit
+        total_sold = contract.total_sold
+        unsold_tokens = initial_deposit - total_sold
         initial_balance = contract.sale_token_balance
+
+        # Verify unsold tokens > 0 (we only reached soft cap, not hard cap)
+        self.assertGreater(unsold_tokens, 0)
 
         # Try unauthorized withdrawal
         unauthorized_ctx = self.create_context(
             actions=[
-                NCWithdrawalAction(token_uid=self.token_uid, amount=initial_balance)
+                NCWithdrawalAction(token_uid=self.token_uid, amount=unsold_tokens)
             ],
             vertex=self.tx,
             caller_id=Address(self._get_any_address()[0]),
@@ -696,11 +702,11 @@ class CrowdsaleTestCase(BlueprintTestCase):
                 self.contract_id, "withdraw_remaining_tokens", unauthorized_ctx
             )
 
-        # Attempt invalid withdrawal amount
+        # Attempt invalid withdrawal amount (trying to withdraw all balance instead of just unsold)
         wrong_amount_ctx = self.create_context(
             actions=[
                 NCWithdrawalAction(
-                    token_uid=self.token_uid, amount=initial_balance - 100
+                    token_uid=self.token_uid, amount=initial_balance
                 )
             ],
             vertex=self.tx,
@@ -712,10 +718,10 @@ class CrowdsaleTestCase(BlueprintTestCase):
                 self.contract_id, "withdraw_remaining_tokens", wrong_amount_ctx
             )
 
-        # Successful withdrawal
+        # Successful withdrawal of ONLY unsold tokens
         correct_ctx = self.create_context(
             actions=[
-                NCWithdrawalAction(token_uid=self.token_uid, amount=initial_balance)
+                NCWithdrawalAction(token_uid=self.token_uid, amount=unsold_tokens)
             ],
             vertex=self.tx,
             caller_id=Address(self.owner_address),
@@ -725,10 +731,163 @@ class CrowdsaleTestCase(BlueprintTestCase):
             self.contract_id, "withdraw_remaining_tokens", correct_ctx
         )
 
-        # Verify balance is zero
+        # Verify balance decreased by unsold tokens (not zero - users can still claim)
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.sale_token_balance, initial_balance - unsold_tokens)
+        self.assertEqual(contract.unsold_tokens_withdrawn, True)
+
+        # Try to withdraw again (should fail - already withdrawn)
+        duplicate_ctx = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=self.token_uid, amount=unsold_tokens)
+            ],
+            vertex=self.tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.end_time + 200,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.contract_id, "withdraw_remaining_tokens", duplicate_ctx
+            )
+
+        # Verify contract balances
+        self._check_contract_balances()
+
+    def test_withdraw_unsold_before_users_claim(self):
+        """Test that admin can withdraw unsold tokens before users claim their allocations.
+
+        This validates the key fix: unsold tokens (never allocated) can be withdrawn
+        immediately after finalization, while users can still claim their allocated
+        tokens afterward.
+        """
+        self._initialize_sale()
+
+        # Create multiple participants
+        num_participants = 3
+        participant_addresses = []
+        participant_deposits = []
+
+        # Each participant deposits different amounts
+        for i in range(num_participants):
+            participant_addr, _ = self._get_any_address()
+            participant_addresses.append(participant_addr)
+
+            # Gross amounts: 500, 600, 700 HTR
+            gross_amount = (500 + i * 100) * 100
+            participant_deposits.append(gross_amount)
+
+            ctx = self._create_deposit_context(gross_amount, participant_addr)
+            self.runner.call_public_method(self.contract_id, "participate", ctx)
+
+        # Verify we reached soft cap
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.SOFT_CAP_REACHED)
+
+        # Calculate expected amounts
+        total_gross = sum(participant_deposits)
+        total_participation_fees = sum(
+            self._calculate_participation_fee(amt) for amt in participant_deposits
+        )
+        total_net = total_gross - total_participation_fees
+        expected_total_sold = total_net * self.rate
+
+        # Verify total_sold matches
+        self.assertEqual(contract.total_sold, expected_total_sold)
+
+        # Finalize the sale
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=self.tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.end_time + 50,
+        )
+        self.runner.call_public_method(self.contract_id, "finalize", finalize_ctx)
+
+        # Get contract state after finalization
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.state, SaleState.COMPLETED_SUCCESS)
+
+        initial_deposit = contract.initial_token_deposit
+        total_sold = contract.total_sold
+        unsold_tokens = initial_deposit - total_sold
+        balance_before_admin_withdraw = contract.sale_token_balance
+
+        # Verify unsold tokens exist (hard cap was 5000 HTR, we only sold 1800 HTR worth)
+        self.assertGreater(unsold_tokens, 0)
+        self.assertEqual(balance_before_admin_withdraw, initial_deposit)  # Nothing claimed yet
+
+        # Admin withdraws UNSOLD tokens BEFORE any user claims
+        admin_withdraw_ctx = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=self.token_uid, amount=unsold_tokens)
+            ],
+            vertex=self.tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.end_time + 100,
+        )
+        self.runner.call_public_method(
+            self.contract_id, "withdraw_remaining_tokens", admin_withdraw_ctx
+        )
+
+        # Verify admin withdrawal
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.unsold_tokens_withdrawn, True)
+        self.assertEqual(
+            contract.sale_token_balance,
+            balance_before_admin_withdraw - unsold_tokens
+        )
+
+        # Now ALL users should STILL be able to claim their tokens
+        for i, participant_addr in enumerate(participant_addresses):
+            # Calculate expected tokens for this participant
+            gross_amount = participant_deposits[i]
+            net_amount = gross_amount - self._calculate_participation_fee(gross_amount)
+            expected_tokens = net_amount * self.rate
+
+            # Get balance before claim
+            contract = self.get_readonly_contract(self.contract_id)
+            assert isinstance(contract, Crowdsale)
+            balance_before_claim = contract.sale_token_balance
+
+            # User claims their tokens
+            claim_ctx = self.create_context(
+                actions=[
+                    NCWithdrawalAction(
+                        token_uid=self.token_uid,
+                        amount=expected_tokens
+                    )
+                ],
+                vertex=self.tx,
+                caller_id=Address(participant_addr),
+                timestamp=self.end_time + 200 + i,
+            )
+            self.runner.call_public_method(
+                self.contract_id, "claim_tokens", claim_ctx
+            )
+
+            # Verify claim succeeded
+            contract = self.get_readonly_contract(self.contract_id)
+            assert isinstance(contract, Crowdsale)
+            self.assertEqual(contract.claimed.get(Address(participant_addr), False), True)
+            self.assertEqual(
+                contract.sale_token_balance,
+                balance_before_claim - expected_tokens
+            )
+
+        # After all claims, balance should be zero (all sold tokens claimed, unsold already withdrawn)
         contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(contract, Crowdsale)
         self.assertEqual(contract.sale_token_balance, 0)
+
+        # Verify final accounting
+        self.assertEqual(contract.unsold_tokens_withdrawn, True)
+        # Verify all participants have claimed
+        for participant_addr in participant_addresses:
+            self.assertEqual(contract.claimed.get(Address(participant_addr), False), True)
 
         # Verify contract balances
         self._check_contract_balances()
