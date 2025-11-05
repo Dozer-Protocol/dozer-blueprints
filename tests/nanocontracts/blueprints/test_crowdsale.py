@@ -1238,3 +1238,41 @@ class CrowdsaleTestCase(BlueprintTestCase):
 
         # Verify contract balances
         self._check_contract_balances()
+
+    def test_hard_cap_exact_value_auto_finalize(self):
+        """Test that reaching exactly the hard cap (not margin) auto-finalizes to COMPLETED_SUCCESS."""
+        self._initialize_sale()
+
+        # Calculate amount to reach EXACTLY the hard cap (not the margin)
+        # We need to deposit enough so that the NET amount equals hard_cap
+        gross_needed = (self.hard_cap * 10000) // (
+            10000 - self.participation_fee
+        )
+        ctx = self._create_deposit_context(gross_needed)
+        self.runner.call_public_method(self.contract_id, "participate", ctx)
+
+        # Verify the net amount reached is at or very close to hard cap
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        net_amount = self._calculate_net_amount(gross_needed)
+
+        # Check that we're at hard cap (or very close due to integer division)
+        self.assertGreaterEqual(contract.total_raised, self.hard_cap)
+
+        # BUG: This should be COMPLETED_SUCCESS when reaching hard cap
+        # but currently it only auto-finalizes when reaching hard_cap + margin
+        print(f"Hard cap: {self.hard_cap}")
+        print(f"Total raised: {contract.total_raised}")
+        print(f"State: {contract.state}")
+        print(f"Expected state: {SaleState.COMPLETED_SUCCESS}")
+
+        # This test will FAIL with current implementation
+        # because it only auto-finalizes at hard_cap + 0.5% margin
+        self.assertEqual(
+            contract.state,
+            SaleState.COMPLETED_SUCCESS,
+            f"Sale should auto-finalize when reaching hard cap. State is {contract.state}"
+        )
+
+        # Verify contract balances
+        self._check_contract_balances()

@@ -237,6 +237,53 @@ class VestingTestCase(BlueprintTestCase):
         )
         self.assertEqual(info.withdrawn, monthly_vesting)
 
+    def test_admin_cannot_claim_beneficiary_allocation(self):
+        """Test that admin cannot claim allocations on behalf of beneficiaries."""
+        self._initialize_contract()
+        amount = 100_000_00
+        cliff_months = 6
+        vesting_months = 12
+        beneficiary = self._configure_vesting(0, amount, cliff_months, vesting_months)
+
+        # Start vesting
+        start_time = self.now
+        start_ctx = self.create_context(
+            caller_id=self.admin_address,
+            timestamp=start_time,
+        )
+        self.runner.call_public_method(self.contract_id, "start_vesting", start_ctx)
+
+        # Wait until tokens are fully vested
+        after_vesting = start_time + ((cliff_months + vesting_months) * self.month_in_seconds)
+
+        # Admin tries to claim beneficiary's allocation (should fail)
+        admin_claim_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=amount)],
+            caller_id=self.admin_address,  # Admin trying to claim
+            timestamp=after_vesting,
+        )
+
+        with self.assertRaises(InvalidBeneficiary):
+            self.runner.call_public_method(
+                self.contract_id, "claim_allocation", admin_claim_ctx, 0
+            )
+
+        # Verify that beneficiary can still claim successfully
+        beneficiary_claim_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=amount)],
+            caller_id=beneficiary,
+            timestamp=after_vesting,
+        )
+        self.runner.call_public_method(
+            self.contract_id, "claim_allocation", beneficiary_claim_ctx, 0
+        )
+
+        # Verify successful withdrawal by beneficiary
+        info = self.runner.call_view_method(
+            self.contract_id, "get_vesting_info", 0, Timestamp(after_vesting)
+        )
+        self.assertEqual(info.withdrawn, amount)
+
     def test_change_beneficiary(self):
         """Test beneficiary change functionality."""
         self._initialize_contract()

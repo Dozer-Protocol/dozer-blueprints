@@ -259,8 +259,8 @@ class Vesting(Blueprint):
             raise NCFail("Vesting not started")
 
         beneficiary = self.allocation_addresses[index]
-        if ctx.caller_id != self.admin and ctx.caller_id != beneficiary:
-            raise InvalidBeneficiary("Only admin or beneficiary can claim")
+        if ctx.caller_id != beneficiary:
+            raise InvalidBeneficiary("Only beneficiary can claim")
 
         action = self._get_single_withdrawal_action(ctx, self.token_uid)
 
@@ -394,8 +394,8 @@ class Vesting(Blueprint):
             raise NCFail("Vesting not started")
 
         beneficiary = self.allocation_addresses[index]
-        if user_address != self.admin and user_address != beneficiary:
-            raise InvalidBeneficiary("Only admin or beneficiary can claim")
+        if user_address != beneficiary:
+            raise InvalidBeneficiary("Only beneficiary can claim")
 
         action = self._get_single_withdrawal_action(ctx, self.token_uid)
 

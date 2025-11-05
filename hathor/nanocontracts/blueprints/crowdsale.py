@@ -281,11 +281,8 @@ class Crowdsale(Blueprint):
         if self.total_raised >= self.soft_cap and self.state == SaleState.ACTIVE:
             self.state = SaleState.SOFT_CAP_REACHED
 
-        # Check if hard cap reached with margin - auto-finalize to success
-        hard_cap_with_margin = self.hard_cap + (
-            self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
-        )
-        if self.total_raised >= hard_cap_with_margin:
+        # Check if hard cap reached - auto-finalize to success
+        if self.total_raised >= self.hard_cap:
             self.state = SaleState.COMPLETED_SUCCESS
 
     @public(allow_withdrawal=True)
@@ -665,11 +662,8 @@ class Crowdsale(Blueprint):
         if self.total_raised >= self.soft_cap and self.state == SaleState.ACTIVE:
             self.state = SaleState.SOFT_CAP_REACHED
 
-        # Check if hard cap reached with margin - auto-finalize to success
-        hard_cap_with_margin = self.hard_cap + (
-            self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
-        )
-        if self.total_raised >= hard_cap_with_margin:
+        # Check if hard cap reached - auto-finalize to success
+        if self.total_raised >= self.hard_cap:
             self.state = SaleState.COMPLETED_SUCCESS
 
     @public(allow_withdrawal=True)
