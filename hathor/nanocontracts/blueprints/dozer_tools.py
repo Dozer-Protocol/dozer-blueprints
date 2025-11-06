@@ -77,6 +77,12 @@ class TokenBlacklisted(DozerToolsError):
     pass
 
 
+class ContractPaused(DozerToolsError):
+    """Raised when contract is paused."""
+
+    pass
+
+
 class ContractAlreadyExists(DozerToolsError):
     """Raised when trying to create a contract that already exists."""
 
@@ -117,6 +123,7 @@ class DozerTools(Blueprint):
     owner: Address
     dozer_pool_manager_id: ContractId
     dzr_token_uid: TokenUid
+    paused: bool  # For emergency pause
 
     # Configurable blueprint IDs
     vesting_blueprint_id: BlueprintId
@@ -204,6 +211,11 @@ class DozerTools(Blueprint):
         if Address(ctx.caller_id) != self.owner:
             raise Unauthorized("Only contract owner can call this method")
 
+    def _validate_not_paused(self, ctx: Context) -> None:
+        """Ensure contract is not paused for non-owner operations."""
+        if self.paused and Address(ctx.caller_id) != self.owner:
+            raise ContractPaused("Contract is paused")
+
     def _only_project_dev(self, ctx: Context, token_uid: TokenUid) -> None:
         """Ensure only the project dev can call this method."""
         if not self.project_exists.get(token_uid, False):
@@ -279,6 +291,7 @@ class DozerTools(Blueprint):
         self.dozer_pool_manager_id = dozer_pool_manager_id
         self.dzr_token_uid = dzr_token_uid
         self.minimum_deposit = minimum_deposit
+        self.paused = False
 
         # Initialize blueprint IDs as unset (NULL_CONTRACT_ID equivalent)
         null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
@@ -379,6 +392,9 @@ class DozerTools(Blueprint):
         Returns:
             TokenUid of the created token
         """
+        # Check if contract is paused (owner can still create projects when paused)
+        self._validate_not_paused(ctx)
+
         # validate if this user is depositing the HTR to create the token(because if we not check it it will consume the HTR from other users)
         if len(ctx.actions) != 1:
             raise InsufficientCredits("Exactly one HTR deposit action required")
@@ -1350,6 +1366,37 @@ class DozerTools(Blueprint):
         self._only_owner(ctx)
         self.owner = new_owner
 
+    @public
+    def pause(self, ctx: Context) -> None:
+        """Emergency pause functionality.
+
+        Only the owner can pause the contract.
+        When paused, all project creation and management operations are blocked.
+
+        Args:
+            ctx: The transaction context
+
+        Raises:
+            Unauthorized: If the caller is not the owner
+        """
+        self._only_owner(ctx)
+        self.paused = True
+
+    @public
+    def unpause(self, ctx: Context) -> None:
+        """Unpause functionality.
+
+        Only the owner can unpause the contract.
+
+        Args:
+            ctx: The transaction context
+
+        Raises:
+            Unauthorized: If the caller is not the owner
+        """
+        self._only_owner(ctx)
+        self.paused = False
+
     # View Methods (JSON Structure)
 
     @view
@@ -1581,6 +1628,7 @@ class DozerTools(Blueprint):
             "dzr_token_uid": self.dzr_token_uid.hex(),
             "minimum_deposit": str(self.minimum_deposit),
             "total_projects": str(self.total_projects_count),
+            "paused": str(self.paused).lower(),
         }
 
     @view
@@ -1845,6 +1893,9 @@ class DozerTools(Blueprint):
             allocation_cliff_months: List of cliff periods in months for regular allocations
             allocation_vesting_months: List of vesting durations in months for regular allocations
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_project_dev(ctx, token_uid)
         self._charge_fee(ctx, token_uid, "configure_project_vesting")
 
@@ -2004,6 +2055,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             index: Allocation index to claim
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         # Get the withdrawal action to derive token_uid
         if len(ctx.actions) != 1:
             raise DozerToolsError("Exactly one withdrawal action required")
@@ -2042,6 +2096,9 @@ class DozerTools(Blueprint):
             index: Allocation index
             new_beneficiary: New beneficiary address
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_project_dev(ctx, token_uid)
 
         vesting_contract = self.project_vesting_contract.get(
@@ -2068,6 +2125,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         staking_contract = self.project_staking_contract.get(
             token_uid, NULL_CONTRACT_ID
         )
@@ -2095,6 +2155,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         staking_contract = self.project_staking_contract.get(
             token_uid, NULL_CONTRACT_ID
         )
@@ -2125,6 +2188,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_project_dev(ctx, token_uid)
 
         staking_contract = self.project_staking_contract.get(
@@ -2156,6 +2222,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_project_dev(ctx, token_uid)
 
         staking_contract = self.project_staking_contract.get(
@@ -2182,6 +2251,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_project_dev(ctx, token_uid)
 
         staking_contract = self.project_staking_contract.get(
@@ -2212,6 +2284,9 @@ class DozerTools(Blueprint):
         Returns:
             Proposal ID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         dao_contract = self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
         if dao_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("DAO contract does not exist")
@@ -2242,6 +2317,9 @@ class DozerTools(Blueprint):
             proposal_id: Proposal ID
             support: Vote support (True for yes, False for no)
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         dao_contract = self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
         if dao_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("DAO contract does not exist")
@@ -2264,6 +2342,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         crowdsale_contract = self.project_crowdsale_contract.get(
             token_uid, NULL_CONTRACT_ID
         )
@@ -2291,6 +2372,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         crowdsale_contract = self.project_crowdsale_contract.get(
             token_uid, NULL_CONTRACT_ID
         )
@@ -2318,6 +2402,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         crowdsale_contract = self.project_crowdsale_contract.get(
             token_uid, NULL_CONTRACT_ID
         )
@@ -2348,6 +2435,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_project_dev(ctx, token_uid)
 
         crowdsale_contract = self.project_crowdsale_contract.get(
@@ -2375,6 +2465,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_project_dev(ctx, token_uid)
 
         crowdsale_contract = self.project_crowdsale_contract.get(
@@ -2402,6 +2495,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_project_dev(ctx, token_uid)
 
         crowdsale_contract = self.project_crowdsale_contract.get(
@@ -2429,6 +2525,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_project_dev(ctx, token_uid)
 
         crowdsale_contract = self.project_crowdsale_contract.get(
@@ -2456,6 +2555,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_project_dev(ctx, token_uid)
 
         crowdsale_contract = self.project_crowdsale_contract.get(
@@ -2490,6 +2592,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_project_dev(ctx, token_uid)
 
         crowdsale_contract = self.project_crowdsale_contract.get(
@@ -2523,6 +2628,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID to identify which crowdsale
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
         self._only_owner(ctx)  # Only DozerTools owner
 
         crowdsale_contract = self.project_crowdsale_contract.get(
@@ -2555,6 +2663,9 @@ class DozerTools(Blueprint):
             ctx: Transaction context
             token_uid: Project token UID to identify which crowdsale
         """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+        
         self._only_owner(ctx)  # Only DozerTools owner
 
         crowdsale_contract = self.project_crowdsale_contract.get(
