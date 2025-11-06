@@ -4,6 +4,7 @@ from hathor import (
     Address,
     Amount,
     Blueprint,
+    BlueprintId,
     CallerId,
     Context,
     ContractId,
@@ -873,3 +874,22 @@ class Crowdsale(Blueprint):
         # Update balance and mark as withdrawn
         self.sale_token_balance = Amount(self.sale_token_balance - unsold_tokens)
         self.unsold_tokens_withdrawn = True
+
+    @public
+    def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:
+        """Upgrade this contract to a new blueprint version.
+
+        Args:
+            ctx: Transaction context
+            new_blueprint_id: The blueprint ID to upgrade to
+            new_version: Version string for the new blueprint (e.g., "1.1.0")
+
+        Raises:
+            NCFail: If caller is not the owner or creator contract
+        """
+        # Only owner or creator contract can upgrade
+        if not self._is_owner(ctx) and ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only owner or creator contract can upgrade this contract")
+
+        # Perform the upgrade
+        self.syscall.change_blueprint(new_blueprint_id)

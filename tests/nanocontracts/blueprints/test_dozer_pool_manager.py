@@ -257,7 +257,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Verify default fee and protocol fee are set correctly
         self.assertEqual(contract.default_fee, 3)
-        self.assertEqual(contract.default_protocol_fee, 10)
+        self.assertEqual(contract.default_protocol_fee, 40)
 
     def test_create_pool(self):
         """Test pool creation"""

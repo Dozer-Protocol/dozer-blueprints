@@ -3,6 +3,7 @@ from typing import NamedTuple
 from hathor import (
     Amount,
     Blueprint,
+    BlueprintId,
     Context,
     TokenUid,
     Timestamp,
@@ -603,6 +604,25 @@ class Stake(Blueprint):
         ) // PRECISION
 
         self._validate_state()
+
+    @public
+    def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:
+        """Upgrade this contract to a new blueprint version.
+
+        Args:
+            ctx: Transaction context
+            new_blueprint_id: The blueprint ID to upgrade to
+            new_version: Version string for the new blueprint (e.g., "1.1.0")
+
+        Raises:
+            Unauthorized: If caller is not the owner or creator contract
+        """
+        # Only owner or creator contract can upgrade
+        if ctx.caller_id != self.owner_address and ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise Unauthorized("Only owner or creator contract can upgrade this contract")
+
+        # Perform the upgrade
+        self.syscall.change_blueprint(new_blueprint_id)
 
 
 class Unauthorized(NCFail):

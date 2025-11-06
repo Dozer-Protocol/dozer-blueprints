@@ -2267,11 +2267,11 @@ class DozerToolsTest(BlueprintTestCase):
             token_uid,
         )
 
-        # Verify hard cap reached and sale is SOFT_CAP_REACHED (not auto-finalized yet)
-        # Auto-finalization only happens when hard_cap + 0.5% margin is reached
+        # Verify hard cap reached and sale is COMPLETED_SUCCESS (auto-finalized)
+        # Auto-finalization happens when hard_cap is reached (>= hard_cap)
         sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.total_raised, hard_cap)
-        self.assertEqual(sale_info.state, 3)  # SOFT_CAP_REACHED
+        self.assertEqual(sale_info.state, 5)  # COMPLETED_SUCCESS
 
     def test_crowdsale_routed_admin_methods(self) -> None:
         """Test all crowdsale admin methods through DozerTools routing."""
@@ -2583,10 +2583,12 @@ class DozerToolsTest(BlueprintTestCase):
         from hathor.nanocontracts.blueprints.crowdsale import Crowdsale
 
         assert isinstance(contract_state, Crowdsale)
-        remaining_tokens = contract_state.sale_token_balance
+        # Calculate unsold tokens: tokens that were never allocated to participants
+        unsold_tokens = contract_state.initial_token_deposit - contract_state.total_sold
+        expected_sale_balance = contract_state.sale_token_balance - unsold_tokens
 
         withdraw_tokens_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=token_uid, amount=remaining_tokens)],
+            actions=[NCWithdrawalAction(token_uid=token_uid, amount=unsold_tokens)],
             vertex=self._get_any_tx(),
             caller_id=self.dev_address,
             timestamp=end_time + 200,
@@ -2602,7 +2604,8 @@ class DozerToolsTest(BlueprintTestCase):
         # Verify remaining tokens withdrawn
         contract_state_after = self.get_readonly_contract(crowdsale_contract_id)
         assert isinstance(contract_state_after, Crowdsale)
-        self.assertEqual(contract_state_after.sale_token_balance, 0)
+        # After withdrawal, sale_token_balance should only contain tokens allocated to participants
+        self.assertEqual(contract_state_after.sale_token_balance, expected_sale_balance)
 
     def test_crowdsale_unauthorized_routed_calls(self) -> None:
         """Test that unauthorized users cannot call owner-only routed methods."""

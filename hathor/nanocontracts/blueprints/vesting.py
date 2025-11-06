@@ -4,6 +4,7 @@ from hathor import (
     Address,
     Amount,
     Blueprint,
+    BlueprintId,
     Context,
     ContractId,
     NCDepositAction,
@@ -438,3 +439,22 @@ class Vesting(Blueprint):
             raise InvalidBeneficiary("Only current beneficiary can change")
 
         self.allocation_addresses[index] = new_beneficiary
+
+    @public
+    def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:
+        """Upgrade this contract to a new blueprint version.
+
+        Args:
+            ctx: Transaction context
+            new_blueprint_id: The blueprint ID to upgrade to
+            new_version: Version string for the new blueprint (e.g., "1.1.0")
+
+        Raises:
+            NCFail: If caller is not the admin or creator contract
+        """
+        # Only admin or creator contract can upgrade
+        if ctx.caller_id != self.admin and ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only admin or creator contract can upgrade this contract")
+
+        # Perform the upgrade
+        self.syscall.change_blueprint(new_blueprint_id)

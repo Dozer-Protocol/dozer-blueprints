@@ -2576,9 +2576,7 @@ class DozerTools(Blueprint):
         ).public(action).withdraw_platform_fees()
 
     @public
-    def upgrade_contract(
-        self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str
-    ) -> None:
+    def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:
         """Upgrade the contract to a new blueprint version.
 
         Args:
@@ -2587,26 +2585,66 @@ class DozerTools(Blueprint):
             new_version: Version string for the new blueprint (e.g., "1.1.0")
 
         Raises:
-            DozerToolsError: If caller is not the owner
+            Unauthorized: If caller is not the owner
             InvalidVersion: If new version is not higher than current version
         """
         # Only owner can upgrade
         if ctx.caller_id != self.owner:
-            raise DozerToolsError("Only owner can upgrade contract")
+            raise Unauthorized("Only owner can upgrade contract")
 
         # Validate version is newer
         if not self._is_version_higher(new_version, self.contract_version):
-            raise InvalidVersion(
-                f"New version {new_version} must be higher than current {self.contract_version}"
-            )
-
+            raise InvalidVersion(f"New version {new_version} must be higher than current {self.contract_version}")
+        self.contract_version = new_version
+        
         # Perform the upgrade
-        contract_id = self.syscall.get_contract_id()
         self.syscall.change_blueprint(new_blueprint_id)
 
-        # Call post-upgrade initialization on the new blueprint (optional)
-        # The new blueprint can implement this method to handle migrations
-        # self.syscall.get_contract(contract_id, blueprint_id=None).public().post_upgrade_init(new_version)
+    @public
+    def upgrade_specific_contract(self, ctx: Context, contract_id: ContractId, new_blueprint_id: BlueprintId, new_version: str) -> None:
+        """Upgrade the contract to a new blueprint version.
+
+        Args:
+            ctx: Transaction context
+            contract_id: Contract ID to upgrade
+            new_blueprint_id: The blueprint ID to upgrade to
+            new_version: Version string for the new blueprint (e.g., "1.1.0")
+
+        Raises:
+            Unauthorized: If caller is not the owner
+            InvalidVersion: If new version is not higher than current version
+            InvalidContractId: If contract ID is invalid
+        """
+        # Only owner can upgrade
+        if ctx.caller_id != self.owner:
+            raise Unauthorized("Only owner can upgrade contract")
+        
+        # Validate contract ID
+        contract=self.syscall.get_contract(contract_id, blueprint_id=None)
+        contract.get_public_method("upgrade_contract").call(new_blueprint_id, new_version)
+
+
+    @public
+    def migrate_specific_contract(self, ctx: Context, contract_id: ContractId, method_name: str) -> None:
+        """Migrate the contract after an upgrade.
+
+        Args:
+            ctx: Transaction context
+            contract_id: Contract ID to migrate
+            method_name: Name of the method to migrate
+
+        Raises:
+            Unauthorized: If caller is not the owner
+            InvalidContractId: If contract ID is invalid
+            NCMethodNotFound: If method is not found
+        """
+        # Only owner can migrate
+        if ctx.caller_id != self.owner:
+            raise Unauthorized("Only owner can migrate contract")
+
+        # Validate contract ID
+        contract=self.syscall.get_contract(contract_id, blueprint_id=None)
+        contract.get_public_method(method_name).call()
 
     def _is_version_higher(self, new_version: str, current_version: str) -> bool:
         """Compare semantic versions (e.g., "1.2.3").

@@ -6,6 +6,7 @@ from hathor.nanocontracts.exception import NCFail
 from hathor.nanocontracts.types import (
     Address,
     Amount,
+    BlueprintId,
     TokenUid,
     Timestamp,
     ContractId,
@@ -425,6 +426,25 @@ class DAO(Blueprint):
             self.proposal_total_staked[proposal_id] * self.quorum_percentage
         ) // 100
         self.proposal_quorum_reached[proposal_id] = total_votes >= min_votes
+
+    @public
+    def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:
+        """Upgrade this contract to a new blueprint version.
+
+        Args:
+            ctx: Transaction context
+            new_blueprint_id: The blueprint ID to upgrade to
+            new_version: Version string for the new blueprint (e.g., "1.1.0")
+
+        Raises:
+            NCFail: If caller is not the creator contract
+        """
+        # Only creator contract can upgrade (DAO has no single owner)
+        if ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only creator contract can upgrade this contract")
+
+        # Perform the upgrade
+        self.syscall.change_blueprint(new_blueprint_id)
 
 
 __blueprint__ = DAO
