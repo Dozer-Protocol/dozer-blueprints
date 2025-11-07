@@ -79,8 +79,8 @@ class InvalidVersion(NCFail):
 
 
 @export
-class Stake(Blueprint):
-    """Stake blueprint with enhanced features.
+class StakeV2(Blueprint):
+    """V2 Stake blueprint with enhanced features.
 
     The life cycle of contracts using this blueprint is the following:
 
@@ -88,6 +88,10 @@ class Stake(Blueprint):
     2. [Owner] `deposit()` or `withdraw()`.
     3. [User] `stake(...)`.
     4. [User] `unstake(...)`.
+
+    New in V2:
+    - reward_multiplier field for adjustable reward rates
+    - migrate_v1_to_v2() method to initialize V2 fields
     """
 
     # Pool
@@ -111,6 +115,9 @@ class Stake(Blueprint):
 
     # Version tracking
     contract_version: str  # Semantic version string (e.g., "1.0.0")
+
+    # NEW IN V2: Reward multiplier
+    reward_multiplier: int  # Reward multiplier in basis points (10000 = 1x)
 
     def _validate_state(self) -> None:
         """Validate contract state invariants"""
@@ -225,8 +232,10 @@ class Stake(Blueprint):
         self.user_stake_timestamp = {}
         # Set creator_contract_id (for DozerTools routing)
         self.creator_contract_id = creator_contract_id
-        # Initialize version
-        self.contract_version = "1.0.0"
+        # Initialize version (V2 starts at 2.0.0)
+        self.contract_version = "2.0.0"
+        # Initialize V2 fields (1x multiplier by default)
+        self.reward_multiplier = 10000
         self._validate_state()
 
     @public
@@ -614,6 +623,36 @@ class Stake(Blueprint):
         ) // PRECISION
 
         self._validate_state()
+
+    @public
+    def migrate_v1_to_v2(self, ctx: Context) -> None:
+        """Migration method to initialize V2 fields after upgrade from V1.
+
+        Args:
+            ctx: Transaction context
+
+        Raises:
+            Unauthorized: If caller is not the owner or creator contract
+        """
+        # Only owner or creator can migrate
+        if ctx.caller_id != self.owner_address and ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise Unauthorized("Only owner or creator can migrate")
+
+        # Initialize new V2 field (1x multiplier by default, in basis points)
+        self.reward_multiplier = 10000
+
+    @view
+    def get_reward_multiplier(self) -> int:
+        """Get reward multiplier (V2 feature).
+
+        Returns:
+            Reward multiplier in basis points (10000 = 1x)
+        """
+        # Handle case where field doesn't exist yet (pre-migration)
+        try:
+            return self.reward_multiplier
+        except (KeyError, AttributeError):
+            return 0
 
     @public
     def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:

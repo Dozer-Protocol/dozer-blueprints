@@ -95,8 +95,13 @@ class InvalidVersion(NCFail):
     pass
 
 
-class DAO(Blueprint):
-    """DAO contract with staking-based voting power."""
+class DAOV2(Blueprint):
+    """V2 DAO contract with staking-based voting power.
+
+    New in V2:
+    - governance_version field to track governance protocol version
+    - migrate_v1_to_v2() method to initialize V2 fields
+    """
 
     # Configuration
     name: str
@@ -129,6 +134,9 @@ class DAO(Blueprint):
     # Version tracking
     contract_version: str  # Semantic version string (e.g., "1.0.0")
 
+    # NEW IN V2: Governance version tracking
+    governance_version: int  # Governance protocol version
+
     @public
     def initialize(
         self,
@@ -160,8 +168,8 @@ class DAO(Blueprint):
         self.proposal_count = 0
         # Set creator_contract_id (for DozerTools routing)
         self.creator_contract_id = creator_contract_id
-        # Initialize version
-        self.contract_version = "1.0.0"
+        # Initialize version (V2 starts at 2.0.0)
+        self.contract_version = "2.0.0"
 
         # Initialize proposal and vote dictionaries
         self.proposal_titles = {}
@@ -177,6 +185,9 @@ class DAO(Blueprint):
         self.vote_support = {}
         self.vote_power = {}
         self.vote_timestamp = {}
+
+        # Initialize V2 fields (not migrated yet, will be set by migrate_v1_to_v2)
+        self.governance_version = 1  # Default to version 1
 
     @public
     def create_proposal(self, ctx: Context, title: str, description: str) -> int:
@@ -452,6 +463,36 @@ class DAO(Blueprint):
         self.proposal_quorum_reached[proposal_id] = total_votes >= min_votes
 
     @public
+    def migrate_v1_to_v2(self, ctx: Context) -> None:
+        """Migration method to initialize V2 fields after upgrade from V1.
+
+        Args:
+            ctx: Transaction context
+
+        Raises:
+            NCFail: If caller is not the creator contract
+        """
+        # Only creator contract can migrate (DAO has no single owner)
+        if ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only creator contract can migrate")
+
+        # Initialize new V2 field - set to version 2
+        self.governance_version = 2
+
+    @view
+    def get_governance_version(self) -> int:
+        """Get governance protocol version (V2 feature).
+
+        Returns:
+            Governance protocol version number
+        """
+        # Handle case where field doesn't exist yet (pre-migration)
+        try:
+            return self.governance_version
+        except (KeyError, AttributeError):
+            return 0
+
+    @public
     def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:
         """Upgrade this contract to a new blueprint version.
 
@@ -520,4 +561,4 @@ class DAO(Blueprint):
         return self.contract_version
 
 
-__blueprint__ = DAO
+__blueprint__ = DAOV2

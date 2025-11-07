@@ -102,8 +102,13 @@ class InvalidVersion(NCFail):
 
 
 @export
-class Crowdsale(Blueprint):
-    """Blueprint for token sales with platform fees and protection mechanisms."""
+class CrowdsaleV2(Blueprint):
+    """V2 Blueprint for token sales with platform fees and protection mechanisms.
+
+    New in V2:
+    - migration_completed field to track migration status
+    - migrate_v1_to_v2() method to initialize V2 fields
+    """
 
     # Sale configuration
     token_uid: TokenUid  # Token being sold
@@ -150,6 +155,9 @@ class Crowdsale(Blueprint):
 
     # Version tracking
     contract_version: str  # Semantic version string (e.g., "1.0.0")
+
+    # NEW IN V2: Migration tracking
+    migration_completed: bool  # Whether V2 migration has been completed
 
     @public(allow_deposit=True)
     def initialize(
@@ -245,8 +253,11 @@ class Crowdsale(Blueprint):
         self.total_participation_fees_collected = Amount(0)
         self.participation_fees_withdrawn = False
 
-        # Initialize version
-        self.contract_version = "1.0.0"
+        # Initialize version (V2 starts at 2.0.0)
+        self.contract_version = "2.0.0"
+
+        # Initialize V2 fields (not migrated yet, will be set by migrate_v1_to_v2)
+        self.migration_completed = False
 
     @public(allow_deposit=True)
     def participate(self, ctx: Context) -> None:
@@ -884,6 +895,47 @@ class Crowdsale(Blueprint):
         # Update balance and mark as withdrawn
         self.sale_token_balance = Amount(self.sale_token_balance - unsold_tokens)
         self.unsold_tokens_withdrawn = True
+
+    @public
+    def migrate_v1_to_v2(self, ctx: Context) -> None:
+        """Migration method to initialize V2 fields after upgrade from V1.
+
+        This method should be called after upgrading from V1 to V2 to initialize
+        the new V2-specific fields.
+
+        Args:
+            ctx: Transaction context
+
+        Raises:
+            NCFail: If caller is not the owner or creator contract
+        """
+        # Only owner or creator can migrate
+        is_owner = False
+        if isinstance(self.owner, bytes):
+            is_owner = ctx.caller_id == Address(self.owner)
+        elif isinstance(ctx.caller_id, bytes):
+            is_owner = Address(ctx.caller_id) == self.owner
+        else:
+            is_owner = ContractId(ctx.caller_id) == self.owner
+
+        if not is_owner and ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only owner or creator contract can migrate")
+
+        # Initialize new V2 field
+        self.migration_completed = True
+
+    @view
+    def get_migration_status(self) -> bool:
+        """Get migration completion status (V2 feature).
+
+        Returns:
+            True if migration to V2 has been completed, False otherwise
+        """
+        # Handle case where field doesn't exist yet (pre-migration)
+        try:
+            return self.migration_completed
+        except (KeyError, AttributeError):
+            return False
 
     @public
     def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:

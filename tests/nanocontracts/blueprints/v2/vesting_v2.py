@@ -84,8 +84,8 @@ class InvalidVersion(NCFail):
 
 
 @export
-class Vesting(Blueprint):
-    """Vesting blueprint for token distribution with fixed allocation slots.
+class VestingV2(Blueprint):
+    """V2 Vesting blueprint for token distribution with fixed allocation slots.
 
     State Variables:
         admin: Contract administrator address
@@ -102,6 +102,10 @@ class Vesting(Blueprint):
         allocation_cliffs: Cliff periods in months
         allocation_durations: Vesting durations in months
         allocation_withdrawn: Claimed tokens per allocation
+
+    New in V2:
+    - max_allocations_override field for customizable allocation limits
+    - migrate_v1_to_v2() method to initialize V2 fields
     """
 
     # Contract state
@@ -128,6 +132,9 @@ class Vesting(Blueprint):
 
     # Version tracking
     contract_version: str  # Semantic version string (e.g., "1.0.0")
+
+    # NEW IN V2: Customizable max allocations
+    max_allocations_override: int  # Override for maximum allocation slots
 
     def _validate_index(self, index: int) -> None:
         if not 0 <= index < MAX_ALLOCATIONS:
@@ -210,8 +217,11 @@ class Vesting(Blueprint):
         self.allocation_durations = {}
         self.allocation_withdrawn = {}
 
-        # Initialize version
-        self.contract_version = "1.0.0"
+        # Initialize version (V2 starts at 2.0.0)
+        self.contract_version = "2.0.0"
+
+        # Initialize V2 fields (default to 10 allocations like V1)
+        self.max_allocations_override = 10
 
     @public
     def configure_vesting(
@@ -449,6 +459,36 @@ class Vesting(Blueprint):
             raise InvalidBeneficiary("Only current beneficiary can change")
 
         self.allocation_addresses[index] = new_beneficiary
+
+    @public
+    def migrate_v1_to_v2(self, ctx: Context) -> None:
+        """Migration method to initialize V2 fields after upgrade from V1.
+
+        Args:
+            ctx: Transaction context
+
+        Raises:
+            NCFail: If caller is not the admin or creator contract
+        """
+        # Only admin or creator can migrate
+        if ctx.caller_id != self.admin and ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise NCFail("Only admin or creator can migrate")
+
+        # Initialize new V2 field (default to 10 allocations)
+        self.max_allocations_override = 10
+
+    @view
+    def get_max_allocations_override(self) -> int:
+        """Get max allocations override (V2 feature).
+
+        Returns:
+            Maximum number of allocation slots
+        """
+        # Handle case where field doesn't exist yet (pre-migration)
+        try:
+            return self.max_allocations_override
+        except (KeyError, AttributeError):
+            return 0
 
     @public
     def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:

@@ -413,19 +413,28 @@ class DozerTools(Blueprint):
         else:
             raise InsufficientCredits("HTR deposit required for token creation")
 
-        # Check if symbol has ever been used (before creating token)
+        # Check if symbol is currently in use (not permanently reserved)
         if self.symbol_exists(token_symbol):
             raise ProjectAlreadyExists(
-                f"Token symbol '{token_symbol}' has already been used and cannot be reused"
+                f"Token symbol '{token_symbol}' is currently in use"
             )
 
-        # Create the token
+        # Generate unique salt using timestamp and caller_id (similar to _generate_salt for contracts)
+        # This allows symbol reuse after cancellation while ensuring unique token UIDs
+        salt = (
+            bytes(ctx.caller_id)
+            + bytes(token_symbol, "utf-8")
+            + bytes(str(ctx.block.timestamp), "utf-8")
+        )
+
+        # Create the token with salt
         token_uid = self.syscall.create_deposit_token(
             token_name=token_name,
             token_symbol=token_symbol,
             amount=total_supply,
             mint_authority=True,
             melt_authority=True,
+            salt=salt,
         )
 
         # Validate token permissions for legacy tokens
@@ -445,7 +454,7 @@ class DozerTools(Blueprint):
         self.project_created_at[token_uid] = Timestamp(ctx.block.timestamp)
         self.project_total_supply[token_uid] = total_supply
 
-        # Mark symbol as permanently used to prevent future reuse
+        # Mark symbol as currently in use (will be freed if project is cancelled)
         self.used_symbols[token_symbol.upper().strip()] = True
 
         # Store optional metadata (only if provided and not empty)
@@ -939,7 +948,7 @@ class DozerTools(Blueprint):
         - By the project dev
         - When vesting is not yet configured
         - Will melt all token supply and return HTR deposit
-        - Symbol becomes permanently reserved and cannot be reused
+        - Symbol is freed and can be reused for new projects
         """
         self._only_project_dev(ctx, token_uid)
         self._charge_fee(ctx, token_uid, "cancel_project")
@@ -994,8 +1003,15 @@ class DozerTools(Blueprint):
             del self.project_exists[token_uid]
         if token_uid in self.project_name:
             del self.project_name[token_uid]
+
+        # Free the symbol so it can be reused
         if token_uid in self.project_symbol:
+            symbol = self.project_symbol[token_uid]
+            symbol_key = symbol.upper().strip()
+            if symbol_key in self.used_symbols:
+                del self.used_symbols[symbol_key]
             del self.project_symbol[token_uid]
+
         if token_uid in self.project_dev:
             del self.project_dev[token_uid]
         if token_uid in self.project_created_at:
