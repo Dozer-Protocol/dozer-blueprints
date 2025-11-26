@@ -89,18 +89,18 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 token_a_hex, _token_b_hex, _fee = pool.split("/")
                 token_a = bytes.fromhex(token_a_hex)
                 if token_uid == token_a:
-                   
+
                     token_balances[token_uid] = (
                         token_balances.get(token_uid, 0)
-                        + contract.pool_reserve_a.get(pool, 0)
-                        + contract.pool_total_balance_a.get(pool, 0)
+                        + contract.pools[pool].reserve_a
+                        + contract.pools[pool].total_balance_a
                     )
                 else:
-                   
+
                     token_balances[token_uid] = (
                         token_balances.get(token_uid, 0)
-                        + contract.pool_reserve_b.get(pool, 0)
-                        + contract.pool_total_balance_b.get(pool, 0)
+                        + contract.pools[pool].reserve_b
+                        + contract.pools[pool].total_balance_b
                     )
             state_balance = token_balances[token_uid]
             self.assertEqual(state_balance, contract_balance.value)
@@ -255,8 +255,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Verify owner is set correctly
         self.assertEqual(contract.owner, self.owner_address)
 
-        # Verify default fee and protocol fee are set correctly
-        self.assertEqual(contract.default_fee, 3)
+        # Verify protocol fee are set correctly
         self.assertEqual(contract.default_protocol_fee, 40)
 
     def test_create_pool(self):
@@ -268,11 +267,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         assert isinstance(contract, DozerPoolManager)
 
         # Verify pool exists
-        self.assertTrue(contract.pool_exists[pool_key])
+        self.assertTrue(pool_key in contract.pool_exists)
 
         # Verify tokens are stored correctly
-        self.assertEqual(contract.pool_token_a[pool_key], self.token_a)
-        self.assertEqual(contract.pool_token_b[pool_key], self.token_b)
+        self.assertEqual(contract.pools[pool_key].token_a, self.token_a)
+        self.assertEqual(contract.pools[pool_key].token_b, self.token_b)
 
         # Verify initial liquidity
         creator_liquidity = self.runner.call_view_method(
@@ -317,10 +316,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         assert isinstance(contract, DozerPoolManager)
 
         # Verify all pools exist
-        self.assertTrue(contract.pool_exists[pool_key1])
-        self.assertTrue(contract.pool_exists[pool_key2])
-        self.assertTrue(contract.pool_exists[pool_key3])
-        self.assertTrue(contract.pool_exists[pool_key4])
+        self.assertTrue(pool_key1 in contract.pool_exists)
+        self.assertTrue(pool_key2 in contract.pool_exists)
+        self.assertTrue(pool_key3 in contract.pool_exists)
+        self.assertTrue(pool_key4 in contract.pool_exists)
 
         # Verify all pools are in the all_pools list
         all_pools = self.runner.call_view_method(self.nc_id, "get_all_pools")
@@ -359,9 +358,9 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         assert isinstance(contract, DozerPoolManager)
 
         # Initial reserves
-        initial_reserve_a = contract.pool_reserve_a[pool_key]
-        initial_reserve_b = contract.pool_reserve_b[pool_key]
-        initial_total_liquidity = contract.pool_total_liquidity[pool_key]
+        initial_reserve_a = contract.pools[pool_key].reserve_a
+        initial_reserve_b = contract.pools[pool_key].reserve_b
+        initial_total_liquidity = contract.pools[pool_key].total_liquidity
 
         amount_a = 500_00
         reserve_a, reserve_b = self.runner.call_view_method(
@@ -387,17 +386,17 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Verify reserves increased
         self.assertEqual(
-            updated_contract.pool_reserve_a[pool_key],
+            updated_contract.pools[pool_key].reserve_a,
             initial_reserve_a + amount_a,
         )
         self.assertEqual(
-            updated_contract.pool_reserve_b[pool_key],
+            updated_contract.pools[pool_key].reserve_b,
             initial_reserve_b + amount_b,
         )
 
         # Verify total liquidity increased
         self.assertEqual(
-            updated_contract.pool_total_liquidity[pool_key],
+            updated_contract.pools[pool_key].total_liquidity,
             initial_total_liquidity + liquidity_increase,
         )
 
@@ -427,9 +426,9 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         assert isinstance(contract, DozerPoolManager)
 
         # Initial values before removal
-        initial_reserve_a = contract.pool_reserve_a[pool_key]
-        initial_reserve_b = contract.pool_reserve_b[pool_key]
-        initial_total_liquidity = contract.pool_total_liquidity[pool_key]
+        initial_reserve_a = contract.pools[pool_key].reserve_a
+        initial_reserve_b = contract.pools[pool_key].reserve_b
+        initial_total_liquidity = contract.pools[pool_key].total_liquidity
         initial_user_liquidity = self.runner.call_view_method(
             self.nc_id, "liquidity_of", add_context.caller_id, pool_key
         )
@@ -464,17 +463,17 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Verify reserves decreased
         self.assertEqual(
-            updated_contract.pool_reserve_a[pool_key],
+            updated_contract.pools[pool_key].reserve_a,
             initial_reserve_a - amount_to_remove_a,
         )
         self.assertEqual(
-            updated_contract.pool_reserve_b[pool_key],
+            updated_contract.pools[pool_key].reserve_b,
             initial_reserve_b - amount_to_remove_b,
         )
 
         # Verify total liquidity decreased
         self.assertEqual(
-            updated_contract.pool_total_liquidity[pool_key],
+            updated_contract.pools[pool_key].total_liquidity,
             initial_total_liquidity - liquidity_decrease,
         )
 
@@ -760,13 +759,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         assert isinstance(contract, DozerPoolManager)
 
         # Initial reserves
-        initial_reserve_a = contract.pool_reserve_a[pool_key]
-        initial_reserve_b = contract.pool_reserve_b[pool_key]
+        initial_reserve_a = contract.pools[pool_key].reserve_a
+        initial_reserve_b = contract.pools[pool_key].reserve_b
 
         # Calculate expected output using get_amount_out
         swap_amount_in = 100_00
-        fee_numerator = contract.pool_fee_numerator[pool_key]
-        fee_denominator = contract.pool_fee_denominator[pool_key]
+        fee_numerator = contract.pools[pool_key].fee_numerator
+        fee_denominator = contract.pools[pool_key].fee_denominator
         
         # Calculate expected amount out
         a = fee_denominator - fee_numerator
@@ -784,11 +783,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Verify reserves changed correctly
         self.assertEqual(
-            updated_contract.pool_reserve_a[pool_key],
+            updated_contract.pools[pool_key].reserve_a,
             initial_reserve_a + swap_amount_in,
         )
         self.assertEqual(
-            updated_contract.pool_reserve_b[pool_key],
+            updated_contract.pools[pool_key].reserve_b,
             initial_reserve_b - expected_amount_out,
         )
 
@@ -811,19 +810,22 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         assert isinstance(contract, DozerPoolManager)
 
         # Initial reserves
-        initial_reserve_a = contract.pool_reserve_a[pool_key]
-        initial_reserve_b = contract.pool_reserve_b[pool_key]
+        initial_reserve_a = contract.pools[pool_key].reserve_a
+        initial_reserve_b = contract.pools[pool_key].reserve_b
 
         # Define exact output amount
         swap_amount_out = 500_00
 
-        # Calculate required input using get_amount_in
-        fee_numerator = contract.pool_fee_numerator[pool_key]
-        fee_denominator = contract.pool_fee_denominator[pool_key]
-        
+        # Calculate required input using get_amount_in (with rounding up)
+        fee_numerator = contract.pools[pool_key].fee_numerator
+        fee_denominator = contract.pools[pool_key].fee_denominator
+
         a = fee_denominator - fee_numerator
         b = fee_denominator
-        required_amount_in = (initial_reserve_a * swap_amount_out * b) // ((initial_reserve_b - swap_amount_out) * a)
+        # This formula matches the blueprint's get_amount_in which rounds up
+        required_amount_in = (
+            initial_reserve_a * swap_amount_out * b + (initial_reserve_b - swap_amount_out) * a - 1
+        ) // ((initial_reserve_b - swap_amount_out) * a)
 
         # Add extra for slippage
         swap_amount_in = required_amount_in + 10_00
@@ -839,11 +841,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Verify reserves changed correctly
         self.assertEqual(
-            updated_contract.pool_reserve_a[pool_key],
+            updated_contract.pools[pool_key].reserve_a,
             initial_reserve_a + required_amount_in,
         )
         self.assertEqual(
-            updated_contract.pool_reserve_b[pool_key],
+            updated_contract.pools[pool_key].reserve_b,
             initial_reserve_b - swap_amount_out,
         )
 
@@ -954,13 +956,13 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         assert isinstance(contract, DozerPoolManager)
 
         # Verify user has liquidity
-        user_liquidity = contract.pool_user_liquidity.get(pool_key, {}).get(creator_address, 0)
+        user_liquidity = contract.pools[pool_key].user_liquidity.get(creator_address, 0)
         self.assertGreater(user_liquidity, 0)
 
         # Verify pool state
-        self.assertGreater(contract.pool_total_liquidity[pool_key], 0)
-        self.assertEqual(contract.pool_reserve_a[pool_key], 1000_00)
-        self.assertEqual(contract.pool_reserve_b[pool_key], 2000_00)
+        self.assertGreater(contract.pools[pool_key].total_liquidity, 0)
+        self.assertEqual(contract.pools[pool_key].reserve_a, 1000_00)
+        self.assertEqual(contract.pools[pool_key].reserve_b, 2000_00)
 
     def test_change_protocol_fee(self):
         """Test changing the protocol fee"""
@@ -1127,15 +1129,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         balance_a = 0
         balance_b = 0
-        if pool_key in contract.pool_balance_a:
-            pool_dict_a = contract.pool_balance_a[pool_key]
-            if context.caller_id in pool_dict_a:
-                balance_a = pool_dict_a[context.caller_id]
-
-        if pool_key in contract.pool_balance_b:
-            pool_dict_b = contract.pool_balance_b[pool_key]
-            if context.caller_id in pool_dict_b:
-                balance_b = pool_dict_b[context.caller_id]
+        balance_a = contract.pools[pool_key].balance_a.get(context.caller_id, 0)
+        balance_b = contract.pools[pool_key].balance_b.get(context.caller_id, 0)
 
         # Should have some balance in token_b due to ratio mismatch
         self.assertGreater(balance_b, 0, "Expected some balance_b from liquidity addition")
@@ -1159,17 +1154,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         updated_contract = self.get_readonly_contract(self.nc_id)
         assert isinstance(updated_contract, DozerPoolManager)
 
-        new_balance_a = 0
-        new_balance_b = 0
-        if pool_key in updated_contract.pool_balance_a:
-            pool_dict_a = updated_contract.pool_balance_a[pool_key]
-            if context.caller_id in pool_dict_a:
-                new_balance_a = pool_dict_a[context.caller_id]
-
-        if pool_key in updated_contract.pool_balance_b:
-            pool_dict_b = updated_contract.pool_balance_b[pool_key]
-            if context.caller_id in pool_dict_b:
-                new_balance_b = pool_dict_b[context.caller_id]
+        new_balance_a = updated_contract.pools[pool_key].balance_a.get(context.caller_id, 0)
+        new_balance_b = updated_contract.pools[pool_key].balance_b.get(context.caller_id, 0)
 
         self.assertEqual(new_balance_a, 0)
         self.assertEqual(new_balance_b, 0)
