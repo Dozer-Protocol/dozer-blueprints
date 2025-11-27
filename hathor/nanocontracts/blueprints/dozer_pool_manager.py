@@ -387,7 +387,7 @@ class DozerPoolManager(Blueprint):
 
     def _get_actions_in_in(
         self, ctx: Context, pool_key: str
-    ) -> tuple[NCAction, NCAction]:
+    ) -> tuple[NCDepositAction, NCDepositAction]:
         """Return token_a and token_b actions. It also validates that both are deposits.
 
         Args:
@@ -405,11 +405,16 @@ class DozerPoolManager(Blueprint):
             raise InvalidAction("Only deposits allowed for token_a")
         if action_b.type != NCActionType.DEPOSIT:
             raise InvalidAction("Only deposits allowed for token_b")
+
+        # Assert for type narrowing (type already validated above)
+        assert isinstance(action_a, NCDepositAction), "action_a must be NCDepositAction"
+        assert isinstance(action_b, NCDepositAction), "action_b must be NCDepositAction"
+
         return action_a, action_b
 
     def _get_actions_out_out(
         self, ctx: Context, pool_key: str
-    ) -> tuple[NCAction, NCAction]:
+    ) -> tuple[NCWithdrawalAction, NCWithdrawalAction]:
         """Return token_a and token_b actions. It also validates that both are withdrawals.
 
         Args:
@@ -427,11 +432,16 @@ class DozerPoolManager(Blueprint):
             raise InvalidAction("Only withdrawals allowed for token_a")
         if action_b.type != NCActionType.WITHDRAWAL:
             raise InvalidAction("Only withdrawals allowed for token_b")
+
+        # Assert for type narrowing (type already validated above)
+        assert isinstance(action_a, NCWithdrawalAction), "action_a must be NCWithdrawalAction"
+        assert isinstance(action_b, NCWithdrawalAction), "action_b must be NCWithdrawalAction"
+
         return action_a, action_b
 
     def _get_actions_in_out(
         self, ctx: Context, pool_key: str
-    ) -> tuple[NCAction, NCAction]:
+    ) -> tuple[NCDepositAction, NCWithdrawalAction]:
         """Return action_in and action_out, where action_in is a deposit and action_out is a withdrawal.
 
         Args:
@@ -457,6 +467,10 @@ class DozerPoolManager(Blueprint):
             raise InvalidAction("Must have one deposit and one withdrawal")
         if action_out.type != NCActionType.WITHDRAWAL:
             raise InvalidAction("Must have one deposit and one withdrawal")
+
+        # Assert for type narrowing (type already validated above)
+        assert isinstance(action_in, NCDepositAction), "action_in must be NCDepositAction"
+        assert isinstance(action_out, NCWithdrawalAction), "action_out must be NCWithdrawalAction"
 
         return action_in, action_out
 
@@ -1174,12 +1188,12 @@ class DozerPoolManager(Blueprint):
         ):
             raise InvalidAction("Only deposits allowed for initial liquidity")
 
-        action_a_amount = Amount(
-            action_a.amount if isinstance(action_a, NCDepositAction) else 0
-        )
-        action_b_amount = Amount(
-            action_b.amount if isinstance(action_b, NCDepositAction) else 0
-        )
+        # Assert for type narrowing (type already validated above)
+        assert isinstance(action_a, NCDepositAction), "action_a must be NCDepositAction"
+        assert isinstance(action_b, NCDepositAction), "action_b must be NCDepositAction"
+
+        action_a_amount = Amount(action_a.amount)
+        action_b_amount = Amount(action_b.amount)
 
         # Initialize pool data
         self.pool_exists.add(pool_key)
@@ -1291,12 +1305,8 @@ class DozerPoolManager(Blueprint):
         reserve_a = pool.reserve_a
         reserve_b = pool.reserve_b
 
-        action_a_amount = Amount(
-            action_a.amount if isinstance(action_a, NCDepositAction) else 0
-        )
-        action_b_amount = Amount(
-            action_b.amount if isinstance(action_b, NCDepositAction) else 0
-        )
+        action_a_amount = Amount(action_a.amount)
+        action_b_amount = Amount(action_b.amount)
 
         optimal_b = self.quote(action_a_amount, reserve_a, reserve_b)
         if optimal_b <= action_b_amount:
@@ -1426,12 +1436,8 @@ class DozerPoolManager(Blueprint):
             // pool.total_liquidity
         )
 
-        action_a_amount = Amount(
-            action_a.amount if isinstance(action_a, NCWithdrawalAction) else 0
-        )
-        action_b_amount = Amount(
-            action_b.amount if isinstance(action_b, NCWithdrawalAction) else 0
-        )
+        action_a_amount = Amount(action_a.amount)
+        action_b_amount = Amount(action_b.amount)
 
         if max_withdraw < action_a_amount:
             raise InvalidAction(
@@ -2022,12 +2028,8 @@ class DozerPoolManager(Blueprint):
         # Capture K before operation (should increase due to fees)
         k_before = Amount(pool.reserve_a * pool.reserve_b)
 
-        action_in_amount = Amount(
-            action_in.amount if isinstance(action_in, NCDepositAction) else 0
-        )
-        min_accepted_amount = Amount(
-            action_out.amount if isinstance(action_out, NCWithdrawalAction) else 0
-        )
+        action_in_amount = Amount(action_in.amount)
+        min_accepted_amount = Amount(action_out.amount)
 
         amount_in = action_in_amount
         fee_amount = (
@@ -2156,12 +2158,8 @@ class DozerPoolManager(Blueprint):
         # Capture K before operation (should increase due to fees)
         k_before = Amount(pool.reserve_a * pool.reserve_b)
 
-        action_in_amount = Amount(
-            action_in.amount if isinstance(action_in, NCDepositAction) else 0
-        )
-        amount_out = Amount(
-            action_out.amount if isinstance(action_out, NCWithdrawalAction) else 0
-        )
+        action_in_amount = Amount(action_in.amount)
+        amount_out = Amount(action_out.amount)
 
         # Reserve must never reach zero
         if reserve_out <= amount_out:
@@ -3103,12 +3101,8 @@ class DozerPoolManager(Blueprint):
 
         action_a, action_b = self._get_actions_out_out(ctx, pool_key)
 
-        action_a_amount = Amount(
-            action_a.amount if isinstance(action_a, NCWithdrawalAction) else 0
-        )
-        action_b_amount = Amount(
-            action_b.amount if isinstance(action_b, NCWithdrawalAction) else 0
-        )
+        action_a_amount = Amount(action_a.amount)
+        action_b_amount = Amount(action_b.amount)
 
         # Check if user has enough cashback (using consolidated balance)
         current_balance_a, current_balance_b = self.pool_change[pool_key].get(
