@@ -93,14 +93,14 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                     token_balances[token_uid] = (
                         token_balances.get(token_uid, 0)
                         + contract.pools[pool].reserve_a
-                        + contract.pools[pool].total_balance_a
+                        + contract.pools[pool].total_change_a
                     )
                 else:
 
                     token_balances[token_uid] = (
                         token_balances.get(token_uid, 0)
                         + contract.pools[pool].reserve_b
-                        + contract.pools[pool].total_balance_b
+                        + contract.pools[pool].total_change_b
                     )
             state_balance = token_balances[token_uid]
             self.assertEqual(state_balance, contract_balance.value)
@@ -956,7 +956,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         assert isinstance(contract, DozerPoolManager)
 
         # Verify user has liquidity
-        user_liquidity = contract.pools[pool_key].user_liquidity.get(creator_address, 0)
+        user_liquidity = contract.pool_user_liquidity[pool_key].get(creator_address, 0)
         self.assertGreater(user_liquidity, 0)
 
         # Verify pool state
@@ -1127,19 +1127,18 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         contract = self.get_readonly_contract(self.nc_id)
         assert isinstance(contract, DozerPoolManager)
 
-        balance_a = 0
-        balance_b = 0
-        balance_a = contract.pools[pool_key].balance_a.get(context.caller_id, 0)
-        balance_b = contract.pools[pool_key].balance_b.get(context.caller_id, 0)
+        change_a = 0
+        change_b = 0
+        change_a, change_b = contract.pool_change[pool_key].get(context.caller_id, (0, 0))
 
-        # Should have some balance in token_b due to ratio mismatch
-        self.assertGreater(balance_b, 0, "Expected some balance_b from liquidity addition")
+        # Should have some change in token_b due to ratio mismatch
+        self.assertGreater(change_b, 0, "Expected some change_b from liquidity addition")
 
         # Withdraw cashback
         withdraw_context = self.create_context(
             [
-                NCWithdrawalAction(token_uid=self.token_a, amount=balance_a),
-                NCWithdrawalAction(token_uid=self.token_b, amount=balance_b),
+                NCWithdrawalAction(token_uid=self.token_a, amount=change_a),
+                NCWithdrawalAction(token_uid=self.token_b, amount=change_b),
             ],
             tx,
             Address(context.caller_id),
@@ -1154,11 +1153,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         updated_contract = self.get_readonly_contract(self.nc_id)
         assert isinstance(updated_contract, DozerPoolManager)
 
-        new_balance_a = updated_contract.pools[pool_key].balance_a.get(context.caller_id, 0)
-        new_balance_b = updated_contract.pools[pool_key].balance_b.get(context.caller_id, 0)
+        new_change_a, new_change_b = updated_contract.pool_change[pool_key].get(context.caller_id, (0, 0))
 
-        self.assertEqual(new_balance_a, 0)
-        self.assertEqual(new_balance_b, 0)
+        self.assertEqual(new_change_a, 0)
+        self.assertEqual(new_change_b, 0)
 
         self._check_balance()
 
