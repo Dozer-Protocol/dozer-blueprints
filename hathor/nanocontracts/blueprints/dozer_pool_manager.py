@@ -21,6 +21,7 @@ from hathor import (
 )
 
 PRECISION = Amount(10**20)
+MINIMUM_LIQUIDITY = Amount(10**3)  # Multiplier for minimum liquidity burn
 
 
 class PoolState(NamedTuple):
@@ -693,16 +694,13 @@ class DozerPoolManager(Blueprint):
         ratio_check_before = reserve_a_before * reserve_b_after
         ratio_check_after = reserve_a_after * reserve_b_before
 
-        if ratio_check_before > ratio_check_after:
-            diff = ratio_check_before - ratio_check_after
-        else:
-            diff = ratio_check_after - ratio_check_before
+        # Calculate absolute difference
+        diff = abs(ratio_check_before - ratio_check_after)
 
         max_value = max(ratio_check_before, ratio_check_after)
-        max_allowed_error = max_value // 1000000
 
-        assert diff <= max_allowed_error, \
-            f"Price ratio violation in {operation}: ratio changed from {reserve_a_before}/{reserve_b_before} to {reserve_a_after}/{reserve_b_after} (diff: {diff}, max allowed: {max_allowed_error})"
+        assert diff * 1000000 <= max_value, \
+            f"Price ratio violation in {operation}: ratio changed from {reserve_a_before}/{reserve_b_before} to {reserve_a_after}/{reserve_b_after} (diff: {diff})"
 
     @view
     def get_amount_out(
@@ -1110,33 +1108,39 @@ class DozerPoolManager(Blueprint):
         """Calculate the liquidity increase equivalent to a defined percentage of the
         collected fee to be minted to the owner address.
 
+        Uses geometric mean: calculates the exact change in sqrt(reserve_a × reserve_b)
+        when protocol fee is added to reserves.
+
         Args:
-            protocol_fee_amount: The protocol fee amount
-            token: The token
+            protocol_fee_amount: The protocol fee amount in the fee token
+            token: The token in which the fee was collected
             pool_key: The pool key
 
         Returns:
-            The liquidity increase
+            The liquidity increase to mint to the owner
         """
         pool = self.pools[pool_key]
+
+        # Calculate liquidity increase using exact geometric mean formula
+        # ΔL = sqrt((r_a + fee_a) × (r_b + fee_b)) - sqrt(r_a × r_b)
         if token == pool.token_a:
-            liquidity_increase = (
-                pool.total_liquidity
-                * protocol_fee_amount
-                // (pool.reserve_a * 2)
-            )
+            # Fee collected in token A
+            product_after = Amount((pool.reserve_a + protocol_fee_amount) * pool.reserve_b)
+            product_before = Amount(pool.reserve_a * pool.reserve_b)
         else:
+            # Fee collected in token B
             assert token == pool.token_b, f"Token {token} is not part of pool {pool_key}"
-            optimal_a = self.quote(
-                protocol_fee_amount,
-                pool.reserve_b,
-                pool.reserve_a,
-            )
-            liquidity_increase = (
-                pool.total_liquidity
-                * optimal_a
-                // (pool.reserve_a * 2)
-            )
+            product_after = Amount(pool.reserve_a * (pool.reserve_b + protocol_fee_amount))
+            product_before = Amount(pool.reserve_a * pool.reserve_b)
+
+        # Calculate the change in liquidity using integer square root
+        sqrt_after = self._isqrt(product_after)
+        sqrt_before = self._isqrt(product_before)
+        delta_sqrt = sqrt_after - sqrt_before
+
+        # Scale by PRECISION to match the liquidity units
+        liquidity_increase = delta_sqrt * PRECISION
+
         return Amount(liquidity_increase)
 
     @public(allow_deposit=True)
@@ -1210,15 +1214,19 @@ class DozerPoolManager(Blueprint):
         # Initialize pool data
         self.pool_exists.add(pool_key)
 
-        # Calculate initial liquidity using token A as the base
-        # We use: initial_liquidity = PRECISION * action_a_amount
-        #
-        # Rationale for using token A instead of geometric mean:
-        # - Token A is chosen as the base liquidity token for consistency
-        # - This simplifies liquidity calculations throughout the contract
-        # - The actual pool value is determined by the ratio of reserves (K = reserve_a * reserve_b)
-        # - Using token A as the base doesn't affect the invariant or pricing
-        initial_liquidity = PRECISION * action_a_amount
+        # Calculate initial liquidity using geometric mean (sqrt pattern)
+        # Formula: initial_liquidity = sqrt(reserve_a * reserve_b) * PRECISION
+        # This is the DeFi standard (Uniswap V2, SushiSwap) and treats both tokens equally
+        product = Amount(action_a_amount * action_b_amount)
+        initial_liquidity = self._isqrt(product) * PRECISION
+
+        # Calculate minimum liquidity to burn
+        # Prevents first depositor from withdrawing 100% of reserves
+        minimum_liquidity = self._isqrt(product) * MINIMUM_LIQUIDITY
+        total_liquidity = initial_liquidity + minimum_liquidity
+
+        # Validate sufficient initial liquidity
+        assert initial_liquidity > 0, "Insufficient initial liquidity: amounts too small"
 
         # Create the pool state with primitive fields only
         self.pools[pool_key] = PoolState(
@@ -1228,7 +1236,7 @@ class DozerPoolManager(Blueprint):
             reserve_b=action_b_amount,
             fee_numerator=fee,
             fee_denominator=Amount(1000),
-            total_liquidity=Amount(initial_liquidity),
+            total_liquidity=Amount(total_liquidity),
             total_change_a=Amount(0),
             total_change_b=Amount(0),
             transactions=Amount(0),
@@ -1238,6 +1246,7 @@ class DozerPoolManager(Blueprint):
         )
 
         # Initialize container attributes separately
+        # User receives initial_liquidity (not including burned amount)
         self.pool_user_liquidity[pool_key] = {ctx.caller_id: Amount(initial_liquidity)}
         self.pool_change[pool_key] = {}
         self.pool_accumulated_fee[pool_key] = {token_a: Amount(0), token_b: Amount(0)}
@@ -2003,6 +2012,7 @@ class DozerPoolManager(Blueprint):
         self,
         ctx: Context,
         fee: Amount,
+        deadline: Timestamp,
     ) -> SwapResult:
         """Swap an exact amount of input tokens for as many output tokens as possible.
 
@@ -2011,17 +2021,21 @@ class DozerPoolManager(Blueprint):
             token_a: First token of the pair
             token_b: Second token of the pair
             fee: Fee for the pool
+            deadline: Block timestamp by which transaction must be included
 
         Returns:
             SwapResult with details of the swap
 
         Raises:
             PoolNotFound: If the pool does not exist
-            InvalidAction: If the actions are invalid
+            InvalidAction: If the actions are invalid or deadline has passed
             InsufficientLiquidity: If there is insufficient liquidity
         """
         if self.paused and ctx.caller_id != self.owner:
             raise InvalidState("Contract is paused")
+
+        # Validate deadline
+        assert ctx.block.timestamp <= deadline, f"Transaction expired: block timestamp {ctx.block.timestamp} > deadline {deadline}"
 
         token_a, token_b = set(ctx.actions.keys())
         user_address = ctx.caller_id
@@ -2056,8 +2070,15 @@ class DozerPoolManager(Blueprint):
             accumulated_fee.get(action_in.token_uid, 0) + fee_amount
         )
 
-        # Calculate protocol fee
-        protocol_fee_amount = Amount(fee_amount * self.default_protocol_fee // 100)
+        # Calculate protocol fee with ceiling division only when it would round to zero
+        # This ensures protocol gets fair share while maintaining deterministic calculations
+        protocol_fee_product = fee_amount * self.default_protocol_fee
+        if protocol_fee_product > 0 and protocol_fee_product < 100:
+            # Round up to ensure non-zero fee
+            protocol_fee_amount = Amount(1)
+        else:
+            # Normal floor division for larger amounts
+            protocol_fee_amount = Amount(protocol_fee_product // 100)
 
         # Calculate liquidity increase for protocol fee
         liquidity_increase = self._get_protocol_liquidity_increase(
@@ -2133,6 +2154,7 @@ class DozerPoolManager(Blueprint):
         self,
         ctx: Context,
         fee: Amount,
+        deadline: Timestamp,
     ) -> SwapResult:
         """Receive an exact amount of output tokens for as few input tokens as possible.
 
@@ -2140,18 +2162,22 @@ class DozerPoolManager(Blueprint):
             ctx: The transaction context
             token_a: First token of the pair
             token_b: Second token of the pair
-            fee: Fee for the pool 
+            fee: Fee for the pool
+            deadline: Block timestamp by which transaction must be included
 
         Returns:
             SwapResult with details of the swap
 
         Raises:
             PoolNotFound: If the pool does not exist
-            InvalidAction: If the actions are invalid
+            InvalidAction: If the actions are invalid or deadline has passed
             InsufficientLiquidity: If there is insufficient liquidity
         """
         if self.paused and ctx.caller_id != self.owner:
             raise InvalidState("Contract is paused")
+
+        # Validate deadline
+        assert ctx.block.timestamp <= deadline, f"Transaction expired: block timestamp {ctx.block.timestamp} > deadline {deadline}"
 
         token_a, token_b = set(ctx.actions.keys())
         user_address = ctx.caller_id
@@ -2260,7 +2286,7 @@ class DozerPoolManager(Blueprint):
 
     @public(allow_withdrawal=True, allow_deposit=True)
     def swap_exact_tokens_for_tokens_through_path(
-        self, ctx: Context, path_str: str
+        self, ctx: Context, path_str: str, deadline: Timestamp
     ) -> SwapResult:
         """Execute a swap with exact input amount through a specific path of pools.
 
@@ -2269,6 +2295,7 @@ class DozerPoolManager(Blueprint):
         Args:
             ctx: The transaction context
             path_str: Comma-separated string of pool keys to traverse
+            deadline: Block timestamp by which transaction must be included
 
         Returns:
             SwapResult with details of the swap
@@ -2277,10 +2304,13 @@ class DozerPoolManager(Blueprint):
             PoolNotFound: If any pool in the path does not exist
             InsufficientLiquidity: If there is insufficient liquidity
             InvalidPath: If the path is invalid
-            InvalidAction: If the actions are invalid
+            InvalidAction: If the actions are invalid or deadline has passed
         """
         if self.paused and ctx.caller_id != self.owner:
             raise InvalidState("Contract is paused")
+
+        # Validate deadline
+        assert ctx.block.timestamp <= deadline, f"Transaction expired: block timestamp {ctx.block.timestamp} > deadline {deadline}"
 
         user_address = ctx.caller_id
         # Parse the path
@@ -2449,8 +2479,12 @@ class DozerPoolManager(Blueprint):
             fee_denominator = pool.fee_denominator
             fee_amount = (amount_in * fee + fee_denominator - 1) // fee_denominator
 
-            # Calculate protocol fee
-            protocol_fee_amount = Amount(fee_amount * self.default_protocol_fee // 100)
+            # Calculate protocol fee with ceiling division only when it would round to zero
+            protocol_fee_product = fee_amount * self.default_protocol_fee
+            if protocol_fee_product > 0 and protocol_fee_product < 100:
+                protocol_fee_amount = Amount(1)
+            else:
+                protocol_fee_amount = Amount(protocol_fee_product // 100)
 
             # Calculate liquidity increase for protocol fee
             liquidity_increase = self._get_protocol_liquidity_increase(
@@ -2479,8 +2513,12 @@ class DozerPoolManager(Blueprint):
             fee_denominator = pool.fee_denominator
             fee_amount = (amount_in * fee + fee_denominator - 1) // fee_denominator
 
-            # Calculate protocol fee
-            protocol_fee_amount = Amount(fee_amount * self.default_protocol_fee // 100)
+            # Calculate protocol fee with ceiling division only when it would round to zero
+            protocol_fee_product = fee_amount * self.default_protocol_fee
+            if protocol_fee_product > 0 and protocol_fee_product < 100:
+                protocol_fee_amount = Amount(1)
+            else:
+                protocol_fee_amount = Amount(protocol_fee_product // 100)
 
             # Calculate liquidity increase for protocol fee
             liquidity_increase = self._get_protocol_liquidity_increase(
@@ -2555,8 +2593,12 @@ class DozerPoolManager(Blueprint):
             # Calculate fee amount for protocol fee
             fee_amount = (amount_in * fee + fee_denominator - 1) // fee_denominator
 
-            # Calculate protocol fee
-            protocol_fee_amount = Amount(fee_amount * self.default_protocol_fee // 100)
+            # Calculate protocol fee with ceiling division only when it would round to zero
+            protocol_fee_product = fee_amount * self.default_protocol_fee
+            if protocol_fee_product > 0 and protocol_fee_product < 100:
+                protocol_fee_amount = Amount(1)
+            else:
+                protocol_fee_amount = Amount(protocol_fee_product // 100)
 
             # Calculate liquidity increase for protocol fee
             liquidity_increase = self._get_protocol_liquidity_increase(
@@ -2592,8 +2634,12 @@ class DozerPoolManager(Blueprint):
             # Calculate fee amount for protocol fee
             fee_amount = (amount_in * fee + fee_denominator - 1) // fee_denominator
 
-            # Calculate protocol fee
-            protocol_fee_amount = Amount(fee_amount * self.default_protocol_fee // 100)
+            # Calculate protocol fee with ceiling division only when it would round to zero
+            protocol_fee_product = fee_amount * self.default_protocol_fee
+            if protocol_fee_product > 0 and protocol_fee_product < 100:
+                protocol_fee_amount = Amount(1)
+            else:
+                protocol_fee_amount = Amount(protocol_fee_product // 100)
 
             # Calculate liquidity increase for protocol fee
             liquidity_increase = self._get_protocol_liquidity_increase(
@@ -2629,7 +2675,7 @@ class DozerPoolManager(Blueprint):
 
     @public(allow_withdrawal=True, allow_deposit=True)
     def swap_tokens_for_exact_tokens_through_path(
-        self, ctx: Context, path_str: str
+        self, ctx: Context, path_str: str, deadline: Timestamp
     ) -> SwapResult:
         """Execute a swap with exact output amount through a specific path of pools.
 
@@ -2638,6 +2684,7 @@ class DozerPoolManager(Blueprint):
         Args:
             ctx: The transaction context
             path_str: Comma-separated string of pool keys to traverse
+            deadline: Block timestamp by which transaction must be included
 
         Returns:
             SwapResult with details of the swap
@@ -2646,10 +2693,13 @@ class DozerPoolManager(Blueprint):
             PoolNotFound: If any pool in the path does not exist
             InsufficientLiquidity: If there is insufficient liquidity
             InvalidPath: If the path is invalid
-            InvalidAction: If the actions are invalid
+            InvalidAction: If the actions are invalid or deadline has passed
         """
         if self.paused and ctx.caller_id != self.owner:
             raise InvalidState("Contract is paused")
+
+        # Validate deadline
+        assert ctx.block.timestamp <= deadline, f"Transaction expired: block timestamp {ctx.block.timestamp} > deadline {deadline}"
 
         user_address = ctx.caller_id
         # Parse the path
@@ -3160,8 +3210,9 @@ class DozerPoolManager(Blueprint):
         if ctx.caller_id != self.owner:
             raise Unauthorized("Only the owner can change the protocol fee")
 
-        if new_fee > 50:
-            raise InvalidFee("Protocol fee must be <= 50%")
+        # Validate fee is in valid range [0, 50]
+        assert new_fee >= 0, "Protocol fee must be >= 0"
+        assert new_fee <= 50, "Protocol fee must be <= 50%"
 
         self.default_protocol_fee = new_fee
 

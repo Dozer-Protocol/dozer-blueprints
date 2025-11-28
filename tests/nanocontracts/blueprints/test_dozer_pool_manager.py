@@ -18,8 +18,26 @@ from hathor.wallet import KeyPair
 from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
 PRECISION = 10**20
+MINIMUM_LIQUIDITY = 10**3
 
 HTR_UID = b'\x00'
+
+def isqrt(n):
+    """Integer square root using Newton's method"""
+    if n == 0:
+        return 0
+    x = n
+    y = (x + 1) // 2
+    while y < x:
+        x = y
+        y = (x + n // x) // 2
+    return x
+
+def calculate_burned_liquidity(reserve_a, reserve_b):
+    """Calculate the minimum liquidity that gets burned on pool creation"""
+    product = reserve_a * reserve_b
+    sqrt_product = isqrt(product)
+    return sqrt_product * MINIMUM_LIQUIDITY
 
 settings = HathorSettings()
 
@@ -232,8 +250,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     ):
         """Execute a swap_exact_tokens_for_tokens operation"""
         context = self._prepare_swap_context(token_a, amount_in, token_b, amount_out)
+        # Set deadline far in the future (1 year from now)
+        deadline = self.get_current_timestamp() + 365 * 24 * 60 * 60
         result = self.runner.call_public_method(
-            self.nc_id, "swap_exact_tokens_for_tokens", context, fee
+            self.nc_id, "swap_exact_tokens_for_tokens", context, fee, deadline
         )
         return result, context
 
@@ -242,8 +262,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
     ):
         """Execute a swap_tokens_for_exact_tokens operation"""
         context = self._prepare_swap_context(token_a, amount_in, token_b, amount_out)
+        # Set deadline far in the future (1 year from now)
+        deadline = self.get_current_timestamp() + 365 * 24 * 60 * 60
         result = self.runner.call_public_method(
-            self.nc_id, "swap_tokens_for_exact_tokens", context, fee
+            self.nc_id, "swap_tokens_for_exact_tokens", context, fee, deadline
         )
         return result, context
 
@@ -1377,7 +1399,15 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.nc_id, "liquidity_of", creator_address, pool_key
         )
         pool = contract.pools[pool_key]
-        self.assertEqual(creator_liq, pool.total_liquidity, "Initial liquidity mismatch")
+
+        # Calculate expected values
+        burned_liquidity = calculate_burned_liquidity(10000_00, 20000_00)
+        expected_creator_liq = isqrt(10000_00 * 20000_00) * PRECISION
+        expected_total_liq = expected_creator_liq + burned_liquidity
+
+        # Verify exact values
+        self.assertEqual(creator_liq, expected_creator_liq, "Creator liquidity mismatch")
+        self.assertEqual(pool.total_liquidity, expected_total_liq, "Total liquidity mismatch")
 
         # Add liquidity with single token
         tx = self._get_any_tx()
@@ -1405,12 +1435,21 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         new_user_liq = self.runner.call_view_method(
             self.nc_id, "liquidity_of", context.caller_id, pool_key
         )
+        owner_liq = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", self.owner_address, pool_key
+        )
 
-        total_user_liq = creator_liq + new_user_liq
+        total_user_liq = creator_liq + new_user_liq + owner_liq
+
+        # Calculate expected burned liquidity (constant from pool creation)
+        expected_burned = calculate_burned_liquidity(10000_00, 20000_00)
+        expected_total_liq = total_user_liq + expected_burned
+
+        # Verify exact equality
         self.assertEqual(
-            total_user_liq,
             updated_pool.total_liquidity,
-            f"Total user liquidity ({total_user_liq}) != pool total liquidity ({updated_pool.total_liquidity})"
+            expected_total_liq,
+            f"Total liquidity mismatch: pool={updated_pool.total_liquidity}, expected={expected_total_liq}, burned={expected_burned}"
         )
 
         self._check_balance()
@@ -1446,11 +1485,18 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.token_a, self.token_c, fee=3, reserve_a=100000_00, reserve_b=300000_00
         )
 
-        # Track users per pool for liquidity checks
+        # Track users per pool for liquidity checks and initial reserves for burned liquidity calculation
         pool_users = {
             pool_key_ab: {creator_address, self.owner_address},
             pool_key_bc: {creator_bc, self.owner_address},
             pool_key_ac: {creator_ac, self.owner_address}
+        }
+
+        # Store initial reserves for each pool to calculate burned liquidity
+        pool_initial_reserves = {
+            pool_key_ab: (100000_00, 200000_00),
+            pool_key_bc: (200000_00, 300000_00),
+            pool_key_ac: (100000_00, 300000_00)
         }
 
         def verify_liquidity_consistency():
@@ -1466,10 +1512,17 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                     self.runner.call_view_method(self.nc_id, "liquidity_of", addr, pk)
                     for addr in users
                 )
+
+                # Calculate expected burned liquidity from initial reserves
+                reserve_a_initial, reserve_b_initial = pool_initial_reserves[pk]
+                expected_burned = calculate_burned_liquidity(reserve_a_initial, reserve_b_initial)
+                expected_total = total_user_liquidity + expected_burned
+
+                # Verify exact equality
                 self.assertEqual(
-                    total_user_liquidity,
                     pool.total_liquidity,
-                    f"Pool {pk}: User liquidity ({total_user_liquidity}) != pool liquidity ({pool.total_liquidity})"
+                    expected_total,
+                    f"Pool {pk}: Liquidity mismatch - pool={pool.total_liquidity}, expected={expected_total}, users={total_user_liquidity}, burned={expected_burned}"
                 )
 
         verify_liquidity_consistency()
@@ -1645,14 +1698,17 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                         NCWithdrawalAction(token_uid=token_out, amount=amount_out),
                     ]
                     address_bytes, _ = self._get_any_address()
+                    current_timestamp = self.get_current_timestamp()
                     context = self.create_context(
                         actions=actions,
                         vertex=tx,
                         caller_id=Address(address_bytes),
-                        timestamp=self.get_current_timestamp()
+                        timestamp=current_timestamp
                     )
+                    # Set deadline far in the future
+                    deadline = current_timestamp + 365 * 24 * 60 * 60
                     self.runner.call_public_method(
-                        self.nc_id, "swap_exact_tokens_for_tokens", context, 3
+                        self.nc_id, "swap_exact_tokens_for_tokens", context, 3, deadline
                     )
 
             elif operation_type == "swap_through_path":
@@ -1677,14 +1733,17 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                         NCWithdrawalAction(token_uid=token_out, amount=swap_info.amount_out),
                     ]
                     address_bytes, _ = self._get_any_address()
+                    current_timestamp = self.get_current_timestamp()
                     context = self.create_context(
                         actions=actions,
                         vertex=tx,
                         caller_id=Address(address_bytes),
-                        timestamp=self.get_current_timestamp()
+                        timestamp=current_timestamp
                     )
+                    # Set deadline far in the future (1 year from now)
+                    deadline = current_timestamp + 365 * 24 * 60 * 60
                     self.runner.call_public_method(
-                        self.nc_id, "swap_exact_tokens_for_tokens_through_path", context, swap_info.path
+                        self.nc_id, "swap_exact_tokens_for_tokens_through_path", context, swap_info.path, deadline
                     )
 
             # Verify consistency after each operation
