@@ -671,8 +671,14 @@ class DozerPoolManager(Blueprint):
     ) -> None:
         """Check that the price ratio is maintained during liquidity operations.
 
-        During add/remove liquidity, the ratio reserve_a/reserve_b should remain constant
-        to ensure the pool price doesn't change.
+        During proportional liquidity operations (add/remove liquidity), the ratio
+        reserve_a/reserve_b should remain constant to ensure the pool price doesn't change.
+
+        This check uses cross-multiplication to avoid floating-point precision issues:
+        ratio_a/ratio_b is constant if: reserve_a_before * reserve_b_after == reserve_a_after * reserve_b_before
+
+        Due to integer division rounding in quote() calculations, a small tolerance (0.0001%)
+        is allowed to account for inevitable rounding errors while still catching real violations.
 
         Args:
             reserve_a_before: Reserve A before the operation
@@ -680,17 +686,23 @@ class DozerPoolManager(Blueprint):
             reserve_a_after: Reserve A after the operation
             reserve_b_after: Reserve B after the operation
             operation: Description of the operation (for error messages)
-        """
-        # Calculate ratios using cross-multiplication to avoid division precision issues
-        # ratio_before = reserve_a_before / reserve_b_before
-        # ratio_after = reserve_a_after / reserve_b_after
-        # These are equal if: reserve_a_before * reserve_b_after == reserve_a_after * reserve_b_before
 
+        Raises:
+            AssertionError: If the price ratio changed beyond the allowed tolerance
+        """
         ratio_check_before = reserve_a_before * reserve_b_after
         ratio_check_after = reserve_a_after * reserve_b_before
 
-        assert ratio_check_before == ratio_check_after, \
-            f"Price ratio violation in {operation}: ratio changed from {reserve_a_before}/{reserve_b_before} to {reserve_a_after}/{reserve_b_after}"
+        if ratio_check_before > ratio_check_after:
+            diff = ratio_check_before - ratio_check_after
+        else:
+            diff = ratio_check_after - ratio_check_before
+
+        max_value = max(ratio_check_before, ratio_check_after)
+        max_allowed_error = max_value // 1000000
+
+        assert diff <= max_allowed_error, \
+            f"Price ratio violation in {operation}: ratio changed from {reserve_a_before}/{reserve_b_before} to {reserve_a_after}/{reserve_b_after} (diff: {diff}, max allowed: {max_allowed_error})"
 
     @view
     def get_amount_out(
@@ -1613,25 +1625,26 @@ class DozerPoolManager(Blueprint):
         k_after_swap = Amount(pool.reserve_a * pool.reserve_b)
         self._check_k_not_decreased(k_before_swap, k_after_swap, "add_liquidity_single_token (internal swap)")
 
-        # Now add liquidity with both tokens
-        # Calculate liquidity to mint
         current_reserve_a = pool.reserve_a
         current_reserve_b = pool.reserve_b
         total_liquidity = pool.total_liquidity
 
-        # Use the smaller ratio to determine liquidity increase
         liquidity_a = (total_liquidity * token_a_amount) // current_reserve_a
         liquidity_b = (total_liquidity * token_b_amount) // current_reserve_b
-        liquidity_increase = min(liquidity_a, liquidity_b)
 
-        # Calculate actual amounts that will be used based on the liquidity being minted
-        # The amounts should be proportional to what percentage of the pool the new liquidity represents
-        actual_a = (liquidity_increase * current_reserve_a) // total_liquidity
-        actual_b = (liquidity_increase * current_reserve_b) // total_liquidity
-
-        # Calculate excess tokens
-        excess_a = Amount(token_a_amount - actual_a)
-        excess_b = Amount(token_b_amount - actual_b)
+        # Use whichever token is limiting to avoid double rounding
+        if liquidity_a <= liquidity_b:
+            liquidity_increase = liquidity_a
+            actual_a = token_a_amount
+            actual_b = (liquidity_increase * current_reserve_b) // total_liquidity
+            excess_a = Amount(0)
+            excess_b = Amount(token_b_amount - actual_b)
+        else:
+            liquidity_increase = liquidity_b
+            actual_b = token_b_amount
+            actual_a = (liquidity_increase * current_reserve_a) // total_liquidity
+            excess_a = Amount(token_a_amount - actual_a)
+            excess_b = Amount(0)
 
         # Update user liquidity
         user_liquidity = self.pool_user_liquidity[pool_key]
@@ -1646,7 +1659,7 @@ class DozerPoolManager(Blueprint):
             reserve_b=Amount(current_reserve_b + actual_b)
         )
 
-        # Store excess tokens in user balance
+        # Store excess tokens in user balance (only store non-zero amounts)
         if excess_a > 0:
             self._update_change(user_address, excess_a, token_a, pool_key)
         if excess_b > 0:
