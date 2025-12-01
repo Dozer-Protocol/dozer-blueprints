@@ -11,7 +11,7 @@ from hathor.nanocontracts.blueprints.dozer_pool_manager import (
     Unauthorized,
 )
 
-from hathor.nanocontracts.types import Address, NCDepositAction, NCWithdrawalAction, TokenUid
+from hathor.nanocontracts.types import Address, NCDepositAction, NCWithdrawalAction, TokenUid, Amount
 from hathor.transaction.base_transaction import BaseTransaction
 from hathor.util import not_none
 from hathor.wallet import KeyPair
@@ -1767,3 +1767,64 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Final verification
         verify_liquidity_consistency()
         self._check_balance()
+
+    def test_isqrt_large_numbers(self):
+        """Test integer square root with very large numbers (256-bit range)."""
+        contract = self.get_readonly_contract(self.nc_id)
+        assert isinstance(contract, DozerPoolManager)
+
+        # Test cases with increasingly large numbers
+        test_cases = [
+            # Small numbers
+            (0, 0),
+            (1, 1),
+            (4, 2),
+            (16, 4),
+            (100, 10),
+            (10000, 100),
+
+            # Medium numbers (32-bit range)
+            (2**32 - 1, 65535),  # Max 32-bit
+            (2**40, 2**20),
+
+            # Large numbers (128-bit range)
+            (2**64, 2**32),
+            (2**100, 2**50),
+            (2**128 - 1, 18446744073709551615),  # Near max 128-bit
+
+            # Very large numbers (256-bit range)
+            (2**150, 2**75),
+            (2**200, 2**100),
+            (2**240, 2**120),
+            (2**256 - 1, 340282366920938463463374607431768211455),  # Max 256-bit
+
+            # Numbers that might cause convergence issues
+            (10**40, 10**20),
+            (10**50, 10**25),
+            (10**60, 10**30),
+
+            # Perfect squares at large scale
+            ((2**100) ** 2, 2**100),
+            ((10**25) ** 2, 10**25),
+        ]
+
+        for n, expected_result in test_cases:
+            # Test via the contract's _isqrt method
+            result = contract._isqrt(Amount(n))
+
+            # Verify result
+            assert result == expected_result, \
+                f"isqrt({n}) returned {result}, expected {expected_result}"
+
+            # Verify mathematical property: result^2 <= n < (result+1)^2
+            assert result * result <= n, \
+                f"isqrt({n}) = {result}, but {result}^2 = {result*result} > {n}"
+            assert (result + 1) * (result + 1) > n, \
+                f"isqrt({n}) = {result}, but ({result}+1)^2 = {(result+1)*(result+1)} <= {n}"
+
+        # Test that negative numbers raise assertion
+        try:
+            contract._isqrt(Amount(-1))
+            assert False, "Expected assertion error for negative input"
+        except AssertionError as e:
+            assert "Cannot calculate square root of negative number" in str(e)

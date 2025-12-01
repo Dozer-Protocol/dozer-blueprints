@@ -22,6 +22,10 @@ from hathor import (
 
 PRECISION = Amount(10**20)
 MINIMUM_LIQUIDITY = Amount(10**3)  # Multiplier for minimum liquidity burn
+MAX_PRICE_IMPACT = Amount(1500)  # 15% in basis points (1500/10000)
+
+# Type alias for pool identifier keys
+PoolKey = str
 
 
 class PoolState(NamedTuple):
@@ -326,7 +330,7 @@ class DozerPoolManager(Blueprint):
         # Initialize pause state
         self.paused = False
 
-    def _get_pool_key(self, token_a: TokenUid, token_b: TokenUid, fee: Amount) -> str:
+    def _get_pool_key(self, token_a: TokenUid, token_b: TokenUid, fee: Amount) -> PoolKey:
         """Create a standardized pool key from tokens and fee.
 
         Args:
@@ -338,8 +342,7 @@ class DozerPoolManager(Blueprint):
             A composite key in the format token_a:token_b:fee
         """
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         # Create composite key
         return f"{token_a.hex()}/{token_b.hex()}/{fee}"
@@ -355,6 +358,125 @@ class DozerPoolManager(Blueprint):
         """
         if pool_key not in self.pool_exists:
             raise PoolNotFound(f"Pool does not exist: {pool_key}")
+
+    def _get_deposit_action(self, ctx: Context, token_uid: TokenUid) -> NCDepositAction:
+        """Get and validate a deposit action for a token.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Token UID to get action for
+
+        Returns:
+            The validated NCDepositAction
+
+        Raises:
+            InvalidAction: If action is not a deposit
+        """
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCDepositAction):
+            raise InvalidAction(f"Must provide a deposit action for {token_uid.hex()}")
+        return action
+
+    def _get_withdrawal_action(self, ctx: Context, token_uid: TokenUid) -> NCWithdrawalAction:
+        """Get and validate a withdrawal action for a token.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Token UID to get action for
+
+        Returns:
+            The validated NCWithdrawalAction
+
+        Raises:
+            InvalidAction: If action is not a withdrawal
+        """
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise InvalidAction(f"Must provide a withdrawal action for {token_uid.hex()}")
+        return action
+
+    def _ceil(self, a: Amount, b: Amount) -> Amount:
+        """Calculate ceiling division: ceil(a / b).
+
+        Args:
+            a: Numerator
+            b: Denominator
+
+        Returns:
+            Ceiling of a divided by b
+        """
+        return Amount((a + b - 1) // b)
+
+    def _order_tokens(self, token_a: TokenUid, token_b: TokenUid) -> tuple[TokenUid, TokenUid]:
+        """Ensure tokens are ordered for consistent pool key generation.
+
+        Args:
+            token_a: First token
+            token_b: Second token
+
+        Returns:
+            A tuple of (token_a, token_b) in sorted order
+        """
+        if token_a > token_b:
+            return token_b, token_a
+        return token_a, token_b
+
+    def _check_not_paused(self, ctx: Context) -> None:
+        """Check if contract is paused and raise error if caller is not owner.
+
+        Args:
+            ctx: The transaction context
+
+        Raises:
+            InvalidState: If contract is paused and caller is not owner
+        """
+        if self.paused and ctx.caller_id != self.owner:
+            raise InvalidState("Contract is paused")
+
+    def _update_user_liquidity(
+        self, pool_key: PoolKey, user_address: CallerId, delta_liquidity: Amount
+    ) -> None:
+        """Update user's liquidity amount in a pool.
+
+        Args:
+            pool_key: The pool key
+            user_address: The user address
+            delta_liquidity: The change in liquidity (positive or negative)
+        """
+        user_liquidity = self.pool_user_liquidity[pool_key]
+        current = user_liquidity.get(user_address, Amount(0))
+        user_liquidity[user_address] = Amount(current + delta_liquidity)
+
+    def _calculate_protocol_fee(self, fee_amount: Amount) -> Amount:
+        """Calculate protocol fee with ceiling division for small amounts.
+
+        Args:
+            fee_amount: The total fee amount collected
+
+        Returns:
+            The protocol fee amount (rounds up to 1 for very small amounts)
+        """
+        protocol_fee_product = fee_amount * self.default_protocol_fee
+        if protocol_fee_product > 0 and protocol_fee_product < 100:
+            return Amount(1)
+        return Amount(protocol_fee_product // 100)
+
+    def _get_reserves_for_swap(
+        self, pool_key: PoolKey, token_in: TokenUid
+    ) -> tuple[Amount, Amount, TokenUid]:
+        """Get reserves in the correct order for a swap.
+
+        Args:
+            pool_key: The pool key
+            token_in: The input token
+
+        Returns:
+            A tuple of (reserve_in, reserve_out, token_out)
+        """
+        pool = self.pools[pool_key]
+        if pool.token_a == token_in:
+            return pool.reserve_a, pool.reserve_b, pool.token_b
+        return pool.reserve_b, pool.reserve_a, pool.token_a
 
     def _get_actions_a_b(
         self, ctx: Context, pool_key: str
@@ -401,15 +523,19 @@ class DozerPoolManager(Blueprint):
         Raises:
             InvalidAction: If any action is not a deposit
         """
-        action_a, action_b = self._get_actions_a_b(ctx, pool_key)
-        if action_a.type != NCActionType.DEPOSIT:
-            raise InvalidAction("Only deposits allowed for token_a")
-        if action_b.type != NCActionType.DEPOSIT:
-            raise InvalidAction("Only deposits allowed for token_b")
+        pool = self.pools[pool_key]
+        token_a = pool.token_a
+        token_b = pool.token_b
 
-        # Assert for type narrowing (type already validated above)
-        assert isinstance(action_a, NCDepositAction), "action_a must be NCDepositAction"
-        assert isinstance(action_b, NCDepositAction), "action_b must be NCDepositAction"
+        if set(ctx.actions.keys()) != {token_a, token_b}:
+            raise InvalidTokens("Only token_a and token_b are allowed")
+
+        # Get and validate deposit actions using helper
+        action_a = self._get_deposit_action(ctx, token_a)
+        action_b = self._get_deposit_action(ctx, token_b)
+
+        # Update last activity timestamp
+        self.pools[pool_key] = pool._replace(last_activity=int(ctx.block.timestamp))
 
         return action_a, action_b
 
@@ -428,15 +554,19 @@ class DozerPoolManager(Blueprint):
         Raises:
             InvalidAction: If any action is not a withdrawal
         """
-        action_a, action_b = self._get_actions_a_b(ctx, pool_key)
-        if action_a.type != NCActionType.WITHDRAWAL:
-            raise InvalidAction("Only withdrawals allowed for token_a")
-        if action_b.type != NCActionType.WITHDRAWAL:
-            raise InvalidAction("Only withdrawals allowed for token_b")
+        pool = self.pools[pool_key]
+        token_a = pool.token_a
+        token_b = pool.token_b
 
-        # Assert for type narrowing (type already validated above)
-        assert isinstance(action_a, NCWithdrawalAction), "action_a must be NCWithdrawalAction"
-        assert isinstance(action_b, NCWithdrawalAction), "action_b must be NCWithdrawalAction"
+        if set(ctx.actions.keys()) != {token_a, token_b}:
+            raise InvalidTokens("Only token_a and token_b are allowed")
+
+        # Get and validate withdrawal actions using helper
+        action_a = self._get_withdrawal_action(ctx, token_a)
+        action_b = self._get_withdrawal_action(ctx, token_b)
+
+        # Update last activity timestamp
+        self.pools[pool_key] = pool._replace(last_activity=int(ctx.block.timestamp))
 
         return action_a, action_b
 
@@ -455,23 +585,28 @@ class DozerPoolManager(Blueprint):
         Raises:
             InvalidAction: If there isn't exactly one deposit and one withdrawal
         """
-        action_a, action_b = self._get_actions_a_b(ctx, pool_key)
+        pool = self.pools[pool_key]
+        token_a = pool.token_a
+        token_b = pool.token_b
 
-        if action_a.type == NCActionType.DEPOSIT:
-            action_in = action_a
-            action_out = action_b
+        if set(ctx.actions.keys()) != {token_a, token_b}:
+            raise InvalidTokens("Only token_a and token_b are allowed")
+
+        action_a = ctx.get_single_action(token_a)
+        action_b = ctx.get_single_action(token_b)
+
+        # Determine which is deposit and which is withdrawal
+        if action_a.type == NCActionType.DEPOSIT and action_b.type == NCActionType.WITHDRAWAL:
+            action_in = self._get_deposit_action(ctx, token_a)
+            action_out = self._get_withdrawal_action(ctx, token_b)
+        elif action_b.type == NCActionType.DEPOSIT and action_a.type == NCActionType.WITHDRAWAL:
+            action_in = self._get_deposit_action(ctx, token_b)
+            action_out = self._get_withdrawal_action(ctx, token_a)
         else:
-            action_in = action_b
-            action_out = action_a
-
-        if action_in.type != NCActionType.DEPOSIT:
-            raise InvalidAction("Must have one deposit and one withdrawal")
-        if action_out.type != NCActionType.WITHDRAWAL:
             raise InvalidAction("Must have one deposit and one withdrawal")
 
-        # Assert for type narrowing (type already validated above)
-        assert isinstance(action_in, NCDepositAction), "action_in must be NCDepositAction"
-        assert isinstance(action_out, NCWithdrawalAction), "action_out must be NCWithdrawalAction"
+        # Update last activity timestamp
+        self.pools[pool_key] = pool._replace(last_activity=int(ctx.block.timestamp))
 
         return action_in, action_out
 
@@ -1165,8 +1300,7 @@ class DozerPoolManager(Blueprint):
             PoolExists: If the pool already exists
             InvalidFee: If the fee is invalid
         """
-        if self.paused and ctx.caller_id != self.owner:
-            raise InvalidState("Contract is paused")
+        self._check_not_paused(ctx)
 
         token_a, token_b = set(ctx.actions.keys())
 
@@ -1175,8 +1309,7 @@ class DozerPoolManager(Blueprint):
             raise InvalidTokens("token_a cannot be equal to token_b")
 
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         # Create pool key
         pool_key = self._get_pool_key(token_a, token_b, fee)
@@ -1184,6 +1317,9 @@ class DozerPoolManager(Blueprint):
         # Check if pool already exists
         if pool_key in self.pool_exists:
             raise PoolExists("Pool already exists")
+
+        # Additional safety checks for data consistency
+        assert pool_key not in self.pools, "Pool state corruption detected"
 
         # Validate fee
         if fee > 50:
@@ -1195,18 +1331,9 @@ class DozerPoolManager(Blueprint):
         if set(ctx.actions.keys()) != {token_a, token_b}:
             raise InvalidTokens("Only token_a and token_b are allowed")
 
-        action_a = ctx.get_single_action(token_a)
-        action_b = ctx.get_single_action(token_b)
-
-        if (
-            action_a.type != NCActionType.DEPOSIT
-            or action_b.type != NCActionType.DEPOSIT
-        ):
-            raise InvalidAction("Only deposits allowed for initial liquidity")
-
-        # Assert for type narrowing (type already validated above)
-        assert isinstance(action_a, NCDepositAction), "action_a must be NCDepositAction"
-        assert isinstance(action_b, NCDepositAction), "action_b must be NCDepositAction"
+        # Get and validate deposit actions
+        action_a = self._get_deposit_action(ctx, token_a)
+        action_b = self._get_deposit_action(ctx, token_b)
 
         action_a_amount = Amount(action_a.amount)
         action_b_amount = Amount(action_b.amount)
@@ -1305,15 +1432,13 @@ class DozerPoolManager(Blueprint):
             PoolNotFound: If the pool does not exist
             InvalidAction: If the actions are invalid
         """
-        if self.paused and ctx.caller_id != self.owner:
-            raise InvalidState("Contract is paused")
+        self._check_not_paused(ctx)
 
         token_a, token_b = set(ctx.actions.keys())
         user_address = ctx.caller_id
 
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
@@ -1421,15 +1546,13 @@ class DozerPoolManager(Blueprint):
             PoolNotFound: If the pool does not exist
             InvalidAction: If the user has no liquidity or insufficient liquidity
         """
-        if self.paused and ctx.caller_id != self.owner:
-            raise InvalidState("Contract is paused")
+        self._check_not_paused(ctx)
 
         token_a, token_b = set(ctx.actions.keys())
         user_address = ctx.caller_id
 
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
@@ -1539,8 +1662,7 @@ class DozerPoolManager(Blueprint):
             InvalidAction: If the actions are invalid or price impact too high (>15%)
             InvalidTokens: If the tokens are invalid
         """
-        if self.paused and ctx.caller_id != self.owner:
-            raise InvalidState("Contract is paused")
+        self._check_not_paused(ctx)
 
         # Get the single deposit action
         if len(ctx.actions) != 1:
@@ -1568,6 +1690,9 @@ class DozerPoolManager(Blueprint):
         self._validate_pool_exists(pool_key)
 
         pool = self.pools[pool_key]
+
+        # Validate tokens match the pool
+        assert set([token_in, token_out]) == set([pool.token_a, pool.token_b]), "Tokens must match pool tokens"
 
         # Capture K before internal swap (should increase due to swap fees)
         k_before_swap = Amount(pool.reserve_a * pool.reserve_b)
@@ -1607,7 +1732,6 @@ class DozerPoolManager(Blueprint):
         price_impact = self._calculate_single_swap_price_impact(
             optimal_swap_amount, swap_amount_out, reserve_in, reserve_out
         )
-        MAX_PRICE_IMPACT = Amount(1500)  # 15% in basis points
         if price_impact > MAX_PRICE_IMPACT:
             raise InvalidAction("Price impact too high - internal swap exceeds 15% impact")
 
@@ -1696,7 +1820,12 @@ class DozerPoolManager(Blueprint):
         Same algorithm used in Uniswap V2 and other DeFi protocols.
 
         Returns the largest integer x such that x² ≤ n.
+
+        Raises:
+            InvalidState: If square root calculation does not converge
         """
+        assert n >= 0, "Cannot calculate square root of negative number"
+
         if n == 0:
             return Amount(0)
 
@@ -1704,11 +1833,19 @@ class DozerPoolManager(Blueprint):
         x = Amount(n)
         y = Amount((x + 1) // 2)
 
-        while y < x:
+        # Newton's method converges in O(log(log(n)))
+        # For 1024-bit numbers, ~10 iterations needed
+        # Using 500 for extra safety margin
+        max_iterations = 500
+
+        for iteration in range(max_iterations):
+            if y >= x:
+                return Amount(x)
             x = y
             y = Amount((x + n // x) // 2)
 
-        return x
+        # Should never reach here for valid inputs
+        raise InvalidState(f"Square root calculation did not converge after {max_iterations} iterations")
 
     def _calculate_optimal_swap_amount(
         self, amount_in: Amount, reserve_in: Amount, reserve_out: Amount, fee: Amount
@@ -1851,8 +1988,7 @@ class DozerPoolManager(Blueprint):
             PoolNotFound: If the pool does not exist
             InvalidAction: If the actions are invalid or price impact too high (>15%)
         """
-        if self.paused and ctx.caller_id != self.owner:
-            raise InvalidState("Contract is paused")
+        self._check_not_paused(ctx)
 
         self._validate_pool_exists(pool_key)
         user_address = ctx.caller_id
@@ -1944,7 +2080,6 @@ class DozerPoolManager(Blueprint):
                 price_impact = self._calculate_single_swap_price_impact(
                     amount_b, extra_a, reserve_b_before_swap, reserve_a_before_swap
                 )
-                MAX_PRICE_IMPACT = Amount(1500)  # 15% in basis points
                 if price_impact > MAX_PRICE_IMPACT:
                     raise InvalidAction("Price impact too high - internal swap exceeds 15% impact")
 
@@ -1976,7 +2111,6 @@ class DozerPoolManager(Blueprint):
                 price_impact = self._calculate_single_swap_price_impact(
                     amount_a, extra_b, reserve_a_before_swap, reserve_b_before_swap
                 )
-                MAX_PRICE_IMPACT = Amount(1500)  # 15% in basis points
                 if price_impact > MAX_PRICE_IMPACT:
                     raise InvalidAction("Price impact too high - internal swap exceeds 15% impact")
 
@@ -2031,8 +2165,7 @@ class DozerPoolManager(Blueprint):
             InvalidAction: If the actions are invalid or deadline has passed
             InsufficientLiquidity: If there is insufficient liquidity
         """
-        if self.paused and ctx.caller_id != self.owner:
-            raise InvalidState("Contract is paused")
+        self._check_not_paused(ctx)
 
         # Validate deadline
         assert ctx.block.timestamp <= deadline, f"Transaction expired: block timestamp {ctx.block.timestamp} > deadline {deadline}"
@@ -2041,8 +2174,7 @@ class DozerPoolManager(Blueprint):
         user_address = ctx.caller_id
 
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
@@ -2059,10 +2191,10 @@ class DozerPoolManager(Blueprint):
         min_accepted_amount = Amount(action_out.amount)
 
         amount_in = action_in_amount
-        fee_amount = (
+        fee_amount = Amount((
             amount_in * pool.fee_numerator
             + pool.fee_denominator - 1
-        ) // pool.fee_denominator
+        ) // pool.fee_denominator)
 
         # Update accumulated fee
         accumulated_fee = self.pool_accumulated_fee[pool_key]
@@ -2072,13 +2204,7 @@ class DozerPoolManager(Blueprint):
 
         # Calculate protocol fee with ceiling division only when it would round to zero
         # This ensures protocol gets fair share while maintaining deterministic calculations
-        protocol_fee_product = fee_amount * self.default_protocol_fee
-        if protocol_fee_product > 0 and protocol_fee_product < 100:
-            # Round up to ensure non-zero fee
-            protocol_fee_amount = Amount(1)
-        else:
-            # Normal floor division for larger amounts
-            protocol_fee_amount = Amount(protocol_fee_product // 100)
+        protocol_fee_amount = self._calculate_protocol_fee(fee_amount)
 
         # Calculate liquidity increase for protocol fee
         liquidity_increase = self._get_protocol_liquidity_increase(
@@ -2173,8 +2299,7 @@ class DozerPoolManager(Blueprint):
             InvalidAction: If the actions are invalid or deadline has passed
             InsufficientLiquidity: If there is insufficient liquidity
         """
-        if self.paused and ctx.caller_id != self.owner:
-            raise InvalidState("Contract is paused")
+        self._check_not_paused(ctx)
 
         # Validate deadline
         assert ctx.block.timestamp <= deadline, f"Transaction expired: block timestamp {ctx.block.timestamp} > deadline {deadline}"
@@ -2183,8 +2308,7 @@ class DozerPoolManager(Blueprint):
         user_address = ctx.caller_id
 
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
@@ -2306,8 +2430,7 @@ class DozerPoolManager(Blueprint):
             InvalidPath: If the path is invalid
             InvalidAction: If the actions are invalid or deadline has passed
         """
-        if self.paused and ctx.caller_id != self.owner:
-            raise InvalidState("Contract is paused")
+        self._check_not_paused(ctx)
 
         # Validate deadline
         assert ctx.block.timestamp <= deadline, f"Transaction expired: block timestamp {ctx.block.timestamp} > deadline {deadline}"
@@ -2477,14 +2600,10 @@ class DozerPoolManager(Blueprint):
             # Calculate fee amount for protocol fee
             fee = pool.fee_numerator
             fee_denominator = pool.fee_denominator
-            fee_amount = (amount_in * fee + fee_denominator - 1) // fee_denominator
+            fee_amount = Amount((amount_in * fee + fee_denominator - 1) // fee_denominator)
 
             # Calculate protocol fee with ceiling division only when it would round to zero
-            protocol_fee_product = fee_amount * self.default_protocol_fee
-            if protocol_fee_product > 0 and protocol_fee_product < 100:
-                protocol_fee_amount = Amount(1)
-            else:
-                protocol_fee_amount = Amount(protocol_fee_product // 100)
+            protocol_fee_amount = self._calculate_protocol_fee(fee_amount)
 
             # Calculate liquidity increase for protocol fee
             liquidity_increase = self._get_protocol_liquidity_increase(
@@ -2511,14 +2630,10 @@ class DozerPoolManager(Blueprint):
             # Calculate fee amount for protocol fee
             fee = pool.fee_numerator
             fee_denominator = pool.fee_denominator
-            fee_amount = (amount_in * fee + fee_denominator - 1) // fee_denominator
+            fee_amount = Amount((amount_in * fee + fee_denominator - 1) // fee_denominator)
 
             # Calculate protocol fee with ceiling division only when it would round to zero
-            protocol_fee_product = fee_amount * self.default_protocol_fee
-            if protocol_fee_product > 0 and protocol_fee_product < 100:
-                protocol_fee_amount = Amount(1)
-            else:
-                protocol_fee_amount = Amount(protocol_fee_product // 100)
+            protocol_fee_amount = self._calculate_protocol_fee(fee_amount)
 
             # Calculate liquidity increase for protocol fee
             liquidity_increase = self._get_protocol_liquidity_increase(
@@ -2591,14 +2706,10 @@ class DozerPoolManager(Blueprint):
             )
 
             # Calculate fee amount for protocol fee
-            fee_amount = (amount_in * fee + fee_denominator - 1) // fee_denominator
+            fee_amount = Amount((amount_in * fee + fee_denominator - 1) // fee_denominator)
 
             # Calculate protocol fee with ceiling division only when it would round to zero
-            protocol_fee_product = fee_amount * self.default_protocol_fee
-            if protocol_fee_product > 0 and protocol_fee_product < 100:
-                protocol_fee_amount = Amount(1)
-            else:
-                protocol_fee_amount = Amount(protocol_fee_product // 100)
+            protocol_fee_amount = self._calculate_protocol_fee(fee_amount)
 
             # Calculate liquidity increase for protocol fee
             liquidity_increase = self._get_protocol_liquidity_increase(
@@ -2632,14 +2743,10 @@ class DozerPoolManager(Blueprint):
             )
 
             # Calculate fee amount for protocol fee
-            fee_amount = (amount_in * fee + fee_denominator - 1) // fee_denominator
+            fee_amount = Amount((amount_in * fee + fee_denominator - 1) // fee_denominator)
 
             # Calculate protocol fee with ceiling division only when it would round to zero
-            protocol_fee_product = fee_amount * self.default_protocol_fee
-            if protocol_fee_product > 0 and protocol_fee_product < 100:
-                protocol_fee_amount = Amount(1)
-            else:
-                protocol_fee_amount = Amount(protocol_fee_product // 100)
+            protocol_fee_amount = self._calculate_protocol_fee(fee_amount)
 
             # Calculate liquidity increase for protocol fee
             liquidity_increase = self._get_protocol_liquidity_increase(
@@ -2695,8 +2802,7 @@ class DozerPoolManager(Blueprint):
             InvalidPath: If the path is invalid
             InvalidAction: If the actions are invalid or deadline has passed
         """
-        if self.paused and ctx.caller_id != self.owner:
-            raise InvalidState("Contract is paused")
+        self._check_not_paused(ctx)
 
         # Validate deadline
         assert ctx.block.timestamp <= deadline, f"Transaction expired: block timestamp {ctx.block.timestamp} > deadline {deadline}"
@@ -3147,15 +3253,13 @@ class DozerPoolManager(Blueprint):
             PoolNotFound: If the pool does not exist
             InvalidAction: If there is not enough cashback
         """
-        if self.paused and ctx.caller_id != self.owner:
-            raise InvalidState("Contract is paused")
+        self._check_not_paused(ctx)
 
         token_a, token_b = set(ctx.actions.keys())
         user_address = ctx.caller_id
 
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
@@ -3163,6 +3267,10 @@ class DozerPoolManager(Blueprint):
         pool = self.pools[pool_key]
 
         action_a, action_b = self._get_actions_out_out(ctx, pool_key)
+
+        # Validate that the tokens match the pool
+        assert action_a.token_uid == pool.token_a, "action_a token must match pool token_a"
+        assert action_b.token_uid == pool.token_b, "action_b token must match pool token_b"
 
         action_a_amount = Amount(action_a.amount)
         action_b_amount = Amount(action_b.amount)
@@ -3281,8 +3389,7 @@ class DozerPoolManager(Blueprint):
             raise Unauthorized("Only authorized signers can sign pools")
 
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
@@ -3308,8 +3415,7 @@ class DozerPoolManager(Blueprint):
             PoolNotFound: If the pool does not exist
         """
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
@@ -3349,8 +3455,7 @@ class DozerPoolManager(Blueprint):
             raise Unauthorized("Only the owner can set the HTR-USD pool")
 
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
@@ -3767,8 +3872,7 @@ class DozerPoolManager(Blueprint):
             PoolNotFound: If the pool does not exist
         """
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
@@ -3884,8 +3988,7 @@ class DozerPoolManager(Blueprint):
         token_b = TokenUid(bytes.fromhex(token_b))
         fee = Amount(int(fee))
         # Ensure tokens are ordered
-        if token_a > token_b:
-            token_a, token_b = token_b, token_a
+        token_a, token_b = self._order_tokens(token_a, token_b)
 
         pool_key = self._get_pool_key(token_a, token_b, fee)
         self._validate_pool_exists(pool_key)
