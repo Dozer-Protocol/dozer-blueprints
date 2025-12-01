@@ -326,13 +326,16 @@ class Oasis(Blueprint):
         if self.user_liquidity.get(Address(ctx.caller_id), 0) == 0:
             raise NCFail("No position to close")
 
-        # Get quote information
         oasis_quote = self._quote_remove_liquidity_oasis()
         htr_oasis_amount = oasis_quote["max_withdraw_a"]
-        token_b_oasis_amount = oasis_quote["user_lp_b"]
         user_liquidity = self.user_liquidity.get(Address(ctx.caller_id), 0)
-        user_lp_b = user_liquidity * token_b_oasis_amount // self.total_liquidity
-        user_lp_htr = user_liquidity * htr_oasis_amount // self.total_liquidity
+
+        if self.total_liquidity > 0:
+            user_lp_htr = (user_liquidity * htr_oasis_amount) // self.total_liquidity
+        else:
+            user_lp_htr = 0
+
+        user_lp_b = self._quote_token_b_from_htr(user_lp_htr)
 
         # Create actions to remove liquidity
         actions:list[NCAction] = [
@@ -529,11 +532,26 @@ class Oasis(Blueprint):
             raise NCFail("Invalid timelock value")
         # Using integer calculations with basis points (10000 = 100%)
         # 6 months = 10% = 1000 basis points
-        # 9 months = 15% = 1500 basis points  
+        # 9 months = 15% = 1500 basis points
         # 12 months = 20% = 2000 basis points
         bonus_multiplier = {6: 1000, 9: 1500, 12: 2000}
 
         return Amount((amount * bonus_multiplier[timelock]) // 10000)
+
+    def _quote_token_b_from_htr(self, user_lp_htr: int) -> int:
+        """Calculate token_b amount from HTR amount using pool reserves with correct token ordering"""
+        pool_manager = self.syscall.get_contract(
+            self.dozer_pool_manager, blueprint_id=None
+        ).view()
+        reserves = pool_manager.get_reserves(HTR_UID, self.token_b, self.pool_fee)
+
+        htr_uid_bytes = bytes(HTR_UID)
+        token_b_bytes = bytes(self.token_b)
+
+        if htr_uid_bytes < token_b_bytes:
+            return pool_manager.quote(user_lp_htr, reserves[0], reserves[1])
+        else:
+            return pool_manager.quote(user_lp_htr, reserves[1], reserves[0])
 
     @public(allow_withdrawal=True)
     def owner_withdraw(self, ctx: Context) -> None:
@@ -759,17 +777,14 @@ class Oasis(Blueprint):
         # Otherwise calculate withdrawal amounts based on current pool state
         oasis_quote = self._quote_remove_liquidity_oasis()
         htr_oasis_amount = oasis_quote["max_withdraw_a"]
-        token_b_oasis_amount = oasis_quote["user_lp_b"]
         user_liquidity = self.user_liquidity.get(address, 0)
 
         if self.total_liquidity > 0:
-            user_lp_b = (
-                (user_liquidity) * token_b_oasis_amount // (self.total_liquidity)
-            )
             user_lp_htr = (user_liquidity) * htr_oasis_amount // (self.total_liquidity)
         else:
-            user_lp_b = 0
             user_lp_htr = 0
+
+        user_lp_b = self._quote_token_b_from_htr(user_lp_htr)
 
         # Calculate total available amounts including existing balances
         user_balance_b = self.user_balances.get(address, {}).get(self.token_b, 0)
