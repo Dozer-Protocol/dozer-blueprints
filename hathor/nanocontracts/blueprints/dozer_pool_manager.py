@@ -2075,17 +2075,23 @@ class DozerPoolManager(Blueprint):
                 reserve_b_before_swap = Amount(reserve_b - amount_b)
                 reserve_a_before_swap = Amount(reserve_a - amount_a)
 
+                # Swap calculation: we're adding amount_b back to the pool to swap for A
+                # So the input reserve includes the amount being swapped
+                swap_reserve_in = Amount(pool.reserve_b + amount_b)
+                swap_reserve_out = pool.reserve_a
+
                 extra_a = self.get_amount_out(
                     amount_b,
-                    pool.reserve_b,
-                    pool.reserve_a,
+                    swap_reserve_in,
+                    swap_reserve_out,
                     pool.fee_numerator,
                     pool.fee_denominator,
                 )
 
                 # Validate price impact of internal swap (max 15%)
+                # Use the same reserves as the swap calculation for consistency
                 price_impact = self._calculate_single_swap_price_impact(
-                    amount_b, extra_a, reserve_b_before_swap, reserve_a_before_swap
+                    amount_b, extra_a, swap_reserve_in, swap_reserve_out
                 )
                 if price_impact > MAX_PRICE_IMPACT:
                     raise InvalidAction("Price impact too high - internal swap exceeds 15% impact")
@@ -2106,17 +2112,23 @@ class DozerPoolManager(Blueprint):
                 reserve_a_before_swap = Amount(reserve_a - amount_a)
                 reserve_b_before_swap = Amount(reserve_b - amount_b)
 
+                # Swap calculation: we're adding amount_a back to the pool to swap for B
+                # So the input reserve includes the amount being swapped
+                swap_reserve_in = Amount(pool.reserve_a + amount_a)
+                swap_reserve_out = pool.reserve_b
+
                 extra_b = self.get_amount_out(
                     amount_a,
-                    pool.reserve_a,
-                    pool.reserve_b,
+                    swap_reserve_in,
+                    swap_reserve_out,
                     pool.fee_numerator,
                     pool.fee_denominator,
                 )
 
                 # Validate price impact of internal swap (max 15%)
+                # Use the same reserves as the swap calculation for consistency
                 price_impact = self._calculate_single_swap_price_impact(
-                    amount_a, extra_b, reserve_a_before_swap, reserve_b_before_swap
+                    amount_a, extra_b, swap_reserve_in, swap_reserve_out
                 )
                 if price_impact > MAX_PRICE_IMPACT:
                     raise InvalidAction("Price impact too high - internal swap exceeds 15% impact")
