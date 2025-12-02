@@ -238,6 +238,34 @@ class SingleTokenRemovalQuote(NamedTuple):
     user_liquidity: Amount
 
 
+class _AddLiquiditySingleTokenResult(NamedTuple):
+    """Internal calculation result for single token liquidity addition."""
+
+    optimal_swap_amount: Amount
+    swap_output: Amount
+    reserve_a_after_swap: Amount
+    reserve_b_after_swap: Amount
+    token_a_amount: Amount
+    token_b_amount: Amount
+    liquidity_increase: Amount
+    actual_a: Amount
+    actual_b: Amount
+    excess_a: Amount
+    excess_b: Amount
+
+
+class _RemoveLiquiditySingleTokenResult(NamedTuple):
+    """Internal calculation result for single token liquidity removal."""
+
+    amount_a: Amount
+    amount_b: Amount
+    swap_amount: Amount
+    swap_output: Amount
+    total_amount_out: Amount
+    reserve_a_after: Amount
+    reserve_b_after: Amount
+
+
 @export
 class DozerPoolManager(Blueprint):
     """Singleton manager for multiple liquidity pools inspired by Uniswap v2.
@@ -945,90 +973,41 @@ class DozerPoolManager(Blueprint):
         self._validate_pool_exists(pool_key)
 
         pool = self.pools[pool_key]
-        reserve_a = pool.reserve_a
-        reserve_b = pool.reserve_b
 
-        if token_in == token_a:
-            reserve_in = reserve_a
-            reserve_out = reserve_b
-        else:
-            assert token_in == pool.token_b, f"Token {token_in} is not part of pool {pool_key}"
-            reserve_in = reserve_b
-            reserve_out = reserve_a
-
-        optimal_swap_amount = self._calculate_optimal_swap_amount(
-            amount_in, reserve_in, reserve_out, fee
+        result = self._compute_add_liquidity_single_token(
+            amount_in=amount_in,
+            token_in=token_in,
+            reserve_a=pool.reserve_a,
+            reserve_b=pool.reserve_b,
+            token_a=token_a,
+            token_b=token_b,
+            total_liquidity=pool.total_liquidity,
+            fee_numerator=pool.fee_numerator,
+            fee_denominator=pool.fee_denominator,
         )
 
-        swap_amount_out = self.get_amount_out(
-            optimal_swap_amount,
-            reserve_in,
-            reserve_out,
-            pool.fee_numerator,
-            pool.fee_denominator,
-        )
-
-        if token_in == token_a:
-            token_a_amount = amount_in - optimal_swap_amount
-            token_b_amount = swap_amount_out
-            reserve_a_after_swap = reserve_a + optimal_swap_amount
-            reserve_b_after_swap = reserve_b - swap_amount_out
-        else:
-            token_b_amount = Amount(amount_in - optimal_swap_amount)
-            token_a_amount = swap_amount_out
-            reserve_a_after_swap = reserve_a - swap_amount_out
-            reserve_b_after_swap = reserve_b + optimal_swap_amount
-
-        total_liquidity = pool.total_liquidity
-
-        if total_liquidity == 0:
-            liquidity_increase = Amount(0)
-            actual_a = Amount(0)
-            actual_b = Amount(0)
-        else:
-            liquidity_a = (total_liquidity * token_a_amount) // reserve_a_after_swap if reserve_a_after_swap > 0 else 0
-            liquidity_b = (total_liquidity * token_b_amount) // reserve_b_after_swap if reserve_b_after_swap > 0 else 0
-            liquidity_increase = Amount(min(liquidity_a, liquidity_b))
-
-            # To avoid dust, if we calculated liquidity from token_a, use all token_a
-            # This matches the logic in add_liquidity_single_token
-            if liquidity_a <= liquidity_b:
-                # liquidity was limited by token_a, so use all of it
-                actual_a = token_a_amount
-                # Recalculate token_b based on this
-                actual_b = (liquidity_increase * reserve_b_after_swap) // total_liquidity if total_liquidity > 0 else Amount(0)
-            else:
-                # liquidity was limited by token_b, so use all of it
-                actual_b = token_b_amount
-                # Recalculate token_a based on this
-                actual_a = (liquidity_increase * reserve_a_after_swap) // total_liquidity if total_liquidity > 0 else Amount(0)
-
-        excess_a = Amount(token_a_amount - actual_a)
-        excess_b = Amount(token_b_amount - actual_b)
-
-        if excess_a > 0:
+        if result.excess_a > 0:
             excess_token = token_a
-            excess_amount = excess_a
-        elif excess_b > 0:
+            excess_amount = result.excess_a
+        elif result.excess_b > 0:
             excess_token = token_b
-            excess_amount = excess_b
+            excess_amount = result.excess_b
         else:
             excess_token = token_in
             excess_amount = Amount(0)
 
-        # Calculate value-based price impact (shows real value loss to user)
         price_impact = self._calculate_value_based_price_impact(
-            amount_in, token_in, Amount(actual_a), Amount(actual_b), token_a, token_b
+            amount_in, token_in, result.actual_a, result.actual_b, token_a, token_b
         )
 
         return SingleTokenLiquidityQuote(
-            liquidity_amount=liquidity_increase,
-            token_a_used=Amount(actual_a),
-            token_b_used=Amount(actual_b),
+            liquidity_amount=result.liquidity_increase,
+            token_a_used=result.actual_a,
+            token_b_used=result.actual_b,
             excess_token=excess_token.hex(),
             excess_amount=excess_amount,
-            swap_amount=optimal_swap_amount,
-            swap_output=swap_amount_out,
+            swap_amount=result.optimal_swap_amount,
+            swap_output=result.swap_output,
             price_impact=price_impact,
         )
 
@@ -1048,75 +1027,40 @@ class DozerPoolManager(Blueprint):
         if user_liquidity == 0:
             raise InvalidAction("No liquidity to remove")
 
-        total_liquidity = pool.total_liquidity
-        reserve_a = pool.reserve_a
-        reserve_b = pool.reserve_b
+        result = self._compute_remove_liquidity_single_token(
+            liquidity_to_remove=user_liquidity,
+            token_out=token_out,
+            reserve_a=pool.reserve_a,
+            reserve_b=pool.reserve_b,
+            token_a=token_a,
+            token_b=token_b,
+            total_liquidity=pool.total_liquidity,
+            fee_numerator=pool.fee_numerator,
+            fee_denominator=pool.fee_denominator,
+        )
 
-        amount_a = Amount((reserve_a * user_liquidity) // total_liquidity)
-        amount_b = Amount((reserve_b * user_liquidity) // total_liquidity)
-
-        if token_out == token_a:
-            if amount_b > 0:
-                new_reserve_a = Amount(reserve_a - amount_a)
-                new_reserve_b = Amount(reserve_b - amount_b)
-
-                swap_reserve_in = Amount(new_reserve_b + amount_b)
-                swap_reserve_out = Amount(new_reserve_a)
-
-                extra_a = self.get_amount_out(
-                    amount_b,
-                    swap_reserve_in,
-                    swap_reserve_out,
-                    pool.fee_numerator,
-                    pool.fee_denominator,
-                )
-                total_amount_out = Amount(amount_a + extra_a)
-                swap_amount = amount_b
-                swap_output = extra_a
-
+        if result.swap_amount > 0:
+            if token_out == token_a:
+                swap_reserve_in = Amount(pool.reserve_b - result.amount_b + result.swap_amount)
+                swap_reserve_out = Amount(pool.reserve_a - result.amount_a)
                 price_impact = self._calculate_single_swap_price_impact(
-                    swap_amount, swap_output, new_reserve_b, new_reserve_a
+                    result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
                 )
             else:
-                total_amount_out = amount_a
-                swap_amount = Amount(0)
-                swap_output = Amount(0)
-                price_impact = Amount(0)
+                swap_reserve_in = Amount(pool.reserve_a - result.amount_a + result.swap_amount)
+                swap_reserve_out = Amount(pool.reserve_b - result.amount_b)
+                price_impact = self._calculate_single_swap_price_impact(
+                    result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
+                )
         else:
-            assert token_out == pool.token_b, f"Token {token_out} is not part of pool {pool_key}"
-            if amount_a > 0:
-                new_reserve_a = reserve_a - amount_a
-                new_reserve_b = reserve_b - amount_b
-
-                swap_reserve_in = Amount(new_reserve_a + amount_a)
-                swap_reserve_out = Amount(new_reserve_b)
-
-                extra_b = self.get_amount_out(
-                    amount_a,
-                    swap_reserve_in,
-                    swap_reserve_out,
-                    pool.fee_numerator,
-                    pool.fee_denominator,
-                )
-                total_amount_out = Amount(amount_b + extra_b)
-                swap_amount = amount_a
-                swap_output = extra_b
-
-                price_impact = self._calculate_single_swap_price_impact(
-                    swap_amount, swap_output, Amount(new_reserve_a), Amount(new_reserve_b)
-                )
-            else:
-                total_amount_out = amount_b
-                swap_amount = Amount(0)
-                swap_output = Amount(0)
-                price_impact = Amount(0)
+            price_impact = Amount(0)
 
         return SingleTokenRemovalQuote(
-            amount_out=total_amount_out,
-            token_a_withdrawn=amount_a,
-            token_b_withdrawn=amount_b,
-            swap_amount=swap_amount,
-            swap_output=swap_output,
+            amount_out=result.total_amount_out,
+            token_a_withdrawn=result.amount_a,
+            token_b_withdrawn=result.amount_b,
+            swap_amount=result.swap_amount,
+            swap_output=result.swap_output,
             price_impact=price_impact,
             user_liquidity=user_liquidity,
         )
@@ -1142,77 +1086,42 @@ class DozerPoolManager(Blueprint):
         if user_liquidity == 0:
             raise InvalidAction("No liquidity to remove")
 
-        liquidity_to_remove = (user_liquidity * percentage) // 10000
+        liquidity_to_remove = Amount((user_liquidity * percentage) // 10000)
 
-        total_liquidity = pool.total_liquidity
-        reserve_a = pool.reserve_a
-        reserve_b = pool.reserve_b
+        result = self._compute_remove_liquidity_single_token(
+            liquidity_to_remove=liquidity_to_remove,
+            token_out=token_out,
+            reserve_a=pool.reserve_a,
+            reserve_b=pool.reserve_b,
+            token_a=token_a,
+            token_b=token_b,
+            total_liquidity=pool.total_liquidity,
+            fee_numerator=pool.fee_numerator,
+            fee_denominator=pool.fee_denominator,
+        )
 
-        amount_a = Amount((reserve_a * liquidity_to_remove) // total_liquidity)
-        amount_b = Amount((reserve_b * liquidity_to_remove) // total_liquidity)
-
-        if token_out == token_a:
-            if amount_b > 0:
-                new_reserve_a = Amount(reserve_a - amount_a)
-                new_reserve_b = Amount(reserve_b - amount_b)
-
-                swap_reserve_in = Amount(new_reserve_b + amount_b)
-                swap_reserve_out = Amount(new_reserve_a)
-
-                extra_a = self.get_amount_out(
-                    amount_b,
-                    swap_reserve_in,
-                    swap_reserve_out,
-                    pool.fee_numerator,
-                    pool.fee_denominator,
-                )
-                total_amount_out = amount_a + extra_a
-                swap_amount = amount_b
-                swap_output = extra_a
-
+        if result.swap_amount > 0:
+            if token_out == token_a:
+                swap_reserve_in = Amount(pool.reserve_b - result.amount_b + result.swap_amount)
+                swap_reserve_out = Amount(pool.reserve_a - result.amount_a)
                 price_impact = self._calculate_single_swap_price_impact(
-                    swap_amount, swap_output, new_reserve_b, new_reserve_a
+                    result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
                 )
             else:
-                total_amount_out = amount_a
-                swap_amount = Amount(0)
-                swap_output = Amount(0)
-                price_impact = Amount(0)
+                swap_reserve_in = Amount(pool.reserve_a - result.amount_a + result.swap_amount)
+                swap_reserve_out = Amount(pool.reserve_b - result.amount_b)
+                price_impact = self._calculate_single_swap_price_impact(
+                    result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
+                )
         else:
-            assert token_out == pool.token_b, f"Token {token_out} is not part of pool {pool_key}"
-            if amount_a > 0:
-                new_reserve_a = reserve_a - amount_a
-                new_reserve_b = reserve_b - amount_b
-
-                swap_reserve_in = Amount(new_reserve_a + amount_a)
-                swap_reserve_out = Amount(new_reserve_b)
-
-                extra_b = self.get_amount_out(
-                    amount_a,
-                    swap_reserve_in,
-                    swap_reserve_out,
-                    pool.fee_numerator,
-                    pool.fee_denominator,
-                )
-                total_amount_out = amount_b + extra_b
-                swap_amount = amount_a
-                swap_output = extra_b
-
-                price_impact = self._calculate_single_swap_price_impact(
-                    swap_amount, swap_output, Amount(new_reserve_a), Amount(new_reserve_b)
-                )
-            else:
-                total_amount_out = amount_b
-                swap_amount = Amount(0)
-                swap_output = Amount(0)
-                price_impact = Amount(0)
+            price_impact = Amount(0)
 
         return SingleTokenRemovalQuote(
-            amount_out=Amount(total_amount_out),
-            token_a_withdrawn=amount_a,
-            token_b_withdrawn=amount_b,
-            swap_amount=swap_amount,
-            swap_output=swap_output,
+            amount_out=result.total_amount_out,
+            token_a_withdrawn=result.amount_a,
+            token_b_withdrawn=result.amount_b,
+            swap_amount=result.swap_amount,
+            swap_output=result.swap_output,
             price_impact=price_impact,
             user_liquidity=Amount(user_liquidity),
         )
@@ -1682,7 +1591,7 @@ class DozerPoolManager(Blueprint):
             raise InvalidAction("Must provide a deposit action")
 
         token_in = deposit_action.token_uid
-        amount_in = deposit_action.amount
+        amount_in = Amount(deposit_action.amount)
         user_address = ctx.caller_id
 
         # Validate tokens and get pool key
@@ -1703,121 +1612,70 @@ class DozerPoolManager(Blueprint):
         # Validate tokens match the pool
         assert set([token_in, token_out]) == set([pool.token_a, pool.token_b]), "Tokens must match pool tokens"
 
-        # Capture K before internal swap (should increase due to swap fees)
         k_before_swap = Amount(pool.reserve_a * pool.reserve_b)
 
-        # Get current reserves
-        reserve_a = pool.reserve_a
-        reserve_b = pool.reserve_b
+        result = self._compute_add_liquidity_single_token(
+            amount_in=amount_in,
+            token_in=token_in,
+            reserve_a=pool.reserve_a,
+            reserve_b=pool.reserve_b,
+            token_a=token_a,
+            token_b=token_b,
+            total_liquidity=pool.total_liquidity,
+            fee_numerator=pool.fee_numerator,
+            fee_denominator=pool.fee_denominator,
+        )
 
-        # Calculate how much to swap (approximately half the input)
-        # We need to find the optimal amount to swap so that the resulting tokens
-        # are in the correct ratio for the pool
         if token_in == token_a:
-            # Input is token A, need to swap some A for B
-            reserve_in = reserve_a
-            reserve_out = reserve_b
+            reserve_in = pool.reserve_a
+            reserve_out = pool.reserve_b
         else:
-            # Input is token B, need to swap some B for A
-            reserve_in = reserve_b
-            reserve_out = reserve_a
+            reserve_in = pool.reserve_b
+            reserve_out = pool.reserve_a
 
-        # Calculate optimal swap amount using quadratic formula
-        # This ensures we get the right ratio after the swap
-        optimal_swap_amount = self._calculate_optimal_swap_amount(
-            Amount(amount_in), reserve_in, reserve_out, fee
-        )
-
-        # Execute the internal swap
-        swap_amount_out = self.get_amount_out(
-            optimal_swap_amount,
-            reserve_in,
-            reserve_out,
-            pool.fee_numerator,
-            pool.fee_denominator,
-        )
-
-        # Validate price impact of internal swap (max 15% = 1500 basis points)
         price_impact = self._calculate_single_swap_price_impact(
-            optimal_swap_amount, swap_amount_out, reserve_in, reserve_out
+            result.optimal_swap_amount, result.swap_output, reserve_in, reserve_out
         )
         if price_impact > MAX_PRICE_IMPACT:
             raise InvalidAction("Price impact too high - internal swap exceeds 15% impact")
 
-        # Update reserves for the internal swap
-        if token_in == token_a:
-            new_reserve_a = Amount(reserve_a + optimal_swap_amount)
-            new_reserve_b = Amount(reserve_b - swap_amount_out)
-            self.pools[pool_key] = pool._replace(
-                reserve_a=new_reserve_a,
-                reserve_b=new_reserve_b
-            )
-            token_a_amount = amount_in - optimal_swap_amount
-            token_b_amount = swap_amount_out
-        else:
-            new_reserve_a = Amount(reserve_a - swap_amount_out)
-            new_reserve_b = Amount(reserve_b + optimal_swap_amount)
-            self.pools[pool_key] = pool._replace(
-                reserve_b=new_reserve_b,
-                reserve_a=new_reserve_a
-            )
-            token_b_amount = amount_in - optimal_swap_amount
-            token_a_amount = swap_amount_out
+        self.pools[pool_key] = pool._replace(
+            reserve_a=result.reserve_a_after_swap,
+            reserve_b=result.reserve_b_after_swap
+        )
 
-        # Re-fetch pool after swap update
         pool = self.pools[pool_key]
-
         k_after_swap = Amount(pool.reserve_a * pool.reserve_b)
         self._check_k_not_decreased(k_before_swap, k_after_swap, "add_liquidity_single_token (internal swap)")
 
-        current_reserve_a = pool.reserve_a
-        current_reserve_b = pool.reserve_b
-        total_liquidity = pool.total_liquidity
-
-        liquidity_a = (total_liquidity * token_a_amount) // current_reserve_a
-        liquidity_b = (total_liquidity * token_b_amount) // current_reserve_b
-        liquidity_increase = min(liquidity_a, liquidity_b)
-
-        if liquidity_a <= liquidity_b:
-            actual_a = token_a_amount
-            actual_b = (liquidity_increase * current_reserve_b) // total_liquidity
-        else:
-            actual_b = token_b_amount
-            actual_a = (liquidity_increase * current_reserve_a) // total_liquidity
-
-        excess_a = Amount(token_a_amount - actual_a)
-        excess_b = Amount(token_b_amount - actual_b)
-
         user_liquidity = self.pool_user_liquidity[pool_key]
         user_liquidity[user_address] = Amount(
-            user_liquidity.get(user_address, Amount(0)) + liquidity_increase
+            user_liquidity.get(user_address, Amount(0)) + result.liquidity_increase
         )
 
-        final_reserve_a = Amount(current_reserve_a + actual_a)
-        final_reserve_b = Amount(current_reserve_b + actual_b)
+        final_reserve_a = Amount(result.reserve_a_after_swap + result.actual_a)
+        final_reserve_b = Amount(result.reserve_b_after_swap + result.actual_b)
+
+        reserve_a_before_liquidity = pool.reserve_a
+        reserve_b_before_liquidity = pool.reserve_b
+
         self.pools[pool_key] = pool._replace(
-            total_liquidity=Amount(total_liquidity + liquidity_increase),
+            total_liquidity=Amount(pool.total_liquidity + result.liquidity_increase),
             reserve_a=final_reserve_a,
             reserve_b=final_reserve_b
         )
 
-        if excess_a > 0:
-            self._update_change(user_address, excess_a, token_a, pool_key)
-        if excess_b > 0:
-            self._update_change(user_address, excess_b, token_b, pool_key)
+        if result.excess_a > 0:
+            self._update_change(user_address, result.excess_a, token_a, pool_key)
+        if result.excess_b > 0:
+            self._update_change(user_address, result.excess_b, token_b, pool_key)
 
         self._update_user_profit_tracking(user_address, pool_key, ctx)
 
-        # Note: We don't check price ratio here because the liquidity addition
-        # uses actual_a and actual_b which are rounded down from the available tokens.
-        # Any excess is stored in user balance. The ratio might change slightly due
-        # to integer rounding, but this is acceptable and handled correctly.
-
-        # Return the excess token info
-        if excess_a > 0:
-            return (token_a, excess_a)
-        elif excess_b > 0:
-            return (token_b, excess_b)
+        if result.excess_a > 0:
+            return (token_a, result.excess_a)
+        elif result.excess_b > 0:
+            return (token_b, result.excess_b)
         else:
             return (token_in, Amount(0))
 
@@ -1903,6 +1761,165 @@ class DozerPoolManager(Blueprint):
             optimal = Amount(amount_in // 2)
 
         return optimal
+
+    def _compute_add_liquidity_single_token(
+        self,
+        amount_in: Amount,
+        token_in: TokenUid,
+        reserve_a: Amount,
+        reserve_b: Amount,
+        token_a: TokenUid,
+        token_b: TokenUid,
+        total_liquidity: Amount,
+        fee_numerator: Amount,
+        fee_denominator: Amount,
+    ) -> _AddLiquiditySingleTokenResult:
+        """Shared calculation logic for add liquidity single token operations."""
+        if token_in == token_a:
+            reserve_in = reserve_a
+            reserve_out = reserve_b
+        else:
+            reserve_in = reserve_b
+            reserve_out = reserve_a
+
+        fee = Amount((fee_numerator * 1000) // fee_denominator if fee_denominator > 0 else Amount(0))
+        optimal_swap_amount = self._calculate_optimal_swap_amount(
+            amount_in, reserve_in, reserve_out, fee
+        )
+
+        swap_output = self.get_amount_out(
+            optimal_swap_amount,
+            reserve_in,
+            reserve_out,
+            fee_numerator,
+            fee_denominator,
+        )
+
+        if token_in == token_a:
+            reserve_a_after_swap = Amount(reserve_a + optimal_swap_amount)
+            reserve_b_after_swap = Amount(reserve_b - swap_output)
+            token_a_amount = amount_in - optimal_swap_amount
+            token_b_amount = swap_output
+        else:
+            reserve_a_after_swap = Amount(reserve_a - swap_output)
+            reserve_b_after_swap = Amount(reserve_b + optimal_swap_amount)
+            token_b_amount = amount_in - optimal_swap_amount
+            token_a_amount = swap_output
+
+        if total_liquidity == 0:
+            liquidity_increase = Amount(0)
+            actual_a = Amount(0)
+            actual_b = Amount(0)
+        else:
+            liquidity_a = (total_liquidity * token_a_amount) // reserve_a_after_swap if reserve_a_after_swap > 0 else 0
+            liquidity_b = (total_liquidity * token_b_amount) // reserve_b_after_swap if reserve_b_after_swap > 0 else 0
+            liquidity_increase = Amount(min(liquidity_a, liquidity_b))
+
+            # Use the original token amount for whichever is the limiting factor
+            # This avoids rounding errors from recalculating: actual = (liquidity * reserve) // total_liquidity
+            if liquidity_a <= liquidity_b:
+                # Token A is the limiting factor, use exact amount
+                actual_a = token_a_amount
+                actual_b = (liquidity_increase * reserve_b_after_swap) // total_liquidity if total_liquidity > 0 else Amount(0)
+            else:
+                # Token B is the limiting factor, use exact amount
+                actual_b = token_b_amount
+                actual_a = (liquidity_increase * reserve_a_after_swap) // total_liquidity if total_liquidity > 0 else Amount(0)
+
+        excess_a = Amount(token_a_amount - actual_a)
+        excess_b = Amount(token_b_amount - actual_b)
+
+        return _AddLiquiditySingleTokenResult(
+            optimal_swap_amount=optimal_swap_amount,
+            swap_output=swap_output,
+            reserve_a_after_swap=reserve_a_after_swap,
+            reserve_b_after_swap=reserve_b_after_swap,
+            token_a_amount=Amount(token_a_amount),
+            token_b_amount=Amount(token_b_amount),
+            liquidity_increase=liquidity_increase,
+            actual_a=Amount(actual_a),
+            actual_b=Amount(actual_b),
+            excess_a=excess_a,
+            excess_b=excess_b,
+        )
+
+    def _compute_remove_liquidity_single_token(
+        self,
+        liquidity_to_remove: Amount,
+        token_out: TokenUid,
+        reserve_a: Amount,
+        reserve_b: Amount,
+        token_a: TokenUid,
+        token_b: TokenUid,
+        total_liquidity: Amount,
+        fee_numerator: Amount,
+        fee_denominator: Amount,
+    ) -> _RemoveLiquiditySingleTokenResult:
+        """Shared calculation logic for remove liquidity single token operations."""
+        amount_a = Amount((reserve_a * liquidity_to_remove) // total_liquidity)
+        amount_b = Amount((reserve_b * liquidity_to_remove) // total_liquidity)
+
+        new_reserve_a = Amount(reserve_a - amount_a)
+        new_reserve_b = Amount(reserve_b - amount_b)
+
+        if token_out == token_a:
+            if amount_b > 0:
+                swap_reserve_in = Amount(new_reserve_b + amount_b)
+                swap_reserve_out = Amount(new_reserve_a)
+
+                extra_a = self.get_amount_out(
+                    amount_b,
+                    swap_reserve_in,
+                    swap_reserve_out,
+                    fee_numerator,
+                    fee_denominator,
+                )
+                total_amount_out = amount_a + extra_a
+                swap_amount = amount_b
+                swap_output = extra_a
+
+                reserve_a_after = Amount(new_reserve_a - extra_a)
+                reserve_b_after = Amount(new_reserve_b + amount_b)
+            else:
+                total_amount_out = amount_a
+                swap_amount = Amount(0)
+                swap_output = Amount(0)
+                reserve_a_after = new_reserve_a
+                reserve_b_after = new_reserve_b
+        else:
+            if amount_a > 0:
+                swap_reserve_in = Amount(new_reserve_a + amount_a)
+                swap_reserve_out = Amount(new_reserve_b)
+
+                extra_b = self.get_amount_out(
+                    amount_a,
+                    swap_reserve_in,
+                    swap_reserve_out,
+                    fee_numerator,
+                    fee_denominator,
+                )
+                total_amount_out = amount_b + extra_b
+                swap_amount = amount_a
+                swap_output = extra_b
+
+                reserve_a_after = Amount(new_reserve_a + amount_a)
+                reserve_b_after = Amount(new_reserve_b - extra_b)
+            else:
+                total_amount_out = amount_b
+                swap_amount = Amount(0)
+                swap_output = Amount(0)
+                reserve_a_after = new_reserve_a
+                reserve_b_after = new_reserve_b
+
+        return _RemoveLiquiditySingleTokenResult(
+            amount_a=amount_a,
+            amount_b=amount_b,
+            swap_amount=swap_amount,
+            swap_output=swap_output,
+            total_amount_out=total_amount_out,
+            reserve_a_after=reserve_a_after,
+            reserve_b_after=reserve_b_after,
+        )
 
     def _calculate_single_swap_price_impact(
         self, amount_in: Amount, amount_out: Amount, reserve_in: Amount, reserve_out: Amount
@@ -2031,121 +2048,67 @@ class DozerPoolManager(Blueprint):
         if user_liquidity == 0:
             raise InvalidAction("No liquidity to remove")
 
-        # Calculate liquidity to remove based on percentage
-        liquidity_to_remove = (user_liquidity * percentage) // 10000
+        liquidity_to_remove = Amount((user_liquidity * percentage) // 10000)
 
-        # Calculate withdrawal amounts based on percentage
-        total_liquidity = pool.total_liquidity
-        reserve_a = pool.reserve_a
-        reserve_b = pool.reserve_b
+        reserve_a_before = pool.reserve_a
+        reserve_b_before = pool.reserve_b
 
-        # Capture reserves before liquidity removal
-        reserve_a_before = reserve_a
-        reserve_b_before = reserve_b
-
-        amount_a = Amount((reserve_a * liquidity_to_remove) // total_liquidity)
-        amount_b = Amount((reserve_b * liquidity_to_remove) // total_liquidity)
-
-        # Update user liquidity
-        pool_user_liquidity[user_address] = Amount(user_liquidity - liquidity_to_remove)
-        self.pools[pool_key] = pool._replace(
-            total_liquidity=Amount(total_liquidity - liquidity_to_remove),
-            reserve_a=Amount(reserve_a - amount_a),
-            reserve_b=Amount(reserve_b - amount_b)
+        result = self._compute_remove_liquidity_single_token(
+            liquidity_to_remove=liquidity_to_remove,
+            token_out=token_out,
+            reserve_a=pool.reserve_a,
+            reserve_b=pool.reserve_b,
+            token_a=token_a,
+            token_b=token_b,
+            total_liquidity=pool.total_liquidity,
+            fee_numerator=pool.fee_numerator,
+            fee_denominator=pool.fee_denominator,
         )
-        pool = self.pools[pool_key]
 
-        # Verify price ratio maintained during liquidity removal
+        pool_user_liquidity[user_address] = Amount(user_liquidity - liquidity_to_remove)
+
+        reserve_a_after_removal = Amount(pool.reserve_a - result.amount_a)
+        reserve_b_after_removal = Amount(pool.reserve_b - result.amount_b)
+
+        self.pools[pool_key] = pool._replace(
+            total_liquidity=Amount(pool.total_liquidity - liquidity_to_remove),
+            reserve_a=reserve_a_after_removal,
+            reserve_b=reserve_b_after_removal
+        )
+
         self._check_price_ratio(
             reserve_a_before, reserve_b_before,
-            pool.reserve_a, pool.reserve_b,
+            reserve_a_after_removal, reserve_b_after_removal,
             "remove_liquidity_single_token (liquidity removal)"
         )
 
-        # Capture K and reserves before internal swap
-        k_before_swap = Amount(pool.reserve_a * pool.reserve_b)
-        reserve_a_before_swap = pool.reserve_a
-        reserve_b_before_swap = pool.reserve_b
+        k_before_swap = Amount(reserve_a_after_removal * reserve_b_after_removal)
 
-        # Calculate total output after swapping
-        if token_out == token_a:
-            # Want token A, swap token B for token A
-            if amount_b > 0:
-                # Store reserves before swap for price impact calculation
-                reserve_b_before_swap = Amount(reserve_b - amount_b)
-                reserve_a_before_swap = Amount(reserve_a - amount_a)
-
-                # Swap calculation: we're adding amount_b back to the pool to swap for A
-                # So the input reserve includes the amount being swapped
-                swap_reserve_in = Amount(pool.reserve_b + amount_b)
-                swap_reserve_out = pool.reserve_a
-
-                extra_a = self.get_amount_out(
-                    amount_b,
-                    swap_reserve_in,
-                    swap_reserve_out,
-                    pool.fee_numerator,
-                    pool.fee_denominator,
-                )
-
-                # Validate price impact of internal swap (max 15%)
-                # Use the same reserves as the swap calculation for consistency
-                price_impact = self._calculate_single_swap_price_impact(
-                    amount_b, extra_a, swap_reserve_in, swap_reserve_out
-                )
-                if price_impact > MAX_PRICE_IMPACT:
-                    raise InvalidAction("Price impact too high - internal swap exceeds 15% impact")
-
-                # Update reserves for the swap
-                self.pools[pool_key] = pool._replace(
-                    reserve_b=Amount(pool.reserve_b + amount_b),
-                    reserve_a=Amount(pool.reserve_a - extra_a)
-                )
-                pool = self.pools[pool_key]
-                total_amount_out = amount_a + extra_a
+        if result.swap_amount > 0:
+            if token_out == token_a:
+                swap_reserve_in = Amount(reserve_b_after_removal + result.swap_amount)
+                swap_reserve_out = reserve_a_after_removal
             else:
-                total_amount_out = amount_a
-        else:
-            # Want token B, swap token A for token B
-            if amount_a > 0:
-                # Store reserves before swap for price impact calculation
-                reserve_a_before_swap = Amount(reserve_a - amount_a)
-                reserve_b_before_swap = Amount(reserve_b - amount_b)
+                swap_reserve_in = Amount(reserve_a_after_removal + result.swap_amount)
+                swap_reserve_out = reserve_b_after_removal
 
-                # Swap calculation: we're adding amount_a back to the pool to swap for B
-                # So the input reserve includes the amount being swapped
-                swap_reserve_in = Amount(pool.reserve_a + amount_a)
-                swap_reserve_out = pool.reserve_b
+            price_impact = self._calculate_single_swap_price_impact(
+                result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
+            )
+            if price_impact > MAX_PRICE_IMPACT:
+                raise InvalidAction("Price impact too high - internal swap exceeds 15% impact")
 
-                extra_b = self.get_amount_out(
-                    amount_a,
-                    swap_reserve_in,
-                    swap_reserve_out,
-                    pool.fee_numerator,
-                    pool.fee_denominator,
-                )
+        pool = self.pools[pool_key]
+        self.pools[pool_key] = pool._replace(
+            reserve_a=result.reserve_a_after,
+            reserve_b=result.reserve_b_after
+        )
 
-                # Validate price impact of internal swap (max 15%)
-                # Use the same reserves as the swap calculation for consistency
-                price_impact = self._calculate_single_swap_price_impact(
-                    amount_a, extra_b, swap_reserve_in, swap_reserve_out
-                )
-                if price_impact > MAX_PRICE_IMPACT:
-                    raise InvalidAction("Price impact too high - internal swap exceeds 15% impact")
-
-                # Update reserves for the swap
-                self.pools[pool_key] = pool._replace(
-                    reserve_a=Amount(pool.reserve_a + amount_a),
-                    reserve_b=Amount(pool.reserve_b - extra_b)
-                )
-                pool = self.pools[pool_key]
-                total_amount_out = amount_b + extra_b
-            else:
-                total_amount_out = amount_b
-
-        # Verify K didn't decrease during internal swap (if swap occurred)
+        pool = self.pools[pool_key]
         k_after_swap = Amount(pool.reserve_a * pool.reserve_b)
         self._check_k_not_decreased(k_before_swap, k_after_swap, "remove_liquidity_single_token (internal swap)")
+
+        total_amount_out = result.total_amount_out
 
         # Handle slippage - if user requested less than calculated, store excess
         if withdrawal_amount < total_amount_out:
