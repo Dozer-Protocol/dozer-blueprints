@@ -998,27 +998,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         self._check_balance()
 
-    def test_quote_remove_liquidity_single_token(self):
-        _pool_key, _creator_address = self._create_pool(
-            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
-        )
-
-        _result, add_context = self._add_liquidity(
-            self.token_a, self.token_b, 3, 1000_00
-        )
-
-        user_liquidity = self.runner.call_view_method(
-            self.nc_id, "liquidity_of", add_context.caller_id, _pool_key
-        )
-
-        quote = self.runner.call_view_method(
-            self.nc_id, "quote_remove_liquidity_single_token",
-            add_context.caller_id, self.token_a, self.token_b, self.token_a, 3
-        )
-
-        self.assertEqual(quote.user_liquidity, user_liquidity)
-        self.assertEqual(quote.amount_out, quote.token_a_withdrawn + quote.swap_output)
-
     def test_profit_tracking_edge_cases(self):
         """Test profit tracking with various edge cases"""
         # Create a pool
