@@ -289,7 +289,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         assert isinstance(contract, DozerPoolManager)
 
         # Verify pool exists
-        self.assertTrue(pool_key in contract.pool_exists)
+        self.assertTrue(pool_key in contract.pools)
 
         # Verify tokens are stored correctly
         self.assertEqual(contract.pools[pool_key].token_a, self.token_a)
@@ -338,10 +338,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         assert isinstance(contract, DozerPoolManager)
 
         # Verify all pools exist
-        self.assertTrue(pool_key1 in contract.pool_exists)
-        self.assertTrue(pool_key2 in contract.pool_exists)
-        self.assertTrue(pool_key3 in contract.pool_exists)
-        self.assertTrue(pool_key4 in contract.pool_exists)
+        self.assertTrue(pool_key1 in contract.pools)
+        self.assertTrue(pool_key2 in contract.pools)
+        self.assertTrue(pool_key3 in contract.pools)
+        self.assertTrue(pool_key4 in contract.pools)
 
         # Verify all pools are in the all_pools list
         all_pools = self.runner.call_view_method(self.nc_id, "get_all_pools")
@@ -534,13 +534,10 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self._check_balance()
 
     def test_add_liquidity_single_token(self):
-        """Test adding liquidity with a single token"""
-        # Create a pool with initial liquidity
         pool_key, _creator_address = self._create_pool(
             self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
         )
 
-        # Test single token liquidity addition
         tx = self._get_any_tx()
         amount_in = 1000_00
         actions = [NCDepositAction(token_uid=self.token_a, amount=amount_in)]
@@ -553,75 +550,134 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             timestamp=self.get_current_timestamp()
         )
 
-        # Add liquidity with single token
+        contract_before = self.get_readonly_contract(self.nc_id)
+        pool_before = contract_before.pools[pool_key]
+        k_before = pool_before.reserve_a * pool_before.reserve_b
+
+        quote = self.runner.call_view_method(
+            self.nc_id, "quote_add_liquidity_single_token",
+            self.token_a, amount_in, self.token_b, 3
+        )
+
         result = self.runner.call_public_method(
             self.nc_id, "add_liquidity_single_token", context, self.token_b, 3
         )
 
-        # Verify the operation succeeded
-        self.assertIsNotNone(result)
+        contract_after = self.get_readonly_contract(self.nc_id)
+        pool_after = contract_after.pools[pool_key]
 
-        # Check that user now has liquidity
+        reserve_a_after_swap = pool_before.reserve_a + quote.swap_amount
+        reserve_b_after_swap = pool_before.reserve_b - quote.swap_output
+        k_after_swap = reserve_a_after_swap * reserve_b_after_swap
+
+        self.assertGreaterEqual(k_after_swap, k_before)
+
+        expected_reserve_a = reserve_a_after_swap + quote.token_a_used
+        expected_reserve_b = reserve_b_after_swap + quote.token_b_used
+        k_final = pool_after.reserve_a * pool_after.reserve_b
+
+        self.assertEqual(pool_after.reserve_a, expected_reserve_a)
+        self.assertEqual(pool_after.reserve_b, expected_reserve_b)
+        self.assertGreaterEqual(k_final, k_after_swap)
+
+        expected_liquidity = pool_before.total_liquidity + quote.liquidity_amount
+        self.assertEqual(pool_after.total_liquidity, expected_liquidity)
+        self.assertEqual(pool_after.total_change_a + pool_after.total_change_b, quote.excess_amount)
+
         user_liquidity = self.runner.call_view_method(
             self.nc_id, "liquidity_of", context.caller_id, pool_key
         )
-        self.assertGreater(user_liquidity, 0)
+        self.assertEqual(user_liquidity, quote.liquidity_amount)
+
+        self._check_balance()
+
+    def test_add_liquidity_single_token2(self):
+        fee = 0
+        pool_key, _creator_address = self._create_pool(
+            self.token_a, self.token_b, fee=fee, reserve_a=1000, reserve_b=2000
+        )
+
+        amount_in = 300
+        actions = [NCDepositAction(token_uid=self.token_b, amount=amount_in)]
+        context = self.create_context(actions=actions)
+
+        contract_before = self.get_readonly_contract(self.nc_id)
+        pool_before = contract_before.pools[pool_key]
+        k_before = pool_before.reserve_a * pool_before.reserve_b
+
+        quote = self.runner.call_view_method(
+            self.nc_id, "quote_add_liquidity_single_token",
+            self.token_b, amount_in, self.token_a, fee
+        )
+
+        result = self.runner.call_public_method(
+            self.nc_id, "add_liquidity_single_token", context, self.token_a, fee
+        )
+
+        contract_after = self.get_readonly_contract(self.nc_id)
+        pool_after = contract_after.pools[pool_key]
+
+        reserve_a_after_swap = pool_before.reserve_a - quote.swap_output
+        reserve_b_after_swap = pool_before.reserve_b + quote.swap_amount
+        k_after_swap = reserve_a_after_swap * reserve_b_after_swap
+
+        self.assertGreaterEqual(k_after_swap, k_before)
+
+        expected_reserve_a = reserve_a_after_swap + quote.token_a_used
+        expected_reserve_b = reserve_b_after_swap + quote.token_b_used
+        k_final = pool_after.reserve_a * pool_after.reserve_b
+
+        self.assertEqual(pool_after.reserve_a, expected_reserve_a)
+        self.assertEqual(pool_after.reserve_b, expected_reserve_b)
+        self.assertGreaterEqual(k_final, k_after_swap)
+
+        expected_liquidity = pool_before.total_liquidity + quote.liquidity_amount
+        self.assertEqual(pool_after.total_liquidity, expected_liquidity)
+        self.assertEqual(pool_after.total_change_a + pool_after.total_change_b, quote.excess_amount)
 
         self._check_balance()
 
     def test_quote_add_liquidity_single_token(self):
-        """Test quoting single token liquidity addition"""
-        # Create a pool
         _pool_key, _ = self._create_pool(
             self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
         )
 
-        # Get quote for single token addition
         amount_in = 1000_00
         quote = self.runner.call_view_method(
             self.nc_id, "quote_add_liquidity_single_token",
             self.token_a, amount_in, self.token_b, 3
         )
 
-        # Verify quote contains expected fields (named tuple)
-        self.assertTrue(hasattr(quote, "liquidity_amount"))
-        self.assertTrue(hasattr(quote, "token_a_used"))
-        self.assertTrue(hasattr(quote, "token_b_used"))
-        self.assertTrue(hasattr(quote, "excess_token"))
-        self.assertTrue(hasattr(quote, "excess_amount"))
-        self.assertTrue(hasattr(quote, "swap_amount"))
-        self.assertTrue(hasattr(quote, "swap_output"))
-
-        # Verify values are reasonable
-        self.assertGreater(quote.liquidity_amount, 0)
-        self.assertGreater(quote.token_a_used, 0)
-        self.assertGreater(quote.token_b_used, 0)
-        self.assertGreater(quote.swap_amount, 0)
-        self.assertGreater(quote.swap_output, 0)
+        total_input_used = quote.token_a_used + quote.swap_amount
+        if quote.excess_token == self.token_a.hex():
+            total_input_used += quote.excess_amount
+        self.assertEqual(total_input_used, amount_in)
 
     def test_remove_liquidity_single_token(self):
-        """Test removing liquidity to receive a single token"""
-        # Create a pool
         pool_key, _creator_address = self._create_pool(
             self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
         )
 
-        # Add liquidity first with the creator
         _result, add_context = self._add_liquidity(
             self.token_a, self.token_b, 3, 1000_00
         )
 
-        # Remove liquidity to get single token
-        tx = self._get_any_tx()
-        assert isinstance(add_context.caller_id, Address)
+        contract_before = self.get_readonly_contract(self.nc_id)
+        pool_before = contract_before.pools[pool_key]
+        k_before = pool_before.reserve_a * pool_before.reserve_b
 
-        # First get a quote to know how much we'll receive
+        user_liquidity_before = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
+        )
+
         quote = self.runner.call_view_method(
             self.nc_id, "quote_remove_liquidity_single_token_percentage",
             add_context.caller_id, pool_key, self.token_a, 10000
         )
 
-        # Create withdrawal action for the desired token with the quoted amount
+        tx = self._get_any_tx()
+        assert isinstance(add_context.caller_id, Address)
+
         actions = [NCWithdrawalAction(token_uid=self.token_a, amount=quote.amount_out)]
 
         context = self.create_context(
@@ -631,15 +687,33 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             timestamp=self.get_current_timestamp()
         )
 
-        # Remove liquidity for single token (100% = 10000 basis points)
         amount_out = self.runner.call_public_method(
             self.nc_id, "remove_liquidity_single_token", context, pool_key, 10000
         )
 
-        # Verify we got some tokens back
-        self.assertGreater(amount_out, 0)
+        contract_after = self.get_readonly_contract(self.nc_id)
+        pool_after = contract_after.pools[pool_key]
 
-        # Check that user's liquidity is now zero
+        reserve_a_after_withdraw = pool_before.reserve_a - quote.token_a_withdrawn
+        reserve_b_after_withdraw = pool_before.reserve_b - quote.token_b_withdrawn
+
+        if quote.swap_amount > 0:
+            reserve_b_after_swap = reserve_b_after_withdraw + quote.swap_amount
+            reserve_a_after_swap = reserve_a_after_withdraw - quote.swap_output
+        else:
+            reserve_a_after_swap = reserve_a_after_withdraw
+            reserve_b_after_swap = reserve_b_after_withdraw
+
+        k_after = reserve_a_after_swap * reserve_b_after_swap
+
+        self.assertEqual(amount_out, quote.amount_out)
+        self.assertEqual(pool_after.reserve_a, reserve_a_after_swap)
+        self.assertEqual(pool_after.reserve_b, reserve_b_after_swap)
+        self.assertLessEqual(k_after, k_before)
+
+        expected_total_liquidity = pool_before.total_liquidity - user_liquidity_before
+        self.assertEqual(pool_after.total_liquidity, expected_total_liquidity)
+
         user_liquidity = self.runner.call_view_method(
             self.nc_id, "liquidity_of", add_context.caller_id, pool_key
         )
@@ -648,8 +722,6 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self._check_balance()
 
     def test_quote_remove_liquidity_single_token(self):
-        """Test quoting single token liquidity removal"""
-        # Create a pool and add liquidity
         _pool_key, _creator_address = self._create_pool(
             self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
         )
@@ -658,25 +730,17 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.token_a, self.token_b, 3, 1000_00
         )
 
-        # Get quote for single token removal
+        user_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", add_context.caller_id, _pool_key
+        )
+
         quote = self.runner.call_view_method(
             self.nc_id, "quote_remove_liquidity_single_token",
             add_context.caller_id, self.token_a, self.token_b, self.token_a, 3
         )
 
-        # Verify quote contains expected fields (named tuple)
-        self.assertTrue(hasattr(quote, "amount_out"))
-        self.assertTrue(hasattr(quote, "token_a_withdrawn"))
-        self.assertTrue(hasattr(quote, "token_b_withdrawn"))
-        self.assertTrue(hasattr(quote, "swap_amount"))
-        self.assertTrue(hasattr(quote, "swap_output"))
-        self.assertTrue(hasattr(quote, "user_liquidity"))
-
-        # Verify values are reasonable
-        self.assertGreater(quote.amount_out, 0)
-        self.assertGreater(quote.token_a_withdrawn, 0)
-        self.assertGreater(quote.token_b_withdrawn, 0)
-        self.assertGreater(quote.user_liquidity, 0)
+        self.assertEqual(quote.user_liquidity, user_liquidity)
+        self.assertEqual(quote.amount_out, quote.token_a_withdrawn + quote.swap_output)
 
     def test_profit_tracking_edge_cases(self):
         """Test profit tracking with various edge cases"""
