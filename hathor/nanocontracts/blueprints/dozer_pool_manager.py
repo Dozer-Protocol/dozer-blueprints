@@ -3289,7 +3289,7 @@ class DozerPoolManager(Blueprint):
 
 
     @public
-    def change_protocol_fee(self, ctx: Context, new_fee: Amount) -> None:
+    def change_protocol_fee(self, ctx: Context, new_fee: int) -> None:
         """Change the protocol fee.
 
         Args:
@@ -3307,7 +3307,7 @@ class DozerPoolManager(Blueprint):
         assert new_fee >= 0, "Protocol fee must be >= 0"
         assert new_fee <= 50, "Protocol fee must be <= 50%"
 
-        self.default_protocol_fee = new_fee
+        self.default_protocol_fee = Amount(new_fee)
 
     @public
     def add_authorized_signer(self, ctx: Context, signer_address: Address) -> None:
