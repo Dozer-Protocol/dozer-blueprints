@@ -1491,7 +1491,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
 
         self.runner.call_public_method(
-            self.nc_id, "withdraw_cashback", withdraw_context, int(pool_key.split("/")[2])
+            self.nc_id, "withdraw_cashback", withdraw_context, pool_key
         )
 
         # Balance should now be zero
