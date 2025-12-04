@@ -582,7 +582,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(pool_after.reserve_b, expected_reserve_b)
         self.assertGreaterEqual(k_final, k_after_swap)
 
-        expected_liquidity = pool_before.total_liquidity + quote.liquidity_amount
+        # Account for protocol fee liquidity increase from internal swap
+        expected_liquidity = pool_before.total_liquidity + quote.liquidity_amount + quote.protocol_liquidity_increase
         self.assertEqual(pool_after.total_liquidity, expected_liquidity)
         self.assertEqual(pool_after.total_change_a + pool_after.total_change_b, quote.excess_amount)
 
@@ -635,7 +636,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(pool_after.reserve_b, expected_reserve_b)
         self.assertGreaterEqual(k_final, k_after_swap)
 
-        expected_liquidity = pool_before.total_liquidity + quote.liquidity_amount
+        # Account for protocol fee liquidity increase from internal swap
+        expected_liquidity = pool_before.total_liquidity + quote.liquidity_amount + quote.protocol_liquidity_increase
         self.assertEqual(pool_after.total_liquidity, expected_liquidity)
         self.assertEqual(pool_after.total_change_a + pool_after.total_change_b, quote.excess_amount)
 
@@ -717,7 +719,8 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(pool_after.reserve_b, reserve_b_after_swap)
         self.assertLessEqual(k_after, k_before)
 
-        expected_total_liquidity = pool_before.total_liquidity - user_liquidity_before
+        # Account for protocol fee liquidity increase from internal swap
+        expected_total_liquidity = pool_before.total_liquidity - user_liquidity_before + quote.protocol_liquidity_increase
         self.assertEqual(pool_after.total_liquidity, expected_total_liquidity)
 
         user_liquidity = self.runner.call_view_method(
