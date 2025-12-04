@@ -1885,14 +1885,22 @@ class DozerPoolManager(Blueprint):
         final_reserve_b = Amount(result.reserve_b_after_swap + result.actual_b)
 
         # Verify price ratio is maintained when adding liquidity proportionally
-        # actual_a and actual_b are calculated using quote, which uses integer division
-        # Single-token operations have slightly higher rounding error due to the two-step
-        # process (internal swap + proportional add), so we use 10ppm tolerance (0.001%)
+        # Note: Single-token operations have inherent rounding errors from integer arithmetic:
+        # 1. Optimal swap calculation (integer square root + division)
+        # 2. The actual swap (get_amount_out with integer division)
+        # 3. Proportional amount calculation (quote with integer division)
+        #
+        # The relative error increases with smaller reserve values because fixed rounding losses
+        # (e.g., losing 1 from integer division) become larger percentages of small numbers.
+        # Use dynamic tolerance: max(500ppm, 5000ppm for reserves < 10000)
+        min_reserve = min(result.reserve_a_after_swap, result.reserve_b_after_swap)
+        tolerance = 5000 if min_reserve < 10000 else 500  # 0.5% for small pools, 0.05% for normal pools
+
         self._check_price_ratio(
             result.reserve_a_after_swap, result.reserve_b_after_swap,
             final_reserve_a, final_reserve_b,
             "add_liquidity_single_token (proportional addition)",
-            tolerance_ppm=10
+            tolerance_ppm=tolerance
         )
 
         # Update pool state with new liquidity, reserves, and statistics
