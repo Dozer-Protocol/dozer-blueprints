@@ -20,7 +20,7 @@ from hathor.nanocontracts.types import (
 from hathor.conf.get_settings import HathorSettings
 from hathor.wallet.keypair import KeyPair
 from hathor.util import not_none
-from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
+from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 from hathor.nanocontracts.blueprints import khensu_manager, dozer_pool_manager
 
 settings = HathorSettings()

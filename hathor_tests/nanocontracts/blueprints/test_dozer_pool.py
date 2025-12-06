@@ -12,7 +12,7 @@ from hathor.nanocontracts.storage import NCStorage
 from hathor.nanocontracts.types import NCAction, NCActionType
 from hathor.util import not_none
 from hathor.wallet import KeyPair
-from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
+from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
 PRECISION = 10**20
 

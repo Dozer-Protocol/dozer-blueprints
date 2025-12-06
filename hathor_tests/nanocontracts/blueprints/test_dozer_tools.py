@@ -44,7 +44,7 @@ from hathor.nanocontracts.types import (
 from hathor.transaction.base_transaction import BaseTransaction
 from hathor.util import not_none
 from hathor.wallet.keypair import KeyPair
-from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
+from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
 
 DOZER_POOL_MANAGER_BLUEPRINT_ID = (

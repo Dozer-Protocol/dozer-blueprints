@@ -8,7 +8,7 @@ from hathor.transaction.token_info import TokenVersion
 from hathor.util import not_none
 from hathor.conf import HathorSettings
 from hathor.wallet import KeyPair
-from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
+from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 from hathor.nanocontracts.context import Context
 from hathor.nanocontracts.exception import NCFail
 

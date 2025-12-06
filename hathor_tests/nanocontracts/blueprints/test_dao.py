@@ -15,7 +15,7 @@ from hathor.nanocontracts.types import (
 )
 from hathor.wallet.keypair import KeyPair
 from hathor.util import not_none
-from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
+from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
 settings = HathorSettings()
 HTR_UID = settings.HATHOR_TOKEN_UID

@@ -15,7 +15,7 @@ from hathor.nanocontracts.types import Address, NCDepositAction, NCWithdrawalAct
 from hathor.transaction.base_transaction import BaseTransaction
 from hathor.util import not_none
 from hathor.wallet import KeyPair
-from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
+from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
 PRECISION = 10**20
 MINIMUM_LIQUIDITY = 10**3

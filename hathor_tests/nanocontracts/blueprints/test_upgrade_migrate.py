@@ -43,13 +43,13 @@ from hathor.nanocontracts.types import (
     TokenUid,
     public,
 )
-from tests.nanocontracts.blueprints.unittest import BlueprintTestCase
+from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
 # Import V2 blueprints
-from tests.nanocontracts.blueprints.v2.crowdsale_v2 import CrowdsaleV2
-from tests.nanocontracts.blueprints.v2.dao_v2 import DAOV2
-from tests.nanocontracts.blueprints.v2.stake_v2 import StakeV2
-from tests.nanocontracts.blueprints.v2.vesting_v2 import VestingV2
+from hathor_tests.nanocontracts.blueprints.v2.crowdsale_v2 import CrowdsaleV2
+from hathor_tests.nanocontracts.blueprints.v2.dao_v2 import DAOV2
+from hathor_tests.nanocontracts.blueprints.v2.stake_v2 import StakeV2
+from hathor_tests.nanocontracts.blueprints.v2.vesting_v2 import VestingV2
 
 
 class UpgradeAndMigrationTest(BlueprintTestCase):
