@@ -22,7 +22,7 @@ from hathor import (
 
 PRECISION = Amount(10**20)
 MINIMUM_LIQUIDITY = Amount(10**3)  # Multiplier for minimum liquidity burn
-MAX_PRICE_IMPACT = Amount(1500)  # 15% in basis points (1500/10000)
+MAX_PRICE_IMPACT = Amount(500)  # 5% in basis points (500/10000) for add/remove liquidity single token
 MAX_POOLS_TO_ITERATE = 1000  # Maximum pools in graph building methods called by public methods to prevent DoS
 
 # Type alias for pool identifier keys
@@ -723,53 +723,6 @@ class DozerPoolManager(Blueprint):
 
         return (fee_amount, liquidity_increase)
 
-    def _get_reserves_for_swap(
-        self, pool_key: PoolKey, token_in: TokenUid
-    ) -> tuple[Amount, Amount, TokenUid]:
-        """Get reserves in the correct order for a swap.
-
-        Args:
-            pool_key: The pool key
-            token_in: The input token
-
-        Returns:
-            A tuple of (reserve_in, reserve_out, token_out)
-        """
-        pool = self.pools[pool_key]
-        if pool.token_a == token_in:
-            return pool.reserve_a, pool.reserve_b, pool.token_b
-        assert pool.token_b == token_in, f"Token {token_in} is not part of pool {pool_key}"
-        return pool.reserve_b, pool.reserve_a, pool.token_a
-
-    def _get_actions_a_b(
-        self, ctx: Context, pool_key: str
-    ) -> tuple[NCAction, NCAction]:
-        """Get and validate token actions for a specific pool.
-
-        Args:
-            ctx: The transaction context
-            pool_key: The pool key
-
-        Returns:
-            A tuple of (action_a, action_b)
-
-        Raises:
-            InvalidTokens: If the actions don't match the pool tokens
-        """
-        pool = self.pools[pool_key]
-        token_a = pool.token_a
-        token_b = pool.token_b
-
-        if set(ctx.actions.keys()) != {token_a, token_b}:
-            raise InvalidTokens("Only token_a and token_b are allowed")
-
-        action_a = ctx.get_single_action(token_a)
-        action_b = ctx.get_single_action(token_b)
-
-        # Update last activity timestamp
-        self._update_pool(pool_key, last_activity=int(ctx.block.timestamp))
-
-        return action_a, action_b
 
     def _get_actions_in_in(
         self, ctx: Context, pool_key: str
@@ -1779,7 +1732,7 @@ class DozerPoolManager(Blueprint):
         Half of the input token is swapped to the other token, then liquidity is added
         using both tokens in the correct ratio.
 
-        The internal swap has a hard-coded maximum price impact of 15% (1500 basis points)
+        The internal swap has a hard-coded maximum price impact of 5% (500 basis points)
         to protect users from excessive losses.
 
         Args:
@@ -1854,7 +1807,7 @@ class DozerPoolManager(Blueprint):
             result.optimal_swap_amount, result.swap_output, reserve_in, reserve_out
         )
         if price_impact > MAX_PRICE_IMPACT:
-            raise InvalidAction("Price impact too high - internal swap exceeds 15% impact")
+            raise InvalidAction("Price impact too high - internal swap exceeds 5% impact")
 
         # Process fees from internal swap (if there was a swap)
         if result.optimal_swap_amount > 0:
@@ -1947,20 +1900,33 @@ class DozerPoolManager(Blueprint):
         if n == 0:
             return Amount(0)
 
-        # Initial guess
-        x = Amount(n)
-        y = Amount((x + 1) // 2)
+        # Special case for small numbers (same as Uniswap V2)
+        if n <= 3:
+            return Amount(1)
+
+        # Newton's method with optimized initial guess
+        # For very large numbers (>128 bits), use bit-length based initial guess
+        # Otherwise use Uniswap V2's approach: n // 2 + 1
+        if n > (1 << 128):
+            # Use bit-length for better initial guess on very large numbers
+            # Initial guess: 2^(ceil(bit_length/2))
+            bit_length = n.bit_length()
+            x = Amount(1 << ((bit_length + 1) // 2))
+            z = Amount(n)
+        else:
+            # Standard Uniswap V2 approach for smaller numbers
+            z = Amount(n)
+            x = Amount(n // 2 + 1)
 
         # Newton's method converges in O(log(log(n)))
-        # For 1024-bit numbers, ~10 iterations needed
-        # Using 500 for extra safety margin
-        max_iterations = 500
+        # With optimized initial guess, ~10-30 iterations needed for very large numbers
+        max_iterations = 200
 
         for iteration in range(max_iterations):
-            if y >= x:
-                return Amount(x)
-            x = y
-            y = Amount((x + n // x) // 2)
+            if x >= z:
+                return Amount(z)
+            z = x
+            x = Amount((n // x + x) // 2)
 
         # Should never reach here for valid inputs
         raise InvalidState(f"Square root calculation did not converge after {max_iterations} iterations")
@@ -2009,9 +1975,10 @@ class DozerPoolManager(Blueprint):
 
         optimal = Amount(numerator // fee_multiplier)
 
-        # Safety check
+        # Safety check: this should never happen with valid inputs
+        # If triggered, indicates overflow, precision error, or invalid state
         if optimal > amount_in:
-            optimal = Amount(amount_in // 2)
+            raise InvalidState(f"Calculated optimal swap amount {optimal} exceeds input amount {amount_in}")
 
         return optimal
 
@@ -2308,7 +2275,7 @@ class DozerPoolManager(Blueprint):
         and receive only one token. The liquidity is partially removed to get
         both tokens, then one token is swapped for the desired output token.
 
-        The internal swap has a hard-coded maximum price impact of 15% (1500 basis points)
+        The internal swap has a hard-coded maximum price impact of 5% (500 basis points)
         to protect users from excessive losses.
 
         Args:
@@ -2412,7 +2379,7 @@ class DozerPoolManager(Blueprint):
                 result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
             )
             if price_impact > MAX_PRICE_IMPACT:
-                raise InvalidAction("Price impact too high - internal swap exceeds 15% impact")
+                raise InvalidAction("Price impact too high - internal swap exceeds 5% impact")
 
             # Process fees from internal swap
             actual_liquidity_increase = self._process_swap_fees(
@@ -2879,6 +2846,9 @@ class DozerPoolManager(Blueprint):
         # Get pool
         pool = self.pools[pool_key]
 
+        # Capture K before swap (should increase due to fees)
+        k_before = Amount(pool.reserve_a * pool.reserve_b)
+
         # Get the pool reserves
         reserve_in = 0
         reserve_out = 0
@@ -2944,6 +2914,11 @@ class DozerPoolManager(Blueprint):
             last_activity=Timestamp(ctx.block.timestamp),
             transactions=Amount(pool.transactions + 1)
         )
+
+        # Verify K invariant (should increase due to swap fees)
+        pool_after = self.pools[pool_key]
+        k_after = Amount(pool_after.reserve_a * pool_after.reserve_b)
+        self._check_k_not_decreased(k_before, k_after, "_swap_exact_out")
 
     def _swap(
         self,
@@ -4167,10 +4142,6 @@ class DozerPoolManager(Blueprint):
         """
         result = []
         for pool_key in self.all_pools:
-            pool = self.pools[pool_key]
-            token_a = pool.token_a.hex()
-            token_b = pool.token_b.hex()
-            fee = pool.fee_numerator
             result.append(pool_key)
         return result
 
@@ -4189,10 +4160,6 @@ class DozerPoolManager(Blueprint):
 
         result = []
         for pool_key in self.token_to_pools[token]:
-            pool = self.pools[pool_key]
-            token_a = pool.token_a.hex()
-            token_b = pool.token_b.hex()
-            fee = pool.fee_numerator
             result.append(pool_key)
         return result
 

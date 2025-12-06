@@ -23,15 +23,29 @@ MINIMUM_LIQUIDITY = 10**3
 HTR_UID = b'\x00'
 
 def isqrt(n):
-    """Integer square root using Newton's method"""
+    """
+    Integer square root using Newton's method (Babylonian algorithm).
+    Matches the contract implementation with optimizations for very large numbers.
+    Returns the largest integer x such that x² ≤ n.
+    """
     if n == 0:
         return 0
-    x = n
-    y = (x + 1) // 2
-    while y < x:
-        x = y
-        y = (x + n // x) // 2
-    return x
+    # Special case for small numbers (same as Uniswap V2)
+    if n <= 3:
+        return 1
+    # Newton's method with optimized initial guess
+    # For very large numbers (>128 bits), use bit-length based initial guess
+    if n > (1 << 128):
+        bit_length = n.bit_length()
+        x = 1 << ((bit_length + 1) // 2)
+        z = n
+    else:
+        z = n
+        x = n // 2 + 1
+    while x < z:
+        z = x
+        x = (n // x + x) // 2
+    return z
 
 def calculate_burned_liquidity(reserve_a, reserve_b):
     """Calculate the minimum liquidity that gets burned on pool creation"""
@@ -596,8 +610,9 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
     def test_add_liquidity_single_token2(self):
         fee = 0
+        # Increased pool reserves 5x to allow amount_in=300 while staying under 5% price impact
         pool_key, _creator_address = self._create_pool(
-            self.token_a, self.token_b, fee=fee, reserve_a=1000, reserve_b=2000
+            self.token_a, self.token_b, fee=fee, reserve_a=5000, reserve_b=10000
         )
 
         amount_in = 300
@@ -660,8 +675,9 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self.assertEqual(total_input_used, amount_in)
 
     def test_remove_liquidity_single_token(self):
+        # Increased pool reserves 10x to allow 100% removal while staying under 5% price impact
         pool_key, _creator_address = self._create_pool(
-            self.token_a, self.token_b, fee=3, reserve_a=10000_00, reserve_b=20000_00
+            self.token_a, self.token_b, fee=3, reserve_a=100000_00, reserve_b=200000_00
         )
 
         _result, add_context = self._add_liquidity(
@@ -677,9 +693,12 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.nc_id, "liquidity_of", add_context.caller_id, pool_key
         )
 
+        # Remove 100% of user's liquidity (user has ~0.5% of pool, so price impact < 1%)
+        removal_percentage = 10000
+
         quote = self.runner.call_view_method(
             self.nc_id, "quote_remove_liquidity_single_token_percentage",
-            add_context.caller_id, pool_key, self.token_a, 10000
+            add_context.caller_id, pool_key, self.token_a, removal_percentage
         )
 
         tx = self._get_any_tx()
@@ -695,7 +714,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         )
 
         amount_out = self.runner.call_public_method(
-            self.nc_id, "remove_liquidity_single_token", context, pool_key, 10000
+            self.nc_id, "remove_liquidity_single_token", context, pool_key, removal_percentage
         )
 
         contract_after = self.get_readonly_contract(self.nc_id)
@@ -942,14 +961,14 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         self._check_balance()
 
     def test_price_impact_boundaries(self):
-        """Test price impact validation at and above 15% threshold."""
-        # MAX_PRICE_IMPACT is 1500 (15%)
+        """Test price impact validation at and above 5% threshold."""
+        # MAX_PRICE_IMPACT is 500 (5%)
         # Create a pool where we can control price impact
         pool_key, _ = self._create_pool(
             self.token_a, self.token_b, fee=0, reserve_a=1000_00, reserve_b=1000_00
         )
 
-        # Test 1: Large amount that should exceed 15% price impact
+        # Test 1: Large amount that should exceed 5% price impact
         # With equal reserves and a very large swap, price impact will be high
         large_amount = 5000_00  # 5x the reserve
 
@@ -997,7 +1016,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Just verify quote works and returns reasonable values
         self.assertGreater(quote.swap_amount, 0, "Swap amount should be positive")
         self.assertGreater(quote.swap_output, 0, "Swap output should be positive")
-        self.assertLess(quote.price_impact, 1500, "Price impact should be below 15% threshold")
+        self.assertLess(quote.price_impact, 500, "Price impact should be below 5% threshold")
 
         self._check_balance()
 
@@ -2098,10 +2117,16 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Test cases with increasingly large numbers
         test_cases = [
-            # Small numbers
+            # Small numbers - edge cases for special handling
             (0, 0),
             (1, 1),
+            (2, 1),  # Edge case: n <= 3 should return 1
+            (3, 1),  # Edge case: n <= 3 should return 1
             (4, 2),
+            (5, 2),  # Non-perfect square
+            (8, 2),  # Non-perfect square
+            (9, 3),  # Perfect square
+            (15, 3),  # Non-perfect square
             (16, 4),
             (100, 10),
             (10000, 100),
@@ -2109,6 +2134,7 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             # Medium numbers (32-bit range)
             (2**32 - 1, 65535),  # Max 32-bit
             (2**40, 2**20),
+            (2**40 - 1, 2**20 - 1),  # Just below perfect square
 
             # Large numbers (128-bit range)
             (2**64, 2**32),
@@ -2129,6 +2155,12 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             # Perfect squares at large scale
             ((2**100) ** 2, 2**100),
             ((10**25) ** 2, 10**25),
+
+            # Non-perfect squares near perfect squares (edge cases)
+            (99, 9),
+            (101, 10),
+            (9999, 99),
+            (10001, 100),
         ]
 
         for n, expected_result in test_cases:
@@ -2144,6 +2176,11 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
                 f"isqrt({n}) = {result}, but {result}^2 = {result*result} > {n}"
             assert (result + 1) * (result + 1) > n, \
                 f"isqrt({n}) = {result}, but ({result}+1)^2 = {(result+1)*(result+1)} <= {n}"
+
+            # Verify helper function matches contract implementation
+            helper_result = isqrt(n)
+            assert result == helper_result, \
+                f"Contract isqrt({n}) = {result}, but helper isqrt({n}) = {helper_result}"
 
         # Test that negative numbers raise assertion
         try:
