@@ -938,15 +938,32 @@ class OasisTestCase(BlueprintTestCase):
             self.oasis_id, "user_info", user_address
         )
 
-        # SECURITY FIX: Withdrawal time cannot be reduced when adding new deposits
-        # The second deposit has a shorter timelock (6 months) but was added after
-        # 3 months, which would normally reduce the weighted average unlock time.
-        # However, our security fix prevents withdrawal time reduction to prevent
-        # bonus gaming attacks.
-        # Expected: withdrawal time remains at the original 12-month lock
-        expected_unlock_time = int(initial_time + (12 * MONTHS_IN_SECONDS))
+        # SECURITY FIX: Minimum 4-month timelock enforced after any deposit to existing position
+        # The second deposit was made at initial_time + 3 months with a 6-month timelock.
+        # The weighted average would be calculated, but then compared against the minimum
+        # 4-month lock from the second deposit time.
 
-        # Verify withdrawal time cannot be reduced
+        # Calculate what the weighted average would be:
+        # - First deposit: 12 months from initial_time
+        # - Second deposit at +3 months: remaining time = 9 months, new lock = 6 months
+        # - Weighted average: (1000 * 9 + 2000 * 6) / 3000 = (9000 + 12000) / 3000 = 7 months
+        # - This would set withdrawal to: (initial_time + 3 months) + 7 months = initial_time + 10 months
+
+        # However, the minimum 4-month timelock from second deposit time must be enforced:
+        # minimum_withdrawal_time = (initial_time + 3 months) + 4 months = initial_time + 7 months
+
+        # Since weighted average (10 months) > minimum (7 months), use weighted average
+        deposit_2_time = initial_time + (3 * MONTHS_IN_SECONDS)
+
+        # Weighted average calculation
+        old_deposit = deposit_1_amount
+        new_deposit = deposit_2_amount
+        remaining_time_at_deposit2 = (initial_time + 12 * MONTHS_IN_SECONDS) - deposit_2_time
+        new_timelock_seconds = 6 * MONTHS_IN_SECONDS
+        weighted_time = (remaining_time_at_deposit2 * old_deposit + new_timelock_seconds * new_deposit) // (old_deposit + new_deposit)
+        expected_unlock_time = int(deposit_2_time + weighted_time + 1)
+
+        # Verify withdrawal time uses weighted average (which is above minimum)
         self.assertEqual(
             user_info.user_withdrawal_time,
             expected_unlock_time,
