@@ -17,8 +17,8 @@ from typing import Any
 from pydantic import Field
 from twisted.web.http import Request
 
+from hathor._openapi.register import register_resource
 from hathor.api_util import Resource, set_cors
-from hathor.cli.openapi_files.register import register_resource
 from hathor.manager import HathorManager
 from hathor.nanocontracts.nc_exec_logs import NCLogLevel
 from hathor.transaction import Transaction
@@ -119,7 +119,8 @@ NCExecLogsResource.openapi = {
         'x-visibility': 'private',
         'x-visibility-override': {
             'nano-testnet-bravo': 'public',
-            'hathor-testnet-india': 'public'
+            'hathor-testnet-india': 'public',
+            'hathor-testnet-playground': 'public',
         },
         'x-rate-limit': {
             'global': [
