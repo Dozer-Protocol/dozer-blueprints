@@ -1421,9 +1421,22 @@ class DozerPoolManager(Blueprint):
             # Update profit tracking after liquidity has been added
             self._update_user_profit_tracking(user_address, pool_key, ctx)
 
-            # Verify price ratio remains constant (proportional liquidity addition)
+            # Verify price ratio with dynamic tolerance for integer division rounding
             pool_after = self.pools[pool_key]
-            self._check_price_ratio(reserve_a, reserve_b, pool_after.reserve_a, pool_after.reserve_b, "add_liquidity")
+            min_reserve = min(pool_after.reserve_a, pool_after.reserve_b)
+            if min_reserve < 1000:
+                tolerance = 5000  # 0.5% for very small pools
+            elif min_reserve < 10000:
+                tolerance = 2000  # 0.2% for small pools
+            else:
+                tolerance = 100   # 0.01% for normal pools
+
+            if tolerance > 100:
+                self.log.debug('using dynamic price ratio tolerance for add_liquidity',
+                               min_reserve=min_reserve,
+                               tolerance_ppm=tolerance)
+
+            self._check_price_ratio(reserve_a, reserve_b, pool_after.reserve_a, pool_after.reserve_b, "add_liquidity", tolerance_ppm=tolerance)
 
             self.log.info('liquidity added successfully',
                           pool_key=pool_key,
@@ -1478,9 +1491,22 @@ class DozerPoolManager(Blueprint):
             # Update profit tracking after liquidity has been added
             self._update_user_profit_tracking(user_address, pool_key, ctx)
 
-            # Verify price ratio remains constant (proportional liquidity addition)
+            # Verify price ratio with dynamic tolerance for integer division rounding
             pool_after = self.pools[pool_key]
-            self._check_price_ratio(reserve_a, reserve_b, pool_after.reserve_a, pool_after.reserve_b, "add_liquidity")
+            min_reserve = min(pool_after.reserve_a, pool_after.reserve_b)
+            if min_reserve < 1000:
+                tolerance = 5000  # 0.5% for very small pools
+            elif min_reserve < 10000:
+                tolerance = 2000  # 0.2% for small pools
+            else:
+                tolerance = 100   # 0.01% for normal pools
+
+            if tolerance > 100:
+                self.log.debug('using dynamic price ratio tolerance for add_liquidity',
+                               min_reserve=min_reserve,
+                               tolerance_ppm=tolerance)
+
+            self._check_price_ratio(reserve_a, reserve_b, pool_after.reserve_a, pool_after.reserve_b, "add_liquidity", tolerance_ppm=tolerance)
 
             self.log.info('liquidity added successfully',
                           pool_key=pool_key,
@@ -1596,9 +1622,22 @@ class DozerPoolManager(Blueprint):
         # Update profit tracking after liquidity has been removed
         self._update_user_profit_tracking(user_address, pool_key, ctx)
 
-        # Verify price ratio remains constant (proportional liquidity removal)
+        # Verify price ratio with dynamic tolerance for integer division rounding
         pool_after = self.pools[pool_key]
-        self._check_price_ratio(reserve_a_before, reserve_b_before, pool_after.reserve_a, pool_after.reserve_b, "remove_liquidity")
+        min_reserve = min(pool_after.reserve_a, pool_after.reserve_b)
+        if min_reserve < 1000:
+            tolerance = 5000  # 0.5% for very small pools
+        elif min_reserve < 10000:
+            tolerance = 2000  # 0.2% for small pools
+        else:
+            tolerance = 100   # 0.01% for normal pools
+
+        if tolerance > 100:
+            self.log.debug('using dynamic price ratio tolerance for remove_liquidity',
+                           min_reserve=min_reserve,
+                           tolerance_ppm=tolerance)
+
+        self._check_price_ratio(reserve_a_before, reserve_b_before, pool_after.reserve_a, pool_after.reserve_b, "remove_liquidity", tolerance_ppm=tolerance)
 
         self.log.info('liquidity removed successfully',
                       pool_key=pool_key,

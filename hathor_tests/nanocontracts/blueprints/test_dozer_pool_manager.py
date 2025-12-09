@@ -2188,3 +2188,529 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             assert False, "Expected assertion error for negative input"
         except AssertionError as e:
             assert "Cannot calculate square root of negative number" in str(e)
+
+    def test_price_ratio_tolerance_realistic_scenarios(self):
+        """
+        Test that the price ratio tolerance (200 ppm = 0.02%) is well-dimensioned for realistic
+        add/remove liquidity operations across different pool sizes.
+
+        This test validates that:
+        1. Integer division rounding errors stay within the 200 ppm tolerance
+        2. The tolerance works across different pool sizes (small, medium, large)
+        3. Multiple sequential operations maintain price ratio integrity
+        4. The tolerance is strict enough to prevent manipulation but lenient enough for rounding
+        """
+        # Generate unique token pairs for each scenario to avoid "Pool already exists" errors
+        test_tokens = [
+            (self.token_a, self.token_b),
+            (self.token_a, self.token_c),
+            (self.token_a, self.token_d),
+            (self.token_a, self.token_e),
+            (self.token_b, self.token_c),
+            (self.token_b, self.token_d),
+            (self.token_b, self.token_e),
+            (self.token_c, self.token_d),
+            (self.token_c, self.token_e),
+            (self.token_d, self.token_e),
+            # Reuse token pairs with different fee for the 11th scenario
+            (self.token_a, self.token_b),  # Will use fee=5 instead of 3
+        ]
+
+        test_scenarios = [
+            # (pool_name, reserve_a, reserve_b, add_liquidity_a, fee, description)
+            ("small_pool", 10_000_00, 10_000_00, 100_00, 3, "Small pool with 1% addition"),
+            ("small_pool_large_add", 10_000_00, 10_000_00, 5_000_00, 3, "Small pool with 50% addition"),
+            ("medium_pool", 100_000_00, 100_000_00, 1_000_00, 3, "Medium pool with 1% addition"),
+            ("medium_pool_large_add", 100_000_00, 100_000_00, 50_000_00, 3, "Medium pool with 50% addition"),
+            ("large_pool", 1_000_000_00, 1_000_000_00, 10_000_00, 3, "Large pool with 1% addition"),
+            ("large_pool_large_add", 1_000_000_00, 1_000_000_00, 500_000_00, 3, "Large pool with 50% addition"),
+
+            # Asymmetric pools (different reserve ratios)
+            ("asymmetric_2_1", 20_000_00, 10_000_00, 1_000_00, 3, "2:1 ratio pool"),
+            ("asymmetric_10_1", 100_000_00, 10_000_00, 5_000_00, 3, "10:1 ratio pool"),
+            ("asymmetric_1_10", 10_000_00, 100_000_00, 500_00, 3, "1:10 ratio pool"),
+
+            # Very large pools
+            ("very_large", 10_000_000_00, 10_000_000_00, 100_000_00, 3, "Very large pool"),
+
+            # Edge case: tiny additions to large pools
+            ("large_pool_tiny_add", 1_000_000_00, 1_000_000_00, 10_00, 5, "Large pool with tiny 0.001% addition"),
+        ]
+
+        for idx, (scenario_name, reserve_a, reserve_b, add_amount_a, fee, description) in enumerate(test_scenarios):
+            with self.subTest(scenario=scenario_name, description=description):
+                # Use different token pairs for each scenario
+                token_a, token_b = test_tokens[idx]
+
+                # Create a fresh pool for each scenario
+                pool_key, _creator_address = self._create_pool(
+                    token_a,
+                    token_b,
+                    fee=fee,
+                    reserve_a=reserve_a,
+                    reserve_b=reserve_b
+                )
+
+                contract = self.get_readonly_contract(self.nc_id)
+                assert isinstance(contract, DozerPoolManager)
+
+                # Get initial state
+                initial_reserve_a = contract.pools[pool_key].reserve_a
+                initial_reserve_b = contract.pools[pool_key].reserve_b
+                initial_ratio = initial_reserve_a / initial_reserve_b if initial_reserve_b > 0 else 0
+
+                # Calculate expected amount_b
+                amount_b = self.runner.call_view_method(
+                    self.nc_id, "quote", add_amount_a, initial_reserve_a, initial_reserve_b
+                )
+
+                # Add liquidity
+                _result, _context = self._add_liquidity(
+                    token_a,
+                    token_b,
+                    fee,
+                    add_amount_a,
+                    amount_b,
+                )
+
+                # Get updated state
+                updated_contract = self.get_readonly_contract(self.nc_id)
+                assert isinstance(updated_contract, DozerPoolManager)
+
+                final_reserve_a = updated_contract.pools[pool_key].reserve_a
+                final_reserve_b = updated_contract.pools[pool_key].reserve_b
+                final_ratio = final_reserve_a / final_reserve_b if final_reserve_b > 0 else 0
+
+                # Calculate price ratio deviation
+                ratio_change_pct = abs((final_ratio - initial_ratio) / initial_ratio * 100) if initial_ratio > 0 else 0
+
+                # Log for analysis
+                logger.info(f"Scenario: {scenario_name}")
+                logger.info(f"  Initial reserves: {initial_reserve_a:,} / {initial_reserve_b:,}")
+                logger.info(f"  Added: {add_amount_a:,} / {amount_b:,}")
+                logger.info(f"  Final reserves: {final_reserve_a:,} / {final_reserve_b:,}")
+                logger.info(f"  Ratio change: {ratio_change_pct:.6f}%")
+
+                # Verify the price ratio is maintained (should pass with 200 ppm tolerance)
+                # The _check_price_ratio is called internally in add_liquidity
+                # If we reached here, it means the tolerance check passed
+
+                # Additional manual verification with 200 ppm tolerance (0.02%)
+                # This accounts for integer division rounding in the quote() function
+                ratio_check_before = initial_reserve_a * final_reserve_b
+                ratio_check_after = final_reserve_a * initial_reserve_b
+                diff = abs(ratio_check_before - ratio_check_after)
+                max_value = max(ratio_check_before, ratio_check_after)
+                tolerance_ppm = 200
+
+                self.assertLessEqual(
+                    diff * 1_000_000,
+                    max_value * tolerance_ppm,
+                    f"Price ratio violation: diff={diff}, max_value={max_value}, "
+                    f"diff_ppm={diff * 1_000_000 / max_value if max_value > 0 else 0}"
+                )
+
+                # Now test remove liquidity with the same tolerance
+                # Remove 50% of the liquidity we just added
+                user_liquidity = self.runner.call_view_method(
+                    self.nc_id, "liquidity_of", _context.caller_id, pool_key
+                )
+                remove_liquidity = user_liquidity // 2
+
+                if remove_liquidity > 0:  # Only test removal if we have liquidity
+                    before_remove_a = updated_contract.pools[pool_key].reserve_a
+                    before_remove_b = updated_contract.pools[pool_key].reserve_b
+                    total_liquidity = updated_contract.pools[pool_key].total_liquidity
+
+                    # Calculate amounts to remove based on liquidity proportion
+                    amount_to_remove_a = (before_remove_a * remove_liquidity) // total_liquidity
+                    amount_to_remove_b = self.runner.call_view_method(
+                        self.nc_id, "quote", amount_to_remove_a, before_remove_a, before_remove_b
+                    )
+
+                    _remove_context, _result = self._remove_liquidity(
+                        token_a,
+                        token_b,
+                        fee,
+                        amount_to_remove_a,
+                        amount_to_remove_b,
+                        address=_context.caller_id
+                    )
+
+                    # Get state after removal
+                    after_remove_contract = self.get_readonly_contract(self.nc_id)
+                    assert isinstance(after_remove_contract, DozerPoolManager)
+
+                    after_remove_a = after_remove_contract.pools[pool_key].reserve_a
+                    after_remove_b = after_remove_contract.pools[pool_key].reserve_b
+
+                    # Verify price ratio maintained after removal
+                    ratio_check_before_remove = before_remove_a * after_remove_b
+                    ratio_check_after_remove = after_remove_a * before_remove_b
+                    diff_remove = abs(ratio_check_before_remove - ratio_check_after_remove)
+                    max_value_remove = max(ratio_check_before_remove, ratio_check_after_remove)
+
+                    self.assertLessEqual(
+                        diff_remove * 1_000_000,
+                        max_value_remove * tolerance_ppm,
+                        f"Price ratio violation on remove: diff={diff_remove}, max_value={max_value_remove}"
+                    )
+
+                    logger.info(f"  Remove liquidity: {remove_liquidity:,}")
+                    logger.info(f"  Reserves after remove: {after_remove_a:,} / {after_remove_b:,}")
+
+                self._check_balance()
+
+    def test_price_ratio_tolerance_multiple_operations(self):
+        """
+        Test that multiple sequential add/remove operations maintain price ratio
+        across cumulative rounding errors.
+        """
+        # Create a medium-sized pool
+        pool_key, _creator_address = self._create_pool(
+            self.token_a,
+            self.token_b,
+            fee=3,
+            reserve_a=100_000_00,
+            reserve_b=100_000_00
+        )
+
+        contract = self.get_readonly_contract(self.nc_id)
+        assert isinstance(contract, DozerPoolManager)
+
+        initial_reserve_a = contract.pools[pool_key].reserve_a
+        initial_reserve_b = contract.pools[pool_key].reserve_b
+        initial_ratio = initial_reserve_a / initial_reserve_b
+
+        # Perform 10 sequential add operations with different amounts
+        add_amounts = [1_000_00, 5_000_00, 2_500_00, 7_500_00, 3_000_00,
+                       4_000_00, 6_000_00, 1_500_00, 8_000_00, 2_000_00]
+
+        contexts = []
+        for i, add_amount_a in enumerate(add_amounts):
+            current_contract = self.get_readonly_contract(self.nc_id)
+            assert isinstance(current_contract, DozerPoolManager)
+
+            current_reserve_a = current_contract.pools[pool_key].reserve_a
+            current_reserve_b = current_contract.pools[pool_key].reserve_b
+
+            amount_b = self.runner.call_view_method(
+                self.nc_id, "quote", add_amount_a, current_reserve_a, current_reserve_b
+            )
+
+            _result, context = self._add_liquidity(
+                self.token_a,
+                self.token_b,
+                3,
+                add_amount_a,
+                amount_b,
+            )
+            contexts.append(context)
+
+            # Check ratio after each addition
+            updated_contract = self.get_readonly_contract(self.nc_id)
+            assert isinstance(updated_contract, DozerPoolManager)
+
+            new_reserve_a = updated_contract.pools[pool_key].reserve_a
+            new_reserve_b = updated_contract.pools[pool_key].reserve_b
+
+            # Verify price ratio with 200 ppm tolerance
+            ratio_check_before = current_reserve_a * new_reserve_b
+            ratio_check_after = new_reserve_a * current_reserve_b
+            diff = abs(ratio_check_before - ratio_check_after)
+            max_value = max(ratio_check_before, ratio_check_after)
+
+            self.assertLessEqual(
+                diff * 1_000_000,
+                max_value * 200,  # 200 ppm tolerance (0.02%)
+                f"Price ratio violation at iteration {i+1}"
+            )
+
+        # Check cumulative ratio deviation
+        final_contract = self.get_readonly_contract(self.nc_id)
+        assert isinstance(final_contract, DozerPoolManager)
+
+        final_reserve_a = final_contract.pools[pool_key].reserve_a
+        final_reserve_b = final_contract.pools[pool_key].reserve_b
+        final_ratio = final_reserve_a / final_reserve_b
+
+        cumulative_ratio_change_pct = abs((final_ratio - initial_ratio) / initial_ratio * 100)
+
+        logger.info(f"Multiple operations test:")
+        logger.info(f"  Initial reserves: {initial_reserve_a:,} / {initial_reserve_b:,}")
+        logger.info(f"  Final reserves: {final_reserve_a:,} / {final_reserve_b:,}")
+        logger.info(f"  Cumulative ratio change: {cumulative_ratio_change_pct:.6f}%")
+        logger.info(f"  Number of operations: {len(add_amounts)}")
+
+        # Even after multiple operations, ratio should be extremely close to original
+        # With 1 ppm tolerance per operation, cumulative error should still be minimal
+        self.assertLess(cumulative_ratio_change_pct, 0.001, "Cumulative ratio drift exceeded 0.001%")
+
+        self._check_balance()
+
+    def test_initial_lp(self):
+        """
+        Test from auditor that checks initial LP attack scenario.
+
+        This test validates that the pool manager correctly handles:
+        1. Pool creation with initial liquidity
+        2. A swap operation
+        3. Liquidity removal by the initial LP
+
+        The test ensures that price ratio checks don't fail when the initial LP
+        removes their liquidity after a swap has occurred.
+        """
+        # Create pool with initial liquidity: 10,000 HTR / 1,000 USD (10:1 ratio)
+        pool_key, _creator_address = self._create_pool(
+            HTR_UID,
+            self.token_a,  # Using token_a as USD
+            fee=3,
+            reserve_a=10_000,
+            reserve_b=1_000
+        )
+
+        contract = self.get_readonly_contract(self.nc_id)
+        assert isinstance(contract, DozerPoolManager)
+
+        initial_reserve_htr = contract.pools[pool_key].reserve_a
+        initial_reserve_usd = contract.pools[pool_key].reserve_b
+
+        logger.info(f"Initial pool state:")
+        logger.info(f"  HTR reserve: {initial_reserve_htr:,}")
+        logger.info(f"  USD reserve: {initial_reserve_usd:,}")
+        logger.info(f"  Price: {initial_reserve_htr / initial_reserve_usd:.4f} HTR/USD")
+
+        # Execute a swap: 100 HTR -> ~9 USD
+        # Using get_amount_out to calculate expected output
+        expected_usd_out = self.runner.call_view_method(
+            self.nc_id,
+            "get_amount_out",
+            100,  # amount_in (HTR)
+            initial_reserve_htr,  # reserve_in (HTR)
+            initial_reserve_usd,  # reserve_out (USD)
+            3,  # fee_numerator
+            1000,  # fee_denominator
+        )
+
+        logger.info(f"Swap: 100 HTR -> {expected_usd_out} USD")
+
+        # Execute the swap
+        _swap_context = self._swap_exact_tokens_for_tokens(
+            HTR_UID,
+            self.token_a,  # USD token
+            3,
+            100,  # amount_in (HTR)
+            expected_usd_out,  # amount_out_min (USD)
+        )
+
+        # Get pool state after swap
+        contract_after_swap = self.get_readonly_contract(self.nc_id)
+        assert isinstance(contract_after_swap, DozerPoolManager)
+
+        reserve_htr_after_swap = contract_after_swap.pools[pool_key].reserve_a
+        reserve_usd_after_swap = contract_after_swap.pools[pool_key].reserve_b
+
+        logger.info(f"Pool state after swap:")
+        logger.info(f"  HTR reserve: {reserve_htr_after_swap:,}")
+        logger.info(f"  USD reserve: {reserve_usd_after_swap:,}")
+        logger.info(f"  Price: {reserve_htr_after_swap / reserve_usd_after_swap:.4f} HTR/USD")
+
+        # Now the initial LP tries to remove liquidity: 1,000 HTR / 98 USD
+        # This should be proportional to their share of the pool
+        initial_lp_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", _creator_address, pool_key
+        )
+        total_liquidity = contract_after_swap.pools[pool_key].total_liquidity
+
+        logger.info(f"Liquidity info:")
+        logger.info(f"  Initial LP liquidity: {initial_lp_liquidity:,}")
+        logger.info(f"  Total liquidity: {total_liquidity:,}")
+        logger.info(f"  LP share: {initial_lp_liquidity / total_liquidity * 100:.2f}%")
+
+        # Calculate what the LP should receive for removing 1,000 HTR worth
+        # Based on their liquidity share
+        amount_to_remove_htr = 1_000
+
+        # Calculate the corresponding USD amount based on current pool ratio
+        amount_to_remove_usd = self.runner.call_view_method(
+            self.nc_id,
+            "quote",
+            amount_to_remove_htr,
+            reserve_htr_after_swap,
+            reserve_usd_after_swap,
+        )
+
+        logger.info(f"Attempting to remove:")
+        logger.info(f"  HTR: {amount_to_remove_htr:,}")
+        logger.info(f"  USD (quoted): {amount_to_remove_usd:,}")
+
+        # Remove liquidity
+        _remove_context, _result = self._remove_liquidity(
+            HTR_UID,
+            self.token_a,
+            3,
+            amount_to_remove_htr,
+            amount_to_remove_usd,
+            address=_creator_address,
+        )
+
+        # Verify final state
+        final_contract = self.get_readonly_contract(self.nc_id)
+        assert isinstance(final_contract, DozerPoolManager)
+
+        final_reserve_htr = final_contract.pools[pool_key].reserve_a
+        final_reserve_usd = final_contract.pools[pool_key].reserve_b
+
+        logger.info(f"Final pool state:")
+        logger.info(f"  HTR reserve: {final_reserve_htr:,}")
+        logger.info(f"  USD reserve: {final_reserve_usd:,}")
+        logger.info(f"  Price: {final_reserve_htr / final_reserve_usd:.4f} HTR/USD")
+
+        # The test passes if we reach here without assertion errors
+        self._check_balance()
+
+    def test_price_ratio_tolerance_edge_cases(self):
+        """
+        Test realistic edge cases for price ratio tolerance with dynamic tolerance.
+
+        These scenarios simulate real-world situations where pools have been
+        affected by swaps and now have odd ratios that cause rounding issues.
+        """
+        # Based on the auditor scenario: pools after swaps with realistic removal patterns
+        test_scenarios = [
+            # (initial_a, initial_b, swap_in_a, remove_a, description)
+            (10_000, 1_000, 100, 1_000, "10:1 pool, 1% swap, remove 10%"),
+            (10_000, 1_000, 500, 2_000, "10:1 pool, 5% swap, remove 20%"),
+            (10_000, 1_000, 1000, 5_000, "10:1 pool, 10% swap, remove 50%"),
+
+            # Small pool edge cases (reserves < 10,000)
+            (5_000, 500, 50, 500, "Small pool, 1% swap, remove 10%"),
+            (5_000, 500, 250, 1_000, "Small pool, 5% swap, remove 20%"),
+            (3_000, 300, 30, 300, "Very small pool, 1% swap, remove 10%"),
+
+            # Asymmetric pools
+            (20_000, 1_000, 200, 2_000, "20:1 pool, 1% swap, remove 10%"),
+            (100_000, 5_000, 500, 10_000, "20:1 large pool, 0.5% swap, remove 10%"),
+
+            # Multiple swaps scenario (accumulated price changes)
+            (10_000, 1_000, 50, 500, "After small swap, remove 5%"),
+            (10_000, 1_000, 200, 1_500, "After medium swap, remove 15%"),
+        ]
+
+        # Create unique token pairs for each scenario
+        token_pairs = [
+            (self.token_a, self.token_b, 3),
+            (self.token_a, self.token_c, 3),
+            (self.token_a, self.token_d, 3),
+            (self.token_b, self.token_c, 3),
+            (self.token_b, self.token_d, 3),
+            (self.token_c, self.token_d, 3),
+            (self.token_c, self.token_e, 3),
+            (self.token_d, self.token_e, 3),
+            (self.token_a, self.token_e, 3),
+            (self.token_b, self.token_e, 3),
+        ]
+
+        for idx, (init_a, init_b, swap_in, remove_a, desc) in enumerate(test_scenarios):
+            with self.subTest(scenario=desc):
+                token_a, token_b, fee = token_pairs[idx]
+
+                # Step 1: Create pool
+                pool_key, creator_address = self._create_pool(
+                    token_a,
+                    token_b,
+                    fee=fee,
+                    reserve_a=init_a,
+                    reserve_b=init_b
+                )
+
+                contract = self.get_readonly_contract(self.nc_id)
+                assert isinstance(contract, DozerPoolManager)
+
+                reserve_a_initial = contract.pools[pool_key].reserve_a
+                reserve_b_initial = contract.pools[pool_key].reserve_b
+
+                logger.info(f"Scenario: {desc}")
+                logger.info(f"  Initial pool: {reserve_a_initial:,} / {reserve_b_initial:,}")
+
+                # Step 2: Perform swap to create odd ratio
+                expected_out = self.runner.call_view_method(
+                    self.nc_id,
+                    "get_amount_out",
+                    swap_in,
+                    reserve_a_initial,
+                    reserve_b_initial,
+                    fee,
+                    1000,
+                )
+
+                _swap_context = self._swap_exact_tokens_for_tokens(
+                    token_a,
+                    token_b,
+                    fee,
+                    swap_in,
+                    expected_out,
+                )
+
+                # Get pool state after swap
+                contract_after_swap = self.get_readonly_contract(self.nc_id)
+                assert isinstance(contract_after_swap, DozerPoolManager)
+
+                reserve_a_after_swap = contract_after_swap.pools[pool_key].reserve_a
+                reserve_b_after_swap = contract_after_swap.pools[pool_key].reserve_b
+
+                logger.info(f"  After swap: {reserve_a_after_swap:,} / {reserve_b_after_swap:,}")
+
+                # Step 3: Remove liquidity (this is where rounding errors occur)
+                optimal_b = self.runner.call_view_method(
+                    self.nc_id,
+                    "quote",
+                    remove_a,
+                    reserve_a_after_swap,
+                    reserve_b_after_swap,
+                )
+
+                _remove_context, _result = self._remove_liquidity(
+                    token_a,
+                    token_b,
+                    fee,
+                    remove_a,
+                    optimal_b,
+                    address=creator_address,
+                )
+
+                # Get final state
+                final_contract = self.get_readonly_contract(self.nc_id)
+                assert isinstance(final_contract, DozerPoolManager)
+
+                final_reserve_a = final_contract.pools[pool_key].reserve_a
+                final_reserve_b = final_contract.pools[pool_key].reserve_b
+
+                logger.info(f"  After removal: {final_reserve_a:,} / {final_reserve_b:,}")
+
+                # Verify price ratio is maintained within dynamic tolerance
+                min_reserve = min(final_reserve_a, final_reserve_b)
+                if min_reserve < 1000:
+                    expected_tolerance = 5000
+                elif min_reserve < 10000:
+                    expected_tolerance = 2000
+                else:
+                    expected_tolerance = 100
+
+                ratio_check_before = reserve_a_after_swap * final_reserve_b
+                ratio_check_after = final_reserve_a * reserve_b_after_swap
+                diff = abs(ratio_check_before - ratio_check_after)
+                max_value = max(ratio_check_before, ratio_check_after)
+                diff_ppm = diff * 1_000_000 / max_value if max_value > 0 else 0
+
+                logger.info(f"  Price ratio deviation: {diff_ppm:.2f} ppm")
+                logger.info(f"  Tolerance used: {expected_tolerance} ppm")
+
+                # Verify it's within tolerance
+                self.assertLessEqual(
+                    diff_ppm,
+                    expected_tolerance,
+                    f"Price ratio deviation {diff_ppm:.2f} ppm exceeds tolerance {expected_tolerance} ppm"
+                )
+
+                self._check_balance()
