@@ -601,9 +601,6 @@ class DozerPoolManager(Blueprint):
         action_a = self._get_deposit_action(ctx, token_a)
         action_b = self._get_deposit_action(ctx, token_b)
 
-        # Update last activity timestamp
-        self._update_pool(pool_key, last_activity=int(ctx.block.timestamp))
-
         return action_a, action_b
 
     def _get_actions_out_out(
@@ -620,9 +617,6 @@ class DozerPoolManager(Blueprint):
         # Get and validate withdrawal actions using helper
         action_a = self._get_withdrawal_action(ctx, token_a)
         action_b = self._get_withdrawal_action(ctx, token_b)
-
-        # Update last activity timestamp
-        self._update_pool(pool_key, last_activity=int(ctx.block.timestamp))
 
         return action_a, action_b
 
@@ -656,10 +650,10 @@ class DozerPoolManager(Blueprint):
         action_2 = ctx.get_single_action(token_2)
 
         # Determine which is deposit and which is withdrawal
-        if action_1.type == NCActionType.DEPOSIT and action_2.type == NCActionType.WITHDRAWAL:
-            return self._get_deposit_action(ctx, token_1), self._get_withdrawal_action(ctx, token_2)
-        elif action_2.type == NCActionType.DEPOSIT and action_1.type == NCActionType.WITHDRAWAL:
-            return self._get_deposit_action(ctx, token_2), self._get_withdrawal_action(ctx, token_1)
+        if isinstance(action_1, NCDepositAction) and isinstance(action_2, NCWithdrawalAction):
+            return action_1, action_2
+        elif isinstance(action_2, NCDepositAction) and isinstance(action_1, NCWithdrawalAction):
+            return action_2, action_1
         else:
             raise InvalidAction("Must have one deposit and one withdrawal")
 
@@ -732,12 +726,10 @@ class DozerPoolManager(Blueprint):
         self, pool: PoolState, token_in: TokenUid
     ) -> tuple[Amount, Amount, TokenUid]:
         """Get (reserve_in, reserve_out, token_out) for token_in, raise InvalidTokens if not in pool."""
-        if pool.token_a == token_in:
-            return pool.reserve_a, pool.reserve_b, pool.token_b
-        elif pool.token_b == token_in:
-            return pool.reserve_b, pool.reserve_a, pool.token_a
-        else:
+        result = self._try_resolve_token_direction(pool, token_in)
+        if result is None:
             raise InvalidTokens(f"Token {token_in} not in pool")
+        return result
 
     def _try_resolve_token_direction(
         self, pool: PoolState, token_in: TokenUid
@@ -1422,7 +1414,8 @@ class DozerPoolManager(Blueprint):
                 pool_key,
                 total_liquidity=Amount(pool.total_liquidity + liquidity_increase),
                 reserve_a=Amount(pool.reserve_a + action_a_amount),
-                reserve_b=Amount(pool.reserve_b + optimal_b)
+                reserve_b=Amount(pool.reserve_b + optimal_b),
+                last_activity=Timestamp(ctx.block.timestamp)
             )
 
             # Update profit tracking after liquidity has been added
@@ -1478,7 +1471,8 @@ class DozerPoolManager(Blueprint):
                 pool_key,
                 total_liquidity=Amount(pool.total_liquidity + liquidity_increase),
                 reserve_a=Amount(pool.reserve_a + optimal_a),
-                reserve_b=Amount(pool.reserve_b + action_b_amount)
+                reserve_b=Amount(pool.reserve_b + action_b_amount),
+                last_activity=Timestamp(ctx.block.timestamp)
             )
 
             # Update profit tracking after liquidity has been added
@@ -1595,7 +1589,8 @@ class DozerPoolManager(Blueprint):
             pool_key,
             total_liquidity=Amount(pool.total_liquidity - liquidity_decrease),
             reserve_a=Amount(pool.reserve_a - action_a_amount),
-            reserve_b=Amount(pool.reserve_b - optimal_b)
+            reserve_b=Amount(pool.reserve_b - optimal_b),
+            last_activity=Timestamp(ctx.block.timestamp)
         )
 
         # Update profit tracking after liquidity has been removed

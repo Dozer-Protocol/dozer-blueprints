@@ -1830,7 +1830,8 @@ class OasisTestCase(BlueprintTestCase):
             self.dozer_manager_id, "add_liquidity", add_liquidity_ctx, self.pool_fee
         )
 
-        # Execute swaps to crash token B price
+        # Execute swaps to crash HTR price (relative to token_b)
+        # By adding HTR to the pool, HTR becomes cheaper relative to token_b
         for _ in range(50):
             dozer_contract_swap = self.get_readonly_contract(self.dozer_manager_id)
             assert isinstance(dozer_contract_swap, DozerPoolManager)
@@ -1838,8 +1839,8 @@ class OasisTestCase(BlueprintTestCase):
             reserve_a = pool_swap.reserve_a
             reserve_b = pool_swap.reserve_b
 
-            # To drive token_b price DOWN, we need to swap HTR FOR token_b
-            # (not token_b for HTR as the original code does)
+            # To crash HTR price, we swap HTR FOR token_b
+            # This increases HTR supply in pool, decreasing its relative value
             swap_amount = reserve_a // 20  # Swap 5% of HTR each time
             amount_out = self.runner.call_view_method(
                 self.dozer_manager_id, "get_amount_out", swap_amount, reserve_a, reserve_b, self.pool_fee, 1000
@@ -1875,9 +1876,11 @@ class OasisTestCase(BlueprintTestCase):
         self.assertEqual(user_info.position_closed, True)
         self.assertEqual(user_info.user_liquidity, 0)
 
-        # Since token B crashed in value, we expect:
+        # Since HTR crashed in value relative to token_b, the LP rebalanced
+        # to hold fewer token_b (and more HTR). IL protection compensates the
+        # token_b quantity difference:
         # 1. closed_balance_b should be approximately equal to expected_user_lp_b
-        # 2. closed_balance_a should include bonus + LP HTR + loss compensation
+        # 2. closed_balance_a should include bonus + IL compensation in HTR
 
         self.assertLess(user_info.closed_balance_b, deposit_amount)
 
@@ -2000,7 +2003,8 @@ class OasisTestCase(BlueprintTestCase):
 
         pool_key = self._get_pool_key()
 
-        # Execute swaps to increase token_b price (swap token_b FOR HTR)
+        # Execute swaps to increase HTR price (swap token_b FOR HTR)
+        # By removing HTR from the pool, HTR becomes more expensive relative to token_b
         for _ in range(50):
             dozer_contract_swap = self.get_readonly_contract(self.dozer_manager_id)
             assert isinstance(dozer_contract_swap, DozerPoolManager)
@@ -2039,7 +2043,8 @@ class OasisTestCase(BlueprintTestCase):
         self.assertEqual(user_info.position_closed, True)
         self.assertEqual(user_info.user_liquidity, 0)
 
-        # Token_b price increased, so user should get more token_b back
+        # HTR price increased, so LP rebalanced to hold more token_b (and less HTR)
+        # User gets more token_b back, no IL protection needed
         self.assertGreater(user_info.closed_balance_b, deposit_amount * 0.9)
 
         self.assertAlmostEqual(
@@ -2048,7 +2053,8 @@ class OasisTestCase(BlueprintTestCase):
             delta=expected_user_lp_b * 0.01,
         )
 
-        # When token_b appreciates, there's no impermanent loss, so closed_balance_a equals bonus
+        # When HTR appreciates, user gets more token_b than deposited,
+        # so no IL compensation is triggered - user just receives the bonus
         self.assertGreaterEqual(user_info.closed_balance_a, bonus)
 
         self.check_balances([user_address])
