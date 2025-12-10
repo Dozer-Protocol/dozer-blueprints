@@ -1097,7 +1097,7 @@ class OasisTestCase(BlueprintTestCase):
             self.oasis_id, "user_info", self.dev_address
         )
 
-        expected_fee = (deposit_amount * test_fee) // 1000
+        expected_fee = (deposit_amount * test_fee + 999) // 1000
         expected_deposit = deposit_amount - expected_fee
 
         self.assertEqual(user_info.user_deposit_b, expected_deposit)

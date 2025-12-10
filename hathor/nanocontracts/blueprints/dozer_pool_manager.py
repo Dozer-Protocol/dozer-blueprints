@@ -1647,7 +1647,7 @@ class DozerPoolManager(Blueprint):
                       amount_b_withdrawn=optimal_b,
                       change_b=change)
 
-        return (pool.token_a, change)
+        return (pool.token_b, change)
 
     @public(allow_deposit=True)
     def add_liquidity_single_token(

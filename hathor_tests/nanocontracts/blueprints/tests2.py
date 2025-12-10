@@ -272,7 +272,7 @@ class TestDozerPoolManager(BlueprintTestCase):
             token_a=self.token_a, token_b=self.token_b, fee=fee2, amount_a=reserve_a1 - reserve_a2,
             amount_b=reserve_b1 - reserve_b2 - 22, address=adder,
         )
-        assert token_uid == self.token_a  # TODO: Should be token_b?
+        assert token_uid == self.token_b
         assert amount == 22
 
         # Removed liquidity from pool2 so it should be equivalent to the starting state
