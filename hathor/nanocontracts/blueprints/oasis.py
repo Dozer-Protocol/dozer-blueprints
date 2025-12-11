@@ -138,10 +138,10 @@ class Oasis(Blueprint):
     ) -> None:
         """Initialize the contract with dozer pool manager set."""
         self.contract_version = "1.0.0"
-        action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
+        action = self._get_single_token_action(ctx, NCActionType.DEPOSIT, TokenUid(HATHOR_TOKEN_UID), auth=False)
 
-        if action.amount < MIN_DEPOSIT or action.token_uid != HATHOR_TOKEN_UID:
-            raise NCFail("Deposit amount too low or token not HATHOR")
+        if action.amount < MIN_DEPOSIT:
+            raise NCFail("Deposit amount too low")
         if protocol_fee < 0 or protocol_fee > 1000:
             raise NCFail("Protocol fee must be between 0 and 1000")
 
@@ -187,12 +187,10 @@ class Oasis(Blueprint):
 
     @public(allow_deposit=True)
     def owner_deposit(self, ctx: Context) -> None:
-        action = self._get_action(ctx, NCActionType.DEPOSIT, auth=False)
+        action = self._get_single_token_action(ctx, NCActionType.DEPOSIT, TokenUid(HATHOR_TOKEN_UID), auth=False)
 
         if Address(ctx.caller_id) not in [self.dev_address, self.owner_address]:
             raise NCFail("Only dev or owner can deposit")
-        if action.token_uid != HATHOR_TOKEN_UID:
-            raise NCFail("Deposit token not HATHOR")
 
         self.oasis_htr_balance = Amount(self.oasis_htr_balance + action.amount)
         self.dev_deposit_amount = Amount(self.dev_deposit_amount + action.amount)
@@ -215,15 +213,9 @@ class Oasis(Blueprint):
         caller = Address(ctx.caller_id)
         self._check_not_paused(ctx)
 
-        if len(ctx.actions) != 1:
-            raise NCFail("Expected exactly 1 action")
-
-        action = self._get_token_action(
+        action = self._get_single_token_action(
             ctx, NCActionType.DEPOSIT, self.token_b, auth=False
         )
-
-        if action.token_uid != self.token_b:
-            raise NCFail("Deposit token not B")
 
         # Multiple deposits are allowed before closing. However, once a position is closed,
         # new deposits are blocked to prevent the complexity of mixing closed withdrawal
@@ -373,16 +365,10 @@ class Oasis(Blueprint):
         if self.user_liquidity.get(caller, 0) == 0:
             raise NCFail("No position to close")
 
-        oasis_quote = self._quote_remove_liquidity_oasis()
-        htr_oasis_amount = oasis_quote.max_withdraw_a
-        user_liquidity = self.user_liquidity.get(caller, 0)
-
-        if self.total_liquidity > 0:
-            user_lp_htr = (user_liquidity * htr_oasis_amount) // self.total_liquidity
-        else:
-            user_lp_htr = 0
-
-        user_lp_b = self._quote_token_b_from_htr(user_lp_htr)
+        oasis_quote = self._calculate_position_closure(caller)
+        user_lp_htr = oasis_quote.user_lp_htr
+        user_lp_b = oasis_quote.user_lp_b
+        loss_htr = oasis_quote.loss_htr
 
         # Create actions to remove liquidity
         actions:list[NCAction] = [
@@ -390,30 +376,6 @@ class Oasis(Blueprint):
             NCWithdrawalAction(amount=user_lp_b, token_uid=self.token_b),
         ]
 
-        # Handle impermanent loss calculation
-        loss_htr = 0
-        # Calculate max withdraw amount including existing balances
-        user_token_b_balance = self.user_balances.get(caller, {}).get(
-            self.token_b, 0
-        )
-        max_withdraw_b = user_lp_b + user_token_b_balance
-        user_deposit_b = self.user_deposit_b.get(caller, 0)
-
-        self.log.debug("Position close calculations",
-                      user_lp_htr=user_lp_htr,
-                      user_lp_b=user_lp_b,
-                      user_deposit_b=user_deposit_b,
-                      max_withdraw_b=max_withdraw_b)
-
-        # Check for impermanent loss
-        if user_deposit_b > max_withdraw_b:
-            loss = user_deposit_b - max_withdraw_b
-            loss_htr = self._calculate_impermanent_loss_compensation(loss, user_lp_htr)
-            self.log.warn("Impermanent loss detected",
-                         loss_in_token_b=loss,
-                         htr_compensation=loss_htr)
-
-        # Call dozer pool manager to remove liquidity
         # Call dozer pool manager to remove liquidity
         # Returns tuple: (token_uid: TokenUid, change: Amount)
         token_uid, change = self._get_pool_manager().public(*actions).remove_liquidity(self.pool_fee)
@@ -450,6 +412,10 @@ class Oasis(Blueprint):
 
         # Then update closed balances without adding user_lp_htr again
         closed_balances: dict[TokenUid, Amount] = {}
+        # We need to fetch the fresh balance again because it might have changed
+        user_token_b_balance = self.user_balances.get(caller, {}).get(
+            self.token_b, 0
+        )
         closed_balances[self.token_b] = Amount(user_token_b_balance + user_lp_b)
         closed_balances[TokenUid(HATHOR_TOKEN_UID)] = Amount(user_htr_current_balance + loss_htr)
         self.closed_position_balances[caller] = closed_balances
@@ -485,12 +451,19 @@ class Oasis(Blueprint):
         """
 
         self._check_not_paused(ctx)
-        action_token_b = self._get_token_action(
-            ctx, NCActionType.WITHDRAWAL, self.token_b
-        )
-        action_htr = None
-        if len(ctx.actions) > 1:
-            action_htr = self._get_token_action(ctx, NCActionType.WITHDRAWAL, TokenUid(HATHOR_TOKEN_UID))
+
+        # Handle 1 or 2 withdrawal actions (token_b required, HTR optional)
+        if len(ctx.actions) == 1:
+            action_token_b = self._get_single_token_action(
+                ctx, NCActionType.WITHDRAWAL, self.token_b
+            )
+            action_htr = None
+        elif len(ctx.actions) == 2:
+            action_token_b, action_htr = self._get_two_token_actions(
+                ctx, NCActionType.WITHDRAWAL, self.token_b, TokenUid(HATHOR_TOKEN_UID)
+            )
+        else:
+            raise NCFail("Expected 1 or 2 withdrawal actions")
 
         # Check if the position is unlocked
         withdrawal_time = self.user_position_entry.get(Address(ctx.caller_id), EMPTY_USER_POSITION).withdrawal_time
@@ -548,9 +521,7 @@ class Oasis(Blueprint):
     @public(allow_withdrawal=True)
     def user_withdraw_bonus(self, ctx: Context) -> None:
         self._check_not_paused(ctx)
-        action = self._get_action(ctx, NCActionType.WITHDRAWAL, auth=False)
-        if action.token_uid != HATHOR_TOKEN_UID:
-            raise NCFail("Withdrawal token not HATHOR")
+        action = self._get_single_token_action(ctx, NCActionType.WITHDRAWAL, TokenUid(HATHOR_TOKEN_UID), auth=False)
 
         available_bonus = self.user_balances.get(Address(ctx.caller_id), {HATHOR_TOKEN_UID: 0}).get(
             HATHOR_TOKEN_UID, 0
@@ -771,8 +742,8 @@ class Oasis(Blueprint):
         self._check_not_paused(ctx)
         if Address(ctx.caller_id) != self.owner_address:
             raise NCFail("Only owner can withdraw")
-        action = self._get_token_action(
-            ctx, NCActionType.WITHDRAWAL, HATHOR_TOKEN_UID, auth=False
+        action = self._get_single_token_action(
+            ctx, NCActionType.WITHDRAWAL, TokenUid(HATHOR_TOKEN_UID), auth=False
         )
         if action.amount > self.oasis_htr_balance:
             raise NCFail("Withdrawal amount too high")
@@ -792,7 +763,7 @@ class Oasis(Blueprint):
         if Address(ctx.caller_id) != self.dev_address:
             raise NCFail("Only dev can withdraw fees")
 
-        token_b_action = self._get_token_action(
+        token_b_action = self._get_single_token_action(
             ctx, NCActionType.WITHDRAWAL, self.token_b
         )
         if token_b_action.amount > self.user_balances.get(self.dev_address, {}).get(
@@ -817,13 +788,55 @@ class Oasis(Blueprint):
             raise NCFail("Only dev or owner can update owner address")
         self.owner_address = new_owner
 
-    def _get_action(
-        self, ctx: Context, action_type: NCActionType, auth: bool
+    def _assert_action_count(self, ctx: Context, expected: int) -> None:
+        """Assert the exact number of actions matches expected count."""
+        if len(ctx.actions) != expected:
+            raise NCFail(f"Expected exactly {expected} action(s), got {len(ctx.actions)}")
+
+    def _get_single_token_action(
+        self,
+        ctx: Context,
+        action_type: NCActionType,
+        token: TokenUid,
+        auth: bool = False,
     ) -> NCDepositAction | NCWithdrawalAction:
-        """Returns one HTR action, validated by type. Wrapper around _get_token_action."""
-        if len(ctx.actions) != 1:
-            raise NCFail("Expected exactly 1 action")
-        return self._get_token_action(ctx, action_type, TokenUid(HATHOR_TOKEN_UID), auth)
+        """Get exactly one action for a specific token with full validation."""
+        self._assert_action_count(ctx, 1)
+        output = ctx.get_single_action(token)
+        if not output:
+            raise NCFail(f"No action found for token {token.hex()}")
+        if output.type != action_type:
+            raise NCFail(f"Wrong action type: expected {action_type}, got {output.type}")
+        if auth and Address(ctx.caller_id) != self.dev_address:
+            raise NCFail("Unauthorized: only dev can perform this action")
+
+        if isinstance(output, (NCDepositAction, NCWithdrawalAction)):
+            return output
+        raise NCFail("Invalid action type")
+
+    def _get_two_token_actions(
+        self,
+        ctx: Context,
+        action_type: NCActionType,
+        token1: TokenUid,
+        token2: TokenUid,
+    ) -> tuple[NCDepositAction | NCWithdrawalAction, NCDepositAction | NCWithdrawalAction]:
+        """Get exactly two actions for two specific tokens with validation."""
+        self._assert_action_count(ctx, 2)
+        action1 = ctx.get_single_action(token1)
+        action2 = ctx.get_single_action(token2)
+
+        if not action1 or not action2:
+            raise NCFail(f"Expected actions for both {token1.hex()} and {token2.hex()}")
+
+        if action1.type != action_type or action2.type != action_type:
+            raise NCFail(f"Wrong action type: expected {action_type}")
+
+        if not isinstance(action1, (NCDepositAction, NCWithdrawalAction)) or \
+           not isinstance(action2, (NCDepositAction, NCWithdrawalAction)):
+            raise NCFail("Invalid action type")
+
+        return action1, action2
 
     @public
     def pause(self, ctx: Context) -> None:
@@ -869,30 +882,6 @@ class Oasis(Blueprint):
     def _ceil_div(self, numerator: Amount, denominator: Amount) -> Amount:
         """Calculate ceiling division using (numerator + denominator - 1) // denominator."""
         return Amount((numerator + denominator - 1) // denominator)
-
-    def _get_token_action(
-        self,
-        ctx: Context,
-        action_type: NCActionType,
-        token: TokenUid,
-        auth: bool = False,
-    ) -> NCDepositAction | NCWithdrawalAction:
-        """Returns one action for the specified token, validated by type."""
-        if len(ctx.actions) > 2:
-            raise NCFail("Too many actions (max 2)")
-
-        output = ctx.get_single_action(token)
-        if not output:
-            raise NCFail(f"No action found for token {token.hex()}")
-        if output.type != action_type:
-            raise NCFail(f"Wrong action type: expected {action_type}, got {output.type}")
-        if auth and Address(ctx.caller_id) != self.dev_address:
-            raise NCFail("Unauthorized: only dev can perform this action")
-
-        # Type assertion: get_single_action returns the correct type based on action_type
-        if isinstance(output, (NCDepositAction, NCWithdrawalAction)):
-            return output
-        raise NCFail("Invalid action type")
 
     @view
     def user_info(
@@ -980,6 +969,11 @@ class Oasis(Blueprint):
     def get_remove_liquidity_oasis_quote(
         self, address: Address
     ) -> OasisRemoveLiquidityQuote:
+        return self._calculate_position_closure(address)
+
+    def _calculate_position_closure(self, address: Address) -> OasisRemoveLiquidityQuote:
+        """Internal helper to calculate position closure values.
+        """
         # If position is already closed, return the available balances from closed_position_balances
         if self.user_position_closed.get(address, False):
             return OasisRemoveLiquidityQuote(

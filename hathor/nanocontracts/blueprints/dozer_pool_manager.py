@@ -843,9 +843,42 @@ class DozerPoolManager(Blueprint):
         reserve_a_after: Amount,
         reserve_b_after: Amount,
         operation: str,
-        tolerance_ppm: int = 1
+        tolerance_ppm: int | None = None
     ) -> None:
-        """Assert price ratio maintained within tolerance during liquidity operations."""
+        """Assert price ratio maintained within tolerance during liquidity operations.
+
+        Uses dynamic tolerance based on pool size to account for integer division rounding
+        in proportional liquidity calculations (add/remove operations).
+
+        Dynamic tolerance tiers:
+        - Very small pools (min_reserve < 1000): 5000 ppm (0.5%)
+        - Small pools (1000 <= min_reserve < 10000): 2000 ppm (0.2%)
+        - Normal pools (min_reserve >= 10000): 100 ppm (0.01%)
+
+        The tolerance can be overridden by passing an explicit tolerance_ppm value.
+
+        Note: Single-token liquidity operations (add/remove_liquidity_single_token) use
+        the same tolerance because the price ratio check only validates the proportional
+        liquidity operation, not the internal swap. The swap happens separately and is
+        validated by K invariant checks.
+        """
+        # Calculate dynamic tolerance if not explicitly provided
+        if tolerance_ppm is None:
+            min_reserve = min(reserve_a_after, reserve_b_after)
+
+            if min_reserve < 1000:
+                tolerance_ppm = 5000  # 0.5% for very small pools
+            elif min_reserve < 10000:
+                tolerance_ppm = 2000  # 0.2% for small pools
+            else:
+                tolerance_ppm = 100   # 0.01% for normal pools
+
+            if tolerance_ppm > 100:
+                self.log.debug('using dynamic price ratio tolerance',
+                               operation=operation,
+                               min_reserve=min_reserve,
+                               tolerance_ppm=tolerance_ppm)
+
         ratio_check_before = reserve_a_before * reserve_b_after
         ratio_check_after = reserve_a_after * reserve_b_before
 
@@ -1421,22 +1454,9 @@ class DozerPoolManager(Blueprint):
             # Update profit tracking after liquidity has been added
             self._update_user_profit_tracking(user_address, pool_key, ctx)
 
-            # Verify price ratio with dynamic tolerance for integer division rounding
+            # Verify price ratio remains constant (proportional liquidity addition)
             pool_after = self.pools[pool_key]
-            min_reserve = min(pool_after.reserve_a, pool_after.reserve_b)
-            if min_reserve < 1000:
-                tolerance = 5000  # 0.5% for very small pools
-            elif min_reserve < 10000:
-                tolerance = 2000  # 0.2% for small pools
-            else:
-                tolerance = 100   # 0.01% for normal pools
-
-            if tolerance > 100:
-                self.log.debug('using dynamic price ratio tolerance for add_liquidity',
-                               min_reserve=min_reserve,
-                               tolerance_ppm=tolerance)
-
-            self._check_price_ratio(reserve_a, reserve_b, pool_after.reserve_a, pool_after.reserve_b, "add_liquidity", tolerance_ppm=tolerance)
+            self._check_price_ratio(reserve_a, reserve_b, pool_after.reserve_a, pool_after.reserve_b, "add_liquidity")
 
             self.log.info('liquidity added successfully',
                           pool_key=pool_key,
@@ -1491,22 +1511,9 @@ class DozerPoolManager(Blueprint):
             # Update profit tracking after liquidity has been added
             self._update_user_profit_tracking(user_address, pool_key, ctx)
 
-            # Verify price ratio with dynamic tolerance for integer division rounding
+            # Verify price ratio remains constant (proportional liquidity addition)
             pool_after = self.pools[pool_key]
-            min_reserve = min(pool_after.reserve_a, pool_after.reserve_b)
-            if min_reserve < 1000:
-                tolerance = 5000  # 0.5% for very small pools
-            elif min_reserve < 10000:
-                tolerance = 2000  # 0.2% for small pools
-            else:
-                tolerance = 100   # 0.01% for normal pools
-
-            if tolerance > 100:
-                self.log.debug('using dynamic price ratio tolerance for add_liquidity',
-                               min_reserve=min_reserve,
-                               tolerance_ppm=tolerance)
-
-            self._check_price_ratio(reserve_a, reserve_b, pool_after.reserve_a, pool_after.reserve_b, "add_liquidity", tolerance_ppm=tolerance)
+            self._check_price_ratio(reserve_a, reserve_b, pool_after.reserve_a, pool_after.reserve_b, "add_liquidity")
 
             self.log.info('liquidity added successfully',
                           pool_key=pool_key,
@@ -1622,22 +1629,9 @@ class DozerPoolManager(Blueprint):
         # Update profit tracking after liquidity has been removed
         self._update_user_profit_tracking(user_address, pool_key, ctx)
 
-        # Verify price ratio with dynamic tolerance for integer division rounding
+        # Verify price ratio remains constant (proportional liquidity removal)
         pool_after = self.pools[pool_key]
-        min_reserve = min(pool_after.reserve_a, pool_after.reserve_b)
-        if min_reserve < 1000:
-            tolerance = 5000  # 0.5% for very small pools
-        elif min_reserve < 10000:
-            tolerance = 2000  # 0.2% for small pools
-        else:
-            tolerance = 100   # 0.01% for normal pools
-
-        if tolerance > 100:
-            self.log.debug('using dynamic price ratio tolerance for remove_liquidity',
-                           min_reserve=min_reserve,
-                           tolerance_ppm=tolerance)
-
-        self._check_price_ratio(reserve_a_before, reserve_b_before, pool_after.reserve_a, pool_after.reserve_b, "remove_liquidity", tolerance_ppm=tolerance)
+        self._check_price_ratio(reserve_a_before, reserve_b_before, pool_after.reserve_a, pool_after.reserve_b, "remove_liquidity")
 
         self.log.info('liquidity removed successfully',
                       pool_key=pool_key,
@@ -1788,28 +1782,11 @@ class DozerPoolManager(Blueprint):
         final_reserve_a = Amount(result.reserve_a_after_swap + result.actual_a)
         final_reserve_b = Amount(result.reserve_b_after_swap + result.actual_b)
 
-        # Verify price ratio is maintained when adding liquidity proportionally
-        # Note: Single-token operations have inherent rounding errors from integer arithmetic:
-        # 1. Optimal swap calculation (integer square root + division)
-        # 2. The actual swap (get_amount_out with integer division)
-        # 3. Proportional amount calculation (quote with integer division)
-        #
-        # The relative error increases with smaller reserve values because fixed rounding losses
-        # (e.g., losing 1 from integer division) become larger percentages of small numbers.
-        # Use dynamic tolerance: max(500ppm, 5000ppm for reserves < 10000)
-        min_reserve = min(result.reserve_a_after_swap, result.reserve_b_after_swap)
-        tolerance = 5000 if min_reserve < 10000 else 500  # 0.5% for small pools, 0.05% for normal pools
-
-        if min_reserve < 10000:
-            self.log.debug('using dynamic price ratio tolerance',
-                           min_reserve=min_reserve,
-                           tolerance_ppm=tolerance)
-
+        # Verify price ratio maintained during liquidity addition
         self._check_price_ratio(
             result.reserve_a_after_swap, result.reserve_b_after_swap,
             final_reserve_a, final_reserve_b,
-            "add_liquidity_single_token (proportional addition)",
-            tolerance_ppm=tolerance
+            "add_liquidity_single_token"
         )
 
         # Update pool state with new liquidity, reserves, and statistics
@@ -2340,6 +2317,7 @@ class DozerPoolManager(Blueprint):
             reserve_b=reserve_b_after_removal
         )
 
+        # Verify price ratio maintained during liquidity removal
         self._check_price_ratio(
             reserve_a_before, reserve_b_before,
             reserve_a_after_removal, reserve_b_after_removal,
