@@ -1,5 +1,8 @@
 import os
 import random
+
+import pytest
+
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprints.dozer_pool_manager import  DozerPoolManager
 from hathor.nanocontracts.blueprints.oasis import Oasis
@@ -44,6 +47,9 @@ class OasisTestCase(BlueprintTestCase):
             self.token_b, "token_b", "TKB", TokenVersion.DEPOSIT
         )
         self.usd_token = self.gen_random_token_uid()  # USD stablecoin for HTR-USD reference pool
+        self.create_token(
+            self.usd_token, "usd", "USD", TokenVersion.DEPOSIT
+        )
         self.pool_fee = Amount(3)  # 0.3% default fee
         # Initialize base tx for contexts
         self.tx = self._get_any_tx()
@@ -174,7 +180,7 @@ class OasisTestCase(BlueprintTestCase):
         assert isinstance(contract, Oasis)
         self.assertIsNotNone(contract.dozer_pool_manager)
 
-    def initialize_pool_manager(self) -> None:
+    def initialize_pool_manager(self, htr_amount: int = 0, usd_amount: int = 0) -> None:
         """Initialize the DozerPoolManager and set up HTR-USD reference pool"""
         # Create the DozerPoolManager contract
         ctx = self.create_context(actions=[], vertex=self.tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp())
@@ -186,14 +192,14 @@ class OasisTestCase(BlueprintTestCase):
         self.dozer_manager_storage = self.runner.get_storage(self.dozer_manager_id)
 
         # Create HTR-USD reference pool for pricing
-        self._create_htr_usd_pool()
+        self._create_htr_usd_pool(
+            htr_amount=htr_amount or 1000_00,  # 10 HTR
+            usd_amount=usd_amount or 500_00,  # $5 (assuming $0.50 per HTR)
+        )
 
-    def _create_htr_usd_pool(self) -> None:
+    def _create_htr_usd_pool(self, htr_amount: int, usd_amount: int) -> None:
         """Create and set the HTR-USD reference pool for price calculations"""
         # Create HTR-USD pool with initial liquidity (HTR = $0.50 for example)
-        htr_amount = 1000_00  # 10 HTR
-        usd_amount = 500_00   # $5 (assuming $0.50 per HTR)
-
         actions = [
             NCDepositAction(token_uid=TokenUid(HTR_UID), amount=htr_amount),
             NCDepositAction(token_uid=self.usd_token, amount=usd_amount),
@@ -824,28 +830,28 @@ class OasisTestCase(BlueprintTestCase):
         user_info = self._user_info(user_address)
         self.assertEqual(user_info.position_closed, True)
 
-        def test_invalid_timelocks(self):
-            """Test that invalid timelock values are rejected"""
-            dev_initial_deposit = 10_000_000_00
-            self.initialize_pool()
-            self.initialize_oasis(amount=dev_initial_deposit)
+    def test_invalid_timelocks(self):
+        """Test that invalid timelock values are rejected"""
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
 
-            invalid_timelocks = [0, 3, 7, 8, 13, 24]  # Invalid timelock periods
-            deposit_amount = 1_000_00
-            user_address = self._get_any_address()[0]
+        invalid_timelocks = [0, 3, 7, 8, 13, 24]  # Invalid timelock periods
+        deposit_amount = 1_000_00
+        user_address = self._get_any_address()[0]
 
-            for invalid_timelock in invalid_timelocks:
-                ctx = self.create_context(
-                    actions=[NCDepositAction(amount=deposit_amount, token_uid=self.token_b)],
-                    vertex=self.tx,
-                    caller_id=user_address,
-                    timestamp=self.clock.seconds(),
+        for invalid_timelock in invalid_timelocks:
+            ctx = self.create_context(
+                actions=[NCDepositAction(amount=deposit_amount, token_uid=self.token_b)],
+                vertex=self.tx,
+                caller_id=user_address,
+                timestamp=self.clock.seconds(),
+            )
+
+            with self.assertRaises(NCFail):
+                self.runner.call_public_method(
+                    self.oasis_id, "user_deposit", ctx, invalid_timelock
                 )
-
-                with self.assertRaises(NCFail):
-                    self.runner.call_public_method(
-                        self.oasis_id, "user_deposit", ctx, invalid_timelock
-                    )
 
     def test_exact_timelock_expiry(self):
         """Test withdrawals exactly at timelock expiry"""
@@ -1065,9 +1071,11 @@ class OasisTestCase(BlueprintTestCase):
             self.oasis_id, "user_info", self.dev_address
         )
 
-        # With max fee, half goes to dev as fee, half to user as deposit
-        self.assertEqual(user_info.user_deposit_b, deposit_amount // 2)
-        self.assertEqual(dev_info.user_balance_b, deposit_amount // 2)
+        # With max fee (50%), half goes to dev as fee, half to user as deposit
+        expected_fee = deposit_amount // 2
+        expected_deposit = deposit_amount - expected_fee
+        self.assertEqual(user_info.user_deposit_b, expected_deposit)
+        self.assertEqual(dev_info.user_balance_b, expected_fee)
 
     def test_protocol_fee_rounding(self) -> None:
         """Test protocol fee rounding with various deposit amounts"""
@@ -1199,7 +1207,7 @@ class OasisTestCase(BlueprintTestCase):
         self.assertEqual(oasis_info.protocol_fee, initial_fee)
 
         # Test fee update
-        new_fee = 300  # 30%
+        new_fee = 500  # 0.5% (maximum allowed)
         ctx = self.create_context(actions=[], vertex=self.tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp())
         self.runner.call_public_method(
             self.oasis_id, "update_protocol_fee", ctx, new_fee
@@ -1211,7 +1219,7 @@ class OasisTestCase(BlueprintTestCase):
         # Test invalid fee update
         with self.assertRaises(NCFail):
             self.runner.call_public_method(
-                self.oasis_id, "update_protocol_fee", ctx, 501
+                self.oasis_id, "update_protocol_fee", ctx, 1001
             )
 
         # Test fee collection
@@ -2183,3 +2191,844 @@ class OasisTestCase(BlueprintTestCase):
             self.assertGreater(user_info.closed_balance_b, 0)
 
         self.check_balances(list(user_addresses))
+
+    def test_impermanent_loss2(self):
+        """
+        1. User deposits TokenB on HTR-TokenB pool
+        2. TokenB price increases
+        3. User gets less TokenB than initial deposit, but with higher total value
+        4. User receives IL protection compensation
+        """
+        # Initialize with larger amounts to allow for significant price movements
+        dev_initial_deposit = 10_000_000_000
+        pool_initial_htr = 10_000_000_000
+        pool_initial_token_b = 1_000_000_000
+
+        # Initialize contracts
+        self.initialize_pool(amount_htr=pool_initial_htr, amount_b=pool_initial_token_b)
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        # User deposits with 12-month lock
+        deposit_amount = 100_000_000
+        user_address = self._get_any_address()[0]
+        timelock = 12
+        initial_timestamp = self.clock.seconds()
+
+        ctx = self.create_context(
+            actions=[NCDepositAction(amount=deposit_amount, token_uid=self.token_b)],
+            vertex=self.tx,
+            caller_id=user_address,
+            timestamp=initial_timestamp,
+        )
+
+        self.runner.call_public_method(
+            self.oasis_id, "user_deposit", ctx, timelock
+        )
+
+        htr_amount = self._quote_add_liquidity_in(deposit_amount)
+        bonus = self._get_user_bonus(timelock, htr_amount)
+        assert bonus == 200_000_000 # 100M token_b = 1bi htr; 20% -> 200M htr
+        pool_key = self._get_pool_key()
+
+        token_price_before = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_htr', self.token_b)
+        assert token_price_before == 10_0000_0000  # 10 with 8 decimals
+
+        user_b_value_before = token_price_before * deposit_amount
+        assert user_b_value_before == 1_000_000_000_0000_0000  # 1bi HTR with 8 decimals
+
+        # Execute swap to increase token B price
+        dozer_contract_swap = self.get_readonly_contract(self.dozer_manager_id)
+        assert isinstance(dozer_contract_swap, DozerPoolManager)
+        pool_swap = dozer_contract_swap.pools[pool_key]
+        reserve_a = pool_swap.reserve_a
+        reserve_b = pool_swap.reserve_b
+
+        swap_amount = reserve_a // 10  # Swap 10% of HTR
+        amount_out = self.runner.call_view_method(
+            self.dozer_manager_id, "get_amount_out", swap_amount, reserve_a, reserve_b, self.pool_fee, 1000
+        )
+
+        swap_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=swap_amount, token_uid=TokenUid(HTR_UID)),
+                NCWithdrawalAction(amount=amount_out, token_uid=TokenUid(self.token_b)),
+            ],
+            vertex=self.tx,
+            timestamp=initial_timestamp + 200,
+        )
+        self.runner.call_public_method(
+            self.dozer_manager_id, "swap_exact_tokens_for_tokens", swap_ctx, self.pool_fee, int(initial_timestamp + 300)
+        )
+
+        token_price_after = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_htr', self.token_b)
+        assert token_price_after == 12_0966_9998  # ~12 with 8 decimals
+        assert token_price_after > token_price_before  # token B price increased
+
+        # Close the position
+        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        close_ctx = self.create_context(actions=[], vertex=self.tx, caller_id=user_address, timestamp=unlock_time)
+
+        self.runner.call_public_method(self.oasis_id, "close_position", close_ctx)
+
+        # Get user info after closing position
+        user_info = self._user_info(user_address)
+
+        assert user_info.closed_balance_b == 90_928_435  # less tokens B than deposit in quantity
+
+        # Verify HTR balance includes compensation
+        assert user_info.closed_balance_a == 309_736_000  # 200M htr initial bonus + IL compensation
+
+        user_b_value_after = token_price_after * user_info.closed_balance_b
+        assert user_b_value_after == 1_099_933_997_8459_3130  # more than 1bi HTR with 8 decimals
+        assert user_b_value_after > user_b_value_before  # User value actually increased!
+
+    def test_impermanent_loss3(self):
+        """
+        1. User deposits USD on HTR-USD pool
+        2. HTR price increases
+        3. User gets more USD than initial deposit, that is, higher total value
+        4. User correctly does not receive IL protection compensation
+        """
+        # Initialize with larger amounts to allow for significant price movements
+        dev_initial_deposit = 10_000_000_000
+        pool_extra_htr = 10_000_000_000
+        pool_extra_usd = 5_000_000_000
+        pool_key = f"{HTR_UID.hex()}/{self.usd_token.hex()}/{self.pool_fee}"
+
+        # Initialize contracts
+        self.initialize_pool_manager()
+
+        actions = [NCDepositAction(token_uid=HTR_UID, amount=dev_initial_deposit)]
+        ctx = self.create_context(
+            actions=actions,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.create_contract(
+            self.oasis_id,
+            self.oasis_blueprint_id,
+            ctx,
+            self.dozer_manager_id,
+            self.usd_token,
+            self.pool_fee,
+            0,
+        )
+
+        # Increase initial liquidity
+        initial_timestamp = self.clock.seconds()
+        add_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=pool_extra_htr, token_uid=TokenUid(HTR_UID)),
+                NCDepositAction(amount=pool_extra_usd, token_uid=TokenUid(self.usd_token)),
+            ],
+        )
+        self.runner.call_public_method(self.dozer_manager_id, "add_liquidity", add_ctx, self.pool_fee)
+
+        # User deposits with 12-month lock
+        deposit_amount = 100_000_000
+        user_address = self._get_any_address()[0]
+        timelock = 12
+
+        ctx = self.create_context(
+            actions=[NCDepositAction(amount=deposit_amount, token_uid=self.usd_token)],
+            timestamp=initial_timestamp,
+            caller_id=user_address,
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        htr_amount = self.runner.call_view_method(
+            self.dozer_manager_id, "front_quote_add_liquidity_in", deposit_amount, self.usd_token, pool_key
+        )
+
+        bonus = self._get_user_bonus(timelock, htr_amount)
+        assert bonus == 40_000_000 # 100M usd = 200M htr; 20% -> 40M htr
+
+        htr_price_before = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_before == 5000_0000  # 0.5 USD with 8 decimals
+
+        # Execute swap to increase htr price
+        dozer_contract_swap = self.get_readonly_contract(self.dozer_manager_id)
+        assert isinstance(dozer_contract_swap, DozerPoolManager)
+        pool_swap = dozer_contract_swap.pools[pool_key]
+        reserve_a = pool_swap.reserve_a
+        reserve_b = pool_swap.reserve_b
+
+        swap_amount = reserve_b // 10  # Swap 10% of USD
+        amount_out = self.runner.call_view_method(
+            self.dozer_manager_id, "get_amount_out", swap_amount, reserve_b, reserve_a, self.pool_fee, 1000
+        )
+
+        swap_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=swap_amount, token_uid=TokenUid(self.usd_token)),
+                NCWithdrawalAction(amount=amount_out, token_uid=TokenUid(HTR_UID)),
+            ],
+            timestamp=initial_timestamp + 200,
+        )
+        self.runner.call_public_method(
+            self.dozer_manager_id, "swap_exact_tokens_for_tokens", swap_ctx, self.pool_fee, int(initial_timestamp + 300)
+        )
+
+        htr_price_after = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_after == 6048_3499  # ~0.6 with 8 decimals
+        assert htr_price_after > htr_price_before  # htr price increased
+
+        # Close the position
+        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        close_ctx = self.create_context(actions=[], vertex=self.tx, caller_id=user_address, timestamp=unlock_time)
+
+        self.runner.call_public_method(self.oasis_id, "close_position", close_ctx)
+
+        # Get user info after closing position
+        user_info = self._user_info(user_address)
+
+        assert user_info.closed_balance_b == 109_993_399  # more USD than deposit in quantity -> more value!
+        assert user_info.closed_balance_b > deposit_amount
+
+        assert user_info.closed_balance_a == 40_000_000  # 40M htr initial bonus, no IL compensation
+
+    def test_impermanent_loss4(self):
+        """
+        1. User deposits USD on HTR-USD pool
+        2. HTR price decreases
+        3. User gets less USD than initial deposit, that is, lower total value
+        4. User correctly receives IL protection compensation
+        """
+        # Initialize with larger amounts to allow for significant price movements
+        dev_initial_deposit = 10_000_000_000
+        pool_extra_htr = 10_000_000_000
+        pool_extra_usd = 5_000_000_000
+        pool_key = f"{HTR_UID.hex()}/{self.usd_token.hex()}/{self.pool_fee}"
+
+        # Initialize contracts
+        self.initialize_pool_manager()
+
+        actions = [NCDepositAction(token_uid=HTR_UID, amount=dev_initial_deposit)]
+        ctx = self.create_context(
+            actions=actions,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.create_contract(
+            self.oasis_id,
+            self.oasis_blueprint_id,
+            ctx,
+            self.dozer_manager_id,
+            self.usd_token,
+            self.pool_fee,
+            0,
+        )
+
+        # Increase initial liquidity
+        initial_timestamp = self.clock.seconds()
+        add_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=pool_extra_htr, token_uid=TokenUid(HTR_UID)),
+                NCDepositAction(amount=pool_extra_usd, token_uid=TokenUid(self.usd_token)),
+            ],
+        )
+        self.runner.call_public_method(self.dozer_manager_id, "add_liquidity", add_ctx, self.pool_fee)
+
+        # User deposits with 12-month lock
+        deposit_amount = 100_000_000
+        user_address = self._get_any_address()[0]
+        timelock = 12
+
+        ctx = self.create_context(
+            actions=[NCDepositAction(amount=deposit_amount, token_uid=self.usd_token)],
+            timestamp=initial_timestamp,
+            caller_id=user_address,
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        htr_amount = self.runner.call_view_method(
+            self.dozer_manager_id, "front_quote_add_liquidity_in", deposit_amount, self.usd_token, pool_key
+        )
+
+        bonus = self._get_user_bonus(timelock, htr_amount)
+        assert bonus == 40_000_000 # 100M usd = 200M htr; 20% -> 40M htr
+
+        htr_price_before = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_before == 5000_0000  # 0.5 USD with 8 decimals
+
+        # Execute swap to decrease htr price
+        dozer_contract_swap = self.get_readonly_contract(self.dozer_manager_id)
+        assert isinstance(dozer_contract_swap, DozerPoolManager)
+        pool_swap = dozer_contract_swap.pools[pool_key]
+        reserve_a = pool_swap.reserve_a
+        reserve_b = pool_swap.reserve_b
+
+        swap_amount = reserve_a // 10  # Swap 10% of HTR
+        amount_out = self.runner.call_view_method(
+            self.dozer_manager_id, "get_amount_out", swap_amount, reserve_a, reserve_b, self.pool_fee, 1000
+        )
+
+        swap_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=swap_amount, token_uid=TokenUid(HTR_UID)),
+                NCWithdrawalAction(amount=amount_out, token_uid=TokenUid(self.usd_token)),
+            ],
+            timestamp=initial_timestamp + 200,
+        )
+        self.runner.call_public_method(
+            self.dozer_manager_id, "swap_exact_tokens_for_tokens", swap_ctx, self.pool_fee, int(initial_timestamp + 300)
+        )
+
+        htr_price_after = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_after == 4133_3586  # ~0.4 with 8 decimals
+        assert htr_price_after < htr_price_before  # htr price decreased
+
+        # Close the position
+        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        close_ctx = self.create_context(actions=[], vertex=self.tx, caller_id=user_address, timestamp=unlock_time)
+
+        self.runner.call_public_method(self.oasis_id, "close_position", close_ctx)
+
+        # Get user info after closing position
+        user_info = self._user_info(user_address)
+
+        assert user_info.closed_balance_b == 90_928_435  # less USD than deposit in quantity -> less value!
+        assert user_info.closed_balance_b < deposit_amount
+
+        assert user_info.closed_balance_a == 61_947_200  # 40M htr initial bonus + IL compensation
+
+    def test_impermanent_loss5(self):
+        """
+        1. User deposits USD on HTR-USD pool
+        2. User makes HTR price decrease by swapping directly on the pool
+        3. User gets less USD than initial deposit, that is, lower total value
+        4. User correctly receives IL protection compensation
+        5. User reverts the swap, bringing the HTR price back to normal
+        """
+        # Initialize with larger amounts to allow for significant price movements
+        dev_initial_deposit = 10_000_000_000
+        pool_extra_htr = 10_000_000_000
+        pool_extra_usd = 5_000_000_000
+        pool_key = f"{HTR_UID.hex()}/{self.usd_token.hex()}/{self.pool_fee}"
+
+        # Variables representing a dummy user balance, it could be the balance in another contract
+        user_balance_usd = 0
+        user_balance_htr = 0
+
+        # Initialize contracts
+        self.initialize_pool_manager()
+
+        actions = [NCDepositAction(token_uid=HTR_UID, amount=dev_initial_deposit)]
+        ctx = self.create_context(
+            actions=actions,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.create_contract(
+            self.oasis_id,
+            self.oasis_blueprint_id,
+            ctx,
+            self.dozer_manager_id,
+            self.usd_token,
+            self.pool_fee,
+            0,
+        )
+
+        # Increase initial liquidity
+        initial_timestamp = self.clock.seconds()
+        add_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=pool_extra_htr, token_uid=TokenUid(HTR_UID)),
+                NCDepositAction(amount=pool_extra_usd, token_uid=TokenUid(self.usd_token)),
+            ],
+        )
+        self.runner.call_public_method(self.dozer_manager_id, "add_liquidity", add_ctx, self.pool_fee)
+
+        # User deposits with 12-month lock
+        deposit_amount = 100_000_000
+        user_address = self._get_any_address()[0]
+        timelock = 12
+
+        ctx = self.create_context(
+            actions=[NCDepositAction(amount=deposit_amount, token_uid=self.usd_token)],
+            timestamp=initial_timestamp,
+            caller_id=user_address,
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        # After depositing into oasis, the user's usd balance decreases
+        user_balance_usd -= deposit_amount
+        assert user_balance_usd == -100_000_000
+
+        htr_amount = self.runner.call_view_method(
+            self.dozer_manager_id, "front_quote_add_liquidity_in", deposit_amount, self.usd_token, pool_key
+        )
+
+        bonus = self._get_user_bonus(timelock, htr_amount)
+        assert bonus == 40_000_000 # 100M usd = 200M htr; 20% -> 40M htr
+
+        htr_price_before = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_before == 5000_0000  # 0.5 USD with 8 decimals
+
+        # Same user executes swap to decrease htr price purposefully
+        dozer_contract_swap = self.get_readonly_contract(self.dozer_manager_id)
+        assert isinstance(dozer_contract_swap, DozerPoolManager)
+        pool_swap = dozer_contract_swap.pools[pool_key]
+        reserve_a = pool_swap.reserve_a
+        reserve_b = pool_swap.reserve_b
+
+        htr_swap_amount = reserve_a // 10  # Swap 10% of HTR
+        assert htr_swap_amount == 1_020_010_000
+        usd_amount_out = self.runner.call_view_method(
+            self.dozer_manager_id, "get_amount_out", htr_swap_amount, reserve_a, reserve_b, self.pool_fee, 1000
+        )
+        assert usd_amount_out == 462_376_088
+
+        swap_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=htr_swap_amount, token_uid=TokenUid(HTR_UID)),
+                NCWithdrawalAction(amount=usd_amount_out, token_uid=TokenUid(self.usd_token)),
+            ],
+            timestamp=initial_timestamp + 200,
+        )
+        self.runner.call_public_method(
+            self.dozer_manager_id, "swap_exact_tokens_for_tokens", swap_ctx, self.pool_fee, int(initial_timestamp + 300)
+        )
+
+        htr_price_after = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_after == 4133_3586  # ~0.4 with 8 decimals
+        assert htr_price_after < htr_price_before  # htr price decreased
+
+        # After swapping with the pool, the htr balance decreases and the usd balance increases
+        user_balance_usd += usd_amount_out
+        user_balance_htr -= htr_swap_amount
+        assert user_balance_usd == 362_376_088
+        assert user_balance_htr == -1_020_010_000
+
+        # Close the position
+        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        close_ctx = self.create_context(actions=[], vertex=self.tx, caller_id=user_address, timestamp=unlock_time)
+
+        self.runner.call_public_method(self.oasis_id, "close_position", close_ctx)
+
+        # Get user info after closing position
+        user_info = self._user_info(user_address)
+
+        assert user_info.closed_balance_b == 90_928_435  # less USD than deposit in quantity -> less value!
+        assert user_info.closed_balance_b < deposit_amount
+
+        assert user_info.closed_balance_a == 61_947_200  # 40M htr initial bonus + IL compensation
+
+        # After closing the position, both balances increase (simulating a withdrawal)
+        user_balance_usd += user_info.closed_balance_b
+        user_balance_htr += user_info.closed_balance_a
+        assert user_balance_usd == 453_304_523
+        assert user_balance_htr == -958_062_800
+
+        # Same user executes swap to increase htr price, undoing what he did before, minus fees
+        pool_swap = dozer_contract_swap.pools[pool_key]
+        reserve_a = pool_swap.reserve_a
+        reserve_b = pool_swap.reserve_b
+
+        htr_amount_out = self.runner.call_view_method(
+            self.dozer_manager_id, "get_amount_out", usd_amount_out, reserve_b, reserve_a, self.pool_fee, 1000
+        )
+        assert htr_amount_out == 1_012_620_660
+
+        swap_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=usd_amount_out, token_uid=TokenUid(self.usd_token)),
+                NCWithdrawalAction(amount=htr_amount_out, token_uid=TokenUid(HTR_UID)),
+            ],
+            timestamp=initial_timestamp + 200,
+        )
+        self.runner.call_public_method(
+            self.dozer_manager_id, "swap_exact_tokens_for_tokens", swap_ctx, self.pool_fee,
+            int(initial_timestamp + 300)
+        )
+
+        htr_price_after_second_swap = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_after_second_swap == 5015_3895  # ~0.5 with 8 decimals
+
+        # After undoing the swap with the pool, the htr balance increases and the usd balance decreases
+        user_balance_usd -= usd_amount_out
+        user_balance_htr += htr_amount_out
+        assert user_balance_usd == -9_071_565
+        assert user_balance_htr == 54_557_860
+
+        usd_amount_out2 = self.runner.call_view_method(
+            self.dozer_manager_id, "get_amount_out", user_balance_htr, reserve_a, reserve_b, self.pool_fee, 1000
+        )
+        assert usd_amount_out2 == 22_372_439
+
+        swap_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=user_balance_htr, token_uid=TokenUid(HTR_UID)),
+                NCWithdrawalAction(amount=usd_amount_out2, token_uid=TokenUid(self.usd_token)),
+            ],
+            timestamp=initial_timestamp + 200,
+        )
+        self.runner.call_public_method(
+            self.dozer_manager_id, "swap_exact_tokens_for_tokens", swap_ctx, self.pool_fee,
+            int(initial_timestamp + 300)
+        )
+
+        htr_price_after_third_swap = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_after_third_swap == 4961_1218  # ~0.5 with 8 decimals
+
+        # The user does one last swap with the pool, swapping the HTR from IL compensation to usd.
+        # The HTR balance is zero as in the beginning, but the USD balance is greater than zero, demonstrating how
+        # this mechanism can be used to syphon funds from oasis.
+        user_balance_usd += usd_amount_out2
+        user_balance_htr -= user_balance_htr
+        assert user_balance_usd == 13_300_874
+        assert user_balance_htr == 0
+
+    def test_impermanent_loss6(self):
+        """
+        1. User deposits USD on HTR-USD pool
+        2. User makes HTR price decrease by swapping directly on the pool
+        3. User gets less USD than initial deposit, that is, lower total value
+        4. User correctly receives IL protection compensation
+        5. User reverts the swap, bringing the HTR price back to normal
+        """
+        # Initialize with larger amounts to allow for significant price movements
+        dev_initial_deposit = 1_000_000
+        pool_key = f"{HTR_UID.hex()}/{self.usd_token.hex()}/{self.pool_fee}"
+
+        # Variables representing a dummy user balance, it could be the balance in another contract
+        user_balance_usd = 0
+        user_balance_htr = 0
+
+        # Initialize contracts
+        self.initialize_pool_manager(htr_amount=2_000_000, usd_amount=200_000)
+
+        actions = [NCDepositAction(token_uid=HTR_UID, amount=dev_initial_deposit)]
+        ctx = self.create_context(
+            actions=actions,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.create_contract(
+            self.oasis_id,
+            self.oasis_blueprint_id,
+            ctx,
+            self.dozer_manager_id,
+            self.usd_token,
+            self.pool_fee,
+            0,
+        )
+
+        # User deposits with 12-month lock
+        initial_timestamp = self.clock.seconds()
+        deposit_amount = 10_000
+        user_address = self._get_any_address()[0]
+        timelock = 12
+
+        ctx = self.create_context(
+            actions=[NCDepositAction(amount=deposit_amount, token_uid=self.usd_token)],
+            timestamp=initial_timestamp,
+            caller_id=user_address,
+        )
+
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock)
+
+        # After depositing into oasis, the user's usd balance decreases
+        user_balance_usd -= deposit_amount
+        assert user_balance_usd == -10_000
+
+        htr_amount = self.runner.call_view_method(
+            self.dozer_manager_id, "front_quote_add_liquidity_in", deposit_amount, self.usd_token, pool_key
+        )
+
+        bonus = self._get_user_bonus(timelock, htr_amount)
+        assert bonus == 20_000 # 10k usd = 100k htr; 20% -> 20k htr
+
+        htr_price_before = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_before == 1000_0000  # 0.1 USD with 8 decimals
+
+        # Same user executes swap to decrease htr price purposefully
+        dozer_contract_swap = self.get_readonly_contract(self.dozer_manager_id)
+        assert isinstance(dozer_contract_swap, DozerPoolManager)
+        pool_swap = dozer_contract_swap.pools[pool_key]
+        reserve_a = pool_swap.reserve_a
+        reserve_b = pool_swap.reserve_b
+
+        htr_swap_amount = reserve_a // 20  # Swap 5% of HTR
+        assert htr_swap_amount == 105_000
+        usd_amount_out = self.runner.call_view_method(
+            self.dozer_manager_id, "get_amount_out", htr_swap_amount, reserve_a, reserve_b, self.pool_fee, 1000
+        )
+        assert usd_amount_out == 9_971
+
+        swap_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=htr_swap_amount, token_uid=TokenUid(HTR_UID)),
+                NCWithdrawalAction(amount=usd_amount_out, token_uid=TokenUid(self.usd_token)),
+            ],
+            timestamp=initial_timestamp + 200,
+        )
+        self.runner.call_public_method(
+            self.dozer_manager_id, "swap_exact_tokens_for_tokens", swap_ctx, self.pool_fee, int(initial_timestamp + 300)
+        )
+
+        htr_price_after = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_after == 907_1609  # ~0.09 with 8 decimals
+        assert htr_price_after < htr_price_before  # htr price decreased
+
+        # After swapping with the pool, the htr balance decreases and the usd balance increases
+        user_balance_usd += usd_amount_out
+        user_balance_htr -= htr_swap_amount
+        assert user_balance_usd == -29
+        assert user_balance_htr == -105_000
+
+        # Close the position
+        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        close_ctx = self.create_context(actions=[], vertex=self.tx, caller_id=user_address, timestamp=unlock_time)
+
+        self.runner.call_public_method(self.oasis_id, "close_position", close_ctx)
+
+        # Get user info after closing position
+        user_info = self._user_info(user_address)
+
+        assert user_info.closed_balance_b == 9_524  # less USD than deposit in quantity -> less value!
+        assert user_info.closed_balance_b < deposit_amount
+
+        assert user_info.closed_balance_a == 25_247  # 20k htr initial bonus + IL compensation
+
+        # After closing the position, both balances increase (simulating a withdrawal)
+        user_balance_usd += user_info.closed_balance_b
+        user_balance_htr += user_info.closed_balance_a
+        assert user_balance_usd == 9_495
+        assert user_balance_htr == -79_753
+
+        # Same user executes swap to increase htr price, undoing what he did before, minus fees
+        pool_swap = dozer_contract_swap.pools[pool_key]
+        reserve_a = pool_swap.reserve_a
+        reserve_b = pool_swap.reserve_b
+
+        htr_amount_out = self.runner.call_view_method(
+            self.dozer_manager_id, "get_amount_out", usd_amount_out, reserve_b, reserve_a, self.pool_fee, 1000
+        )
+        assert htr_amount_out == 104_149
+
+        swap_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=usd_amount_out, token_uid=TokenUid(self.usd_token)),
+                NCWithdrawalAction(amount=htr_amount_out, token_uid=TokenUid(HTR_UID)),
+            ],
+            timestamp=initial_timestamp + 200,
+        )
+        self.runner.call_public_method(
+            self.dozer_manager_id, "swap_exact_tokens_for_tokens", swap_ctx, self.pool_fee,
+            int(initial_timestamp + 300)
+        )
+
+        htr_price_after_second_swap = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_after_second_swap == 1004_4617  # ~0.1 with 8 decimals
+
+        # After undoing the swap with the pool, the htr balance increases and the usd balance decreases
+        user_balance_usd -= usd_amount_out
+        user_balance_htr += htr_amount_out
+        assert user_balance_usd == -476
+        assert user_balance_htr == 24_396
+
+        usd_amount_out2 = self.runner.call_view_method(
+            self.dozer_manager_id, "get_amount_out", user_balance_htr, reserve_a, reserve_b, self.pool_fee, 1000
+        )
+        assert usd_amount_out2 == 2_181
+
+        swap_ctx = self.create_context(
+            actions=[
+                NCDepositAction(amount=user_balance_htr, token_uid=TokenUid(HTR_UID)),
+                NCWithdrawalAction(amount=usd_amount_out2, token_uid=TokenUid(self.usd_token)),
+            ],
+            timestamp=initial_timestamp + 200,
+        )
+        self.runner.call_public_method(
+            self.dozer_manager_id, "swap_exact_tokens_for_tokens", swap_ctx, self.pool_fee,
+            int(initial_timestamp + 300)
+        )
+
+        htr_price_after_third_swap = self.runner.call_view_method(self.dozer_manager_id, 'get_token_price_in_usd', HTR_UID)
+        assert htr_price_after_third_swap == 980_3880  # ~0.09 with 8 decimals
+
+        # The user does one last swap with the pool, swapping the HTR from IL compensation to usd.
+        # The HTR balance is zero as in the beginning, but the USD balance is greater than zero, demonstrating how
+        # this mechanism can be used to syphon funds from oasis.
+        user_balance_usd += usd_amount_out2
+        user_balance_htr -= user_balance_htr
+        assert user_balance_usd == 1_705
+        assert user_balance_htr == 0
+
+    def test_pause(self) -> None:
+        self.initialize_oasis()
+        contract = self.get_readonly_contract(self.oasis_id)
+        assert isinstance(contract, Oasis)
+
+        assert not contract.paused
+        with pytest.raises(NCFail, match='Only dev can pause'):
+            self.runner.call_public_method(self.oasis_id, 'pause', self.create_context())
+
+        self.runner.call_public_method(self.oasis_id, 'pause', self.create_context(caller_id=self.dev_address))
+        assert contract.paused
+
+        msg = 'Contract is paused'
+
+        # First update owner to a different address
+        new_owner = self._get_any_address()[0]
+        self.runner.call_public_method(
+            self.oasis_id,
+            'update_owner_address',
+            self.create_context(caller_id=self.dev_address),
+            new_owner
+        )
+
+        # Now test that the new owner (who is not dev) is blocked when paused
+        with pytest.raises(NCFail, match=msg):
+            self.runner.call_public_method(
+                self.oasis_id,
+                'owner_deposit',
+                self.create_context(
+                    caller_id=new_owner,
+                    actions=[NCDepositAction(amount=1_000_00, token_uid=HTR_UID)]
+                ),
+            )
+
+        with pytest.raises(NCFail, match=msg):
+            self.runner.call_public_method(self.oasis_id, 'user_deposit', self.create_context(), timelock=6)
+
+        with pytest.raises(NCFail, match=msg):
+            self.runner.call_public_method(self.oasis_id, 'close_position', self.create_context())
+
+        with pytest.raises(NCFail, match=msg):
+            self.runner.call_public_method(self.oasis_id, 'user_withdraw', self.create_context())
+
+        with pytest.raises(NCFail, match=msg):
+            self.runner.call_public_method(self.oasis_id, 'user_withdraw_bonus', self.create_context())
+
+        with pytest.raises(NCFail, match=msg):
+            self.runner.call_public_method(self.oasis_id, 'owner_withdraw', self.create_context())
+
+        with pytest.raises(NCFail, match='Only dev can unpause'):
+            self.runner.call_public_method(self.oasis_id, 'unpause', self.create_context())
+
+        self.runner.call_public_method(self.oasis_id, 'unpause', self.create_context(caller_id=self.dev_address))
+        assert not contract.paused
+
+    def test_deposit_after_position_closed(self) -> None:
+        user_address, timelock, _, initial_timestamp = self.test_user_deposit(timelock=6)
+        deposit_amount = 1_000_00
+
+        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        close_ctx = self.create_context(caller_id=user_address, timestamp=unlock_time)
+        self.runner.call_public_method(self.oasis_id, "close_position", close_ctx)
+
+        user_info = self._user_info(user_address)
+        assert user_info.position_closed
+
+        ctx = self.create_context(
+            actions=[NCDepositAction(amount=deposit_amount, token_uid=self.token_b)],
+            caller_id=user_address,
+            timestamp=unlock_time + 1,
+        )
+        with pytest.raises(NCFail, match='Need to withdraw before making a new deposit'):
+            self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, 6)
+
+        withdraw_ctx = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=TokenUid(self.token_b), amount=user_info.closed_balance_b),
+                NCWithdrawalAction(token_uid=TokenUid(HTR_UID), amount=user_info.closed_balance_a),
+            ],
+            caller_id=user_address,
+            timestamp=unlock_time + 2,
+        )
+        self.runner.call_public_method(self.oasis_id, "user_withdraw", withdraw_ctx)
+
+        # User can now deposit again successfully
+        ctx = self.create_context(
+            actions=[NCDepositAction(amount=deposit_amount, token_uid=self.token_b)],
+            caller_id=user_address,
+            timestamp=unlock_time + 3,
+        )
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, 6)
+
+        user_info = self._user_info(user_address)
+        assert user_info.user_deposit_b == deposit_amount
+
+    def test_user_deposit_insufficient_oasis_balance(self) -> None:
+        self.initialize_pool(amount_htr=1_000_000_00, amount_b=100_000_00)
+
+        min_deposit = 10000_00
+        large_deposit = 10_000_000_00
+
+        self.initialize_oasis(amount=min_deposit)
+
+        ctx = self.create_context(
+            actions=[NCDepositAction(amount=large_deposit, token_uid=self.token_b)],
+        )
+
+        with pytest.raises(NCFail, match='Not enough balance'):
+            self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, 6)
+
+    def test_owner_withdraw_exceeds_balance(self) -> None:
+        dev_initial_deposit = 10_000_000_00
+        self.initialize_pool()
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        withdraw_amount = 10_000_000_01  # 1 more than available
+
+        ctx = self.create_context(
+            actions=[NCWithdrawalAction(amount=withdraw_amount, token_uid=HTR_UID)],
+            caller_id=self.dev_address,
+        )
+
+        with pytest.raises(NCFail, match='Withdrawal amount too high'):
+            self.runner.call_public_method(self.oasis_id, "owner_withdraw", ctx)
+
+        ctx = self.create_context(
+            actions=[NCWithdrawalAction(amount=dev_initial_deposit, token_uid=HTR_UID)],
+            caller_id=self.dev_address,
+        )
+        self.runner.call_public_method(self.oasis_id, "owner_withdraw", ctx)
+
+        oasis_contract = self.get_readonly_contract(self.oasis_id)
+        assert isinstance(oasis_contract, Oasis)
+        assert oasis_contract.oasis_htr_balance == 0
+
+    def test_dev_withdraw_fee_exceeds_balance(self) -> None:
+        protocol_fee = 50  # 5%
+        self.initialize_pool()
+        self.initialize_oasis(amount=10_000_000_00, protocol_fee=protocol_fee)
+
+        deposit_amount = 1_000_00
+        ctx = self.create_context(
+            actions=[NCDepositAction(amount=deposit_amount, token_uid=self.token_b)],
+        )
+        self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, 6)
+
+        expected_fee = (deposit_amount * protocol_fee + 999) // 1000
+        assert expected_fee == 5000
+
+        ctx = self.create_context(
+            actions=[NCWithdrawalAction(amount=expected_fee + 1, token_uid=self.token_b)],
+            caller_id=self.dev_address,
+        )
+        with pytest.raises(NCFail, match='Withdrawal amount too high'):
+            self.runner.call_public_method(self.oasis_id, "dev_withdraw_fee", ctx)
+
+    def test_withdraw_closed_position_insufficient_htr(self) -> None:
+        user_address, timelock, _, initial_timestamp = self.test_user_deposit(timelock=6)
+
+        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        close_ctx = self.create_context(caller_id=user_address, timestamp=unlock_time)
+        self.runner.call_public_method(self.oasis_id, "close_position", close_ctx)
+
+        user_info = self._user_info(user_address)
+        ctx = self.create_context(
+            actions=[
+                NCWithdrawalAction(token_uid=TokenUid(self.token_b), amount=user_info.closed_balance_b),
+                NCWithdrawalAction(token_uid=TokenUid(HTR_UID), amount=user_info.closed_balance_a + 1),
+            ],
+            caller_id=user_address,
+        )
+        with pytest.raises(NCFail, match='Not enough HTR balance. Available: 1429, Requested: 1430'):
+            self.runner.call_public_method(self.oasis_id, "user_withdraw", ctx)

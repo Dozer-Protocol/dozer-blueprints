@@ -25,7 +25,7 @@ from hathor import (
 MIN_DEPOSIT = 10000_00
 PRECISION = 10**20
 PRICE_PRECISION = 10**8  # For decimal price handling (8 decimal places)
-MONTHS_IN_SECONDS = 60*60*24*30
+MONTHS_IN_SECONDS = 60
 MIN_TIMELOCK_AFTER_DEPOSIT = 4 * MONTHS_IN_SECONDS  # 4 months minimum lock after any deposit
 
 class UserPositionEntry(NamedTuple):
@@ -187,6 +187,7 @@ class Oasis(Blueprint):
 
     @public(allow_deposit=True)
     def owner_deposit(self, ctx: Context) -> None:
+        self._check_not_paused(ctx)
         action = self._get_single_token_action(ctx, NCActionType.DEPOSIT, TokenUid(HATHOR_TOKEN_UID), auth=False)
 
         if Address(ctx.caller_id) not in [self.dev_address, self.owner_address]:
@@ -331,14 +332,11 @@ class Oasis(Blueprint):
                           token=token_uid.hex(),
                           amount=cashback_amount)
 
-            if token_uid == self.token_b:
-                adjust_actions:list[NCAction] = [
+            assert token_uid == self.token_b, "Withdrawal token must be token_b"
+            adjust_actions:list[NCAction] = [
                     NCWithdrawalAction(amount=0, token_uid=TokenUid(HATHOR_TOKEN_UID)),
                     NCWithdrawalAction(amount=cashback_amount, token_uid=self.token_b),
                 ]
-            else:
-                assert token_uid == self.token_b, "Withdrawal token must be token_b"
-                adjust_actions = []
             self._get_pool_manager().public(*adjust_actions).withdraw_cashback(self._get_pool_key())
             self._add_user_balance(caller, token_uid, cashback_amount)
 
