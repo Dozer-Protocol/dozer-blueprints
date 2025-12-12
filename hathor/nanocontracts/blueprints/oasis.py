@@ -335,10 +335,8 @@ class Oasis(Blueprint):
                     NCWithdrawalAction(amount=cashback_amount, token_uid=self.token_b),
                 ]
             else:
-                adjust_actions = [
-                    NCWithdrawalAction(amount=cashback_amount, token_uid=TokenUid(HATHOR_TOKEN_UID)),
-                    NCWithdrawalAction(amount=0, token_uid=self.token_b),
-                ]
+                assert token_uid == self.token_b, "Withdrawal token must be token_b"
+                adjust_actions = []
             self._get_pool_manager().public(*adjust_actions).withdraw_cashback(self._get_pool_key())
             self._add_user_balance(caller, token_uid, cashback_amount)
 
