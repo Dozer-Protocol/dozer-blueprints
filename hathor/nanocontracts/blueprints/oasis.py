@@ -25,7 +25,7 @@ from hathor import (
 MIN_DEPOSIT = 10000_00
 PRECISION = 10**20
 PRICE_PRECISION = 10**8  # For decimal price handling (8 decimal places)
-MONTHS_IN_SECONDS = 60
+MONTHS_IN_SECONDS = 60*60*24*30  # Approximate number of seconds in a month
 MIN_TIMELOCK_AFTER_DEPOSIT = 4 * MONTHS_IN_SECONDS  # 4 months minimum lock after any deposit
 
 class UserPositionEntry(NamedTuple):
@@ -340,7 +340,6 @@ class Oasis(Blueprint):
             self._get_pool_manager().public(*adjust_actions).withdraw_cashback(self._get_pool_key())
             self._add_user_balance(caller, token_uid, cashback_amount)
 
-    @public(allow_withdrawal=True)
     def close_position(self, ctx: Context) -> None:
         """Close a user's position, removing liquidity from the pool and making funds available for withdrawal.
 
