@@ -1039,9 +1039,9 @@ class OasisTestCase(BlueprintTestCase):
         self.assertEqual(dev_info.user_balance_b, 0)
 
     def test_protocol_fee_max(self) -> None:
-        """Test deposits and withdrawals with maximum protocol fee (1000 = 100%)"""
+        """Test deposits and withdrawals with maximum protocol fee (500 = 50%)"""
         self.initialize_pool()
-        self.initialize_oasis(amount=10_000_000_00, protocol_fee=1000)
+        self.initialize_oasis(amount=10_000_000_00, protocol_fee=500)
 
         user_address = self._get_any_address()[0]
         deposit_amount = 1_000_00
@@ -1065,9 +1065,9 @@ class OasisTestCase(BlueprintTestCase):
             self.oasis_id, "user_info", self.dev_address
         )
 
-        # With max fee, all tokens should go to dev
-        self.assertEqual(user_info.user_deposit_b, 0)
-        self.assertEqual(dev_info.user_balance_b, deposit_amount)
+        # With max fee, half goes to dev as fee, half to user as deposit
+        self.assertEqual(user_info.user_deposit_b, deposit_amount // 2)
+        self.assertEqual(dev_info.user_balance_b, deposit_amount // 2)
 
     def test_protocol_fee_rounding(self) -> None:
         """Test protocol fee rounding with various deposit amounts"""
@@ -1199,7 +1199,7 @@ class OasisTestCase(BlueprintTestCase):
         self.assertEqual(oasis_info.protocol_fee, initial_fee)
 
         # Test fee update
-        new_fee = 750  # 0.75%
+        new_fee = 300  # 30%
         ctx = self.create_context(actions=[], vertex=self.tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp())
         self.runner.call_public_method(
             self.oasis_id, "update_protocol_fee", ctx, new_fee
@@ -1211,7 +1211,7 @@ class OasisTestCase(BlueprintTestCase):
         # Test invalid fee update
         with self.assertRaises(NCFail):
             self.runner.call_public_method(
-                self.oasis_id, "update_protocol_fee", ctx, 1001
+                self.oasis_id, "update_protocol_fee", ctx, 501
             )
 
         # Test fee collection

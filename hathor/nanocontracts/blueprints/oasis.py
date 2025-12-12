@@ -142,8 +142,8 @@ class Oasis(Blueprint):
 
         if action.amount < MIN_DEPOSIT:
             raise NCFail("Deposit amount too low")
-        if protocol_fee < 0 or protocol_fee > 1000:
-            raise NCFail("Protocol fee must be between 0 and 1000")
+        if protocol_fee < 0 or protocol_fee > 500:
+            raise NCFail("Protocol fee must be between 0 and 500")
 
         self.token_b = token_b
         self.dev_address = Address(ctx.caller_id)
@@ -243,9 +243,11 @@ class Oasis(Blueprint):
         # Add fee to dev balances
         self._add_user_balance(Address(self.dev_address), self.token_b, Amount(fee_amount))
 
-        # Continue with deposit using reduced amount
+        assert deposit_amount > 0, "Deposit amount must be greater than 0"
+
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
-        token_price_in_htr = (deposit_amount * PRICE_PRECISION) // htr_amount if htr_amount > 0 else 0
+        assert htr_amount > 0, "htr_amount must be greater than 0"
+        token_price_in_htr = (deposit_amount * PRICE_PRECISION) // htr_amount
         bonus = self._get_user_bonus(timelock, htr_amount)
 
         now = ctx.block.timestamp
@@ -546,8 +548,8 @@ class Oasis(Blueprint):
         """
         if Address(ctx.caller_id) != self.dev_address:
             raise NCFail("Only dev can update protocol fee")
-        if new_fee > 1000 or new_fee < 0:
-            raise NCFail(f"Protocol fee out of range: {new_fee} (must be between 0 and 1000)")
+        if new_fee > 500 or new_fee < 0:
+            raise NCFail(f"Protocol fee out of range: {new_fee} (must be between 0 and 500)")
 
         old_fee = self.protocol_fee
         self.protocol_fee = Amount(new_fee)
