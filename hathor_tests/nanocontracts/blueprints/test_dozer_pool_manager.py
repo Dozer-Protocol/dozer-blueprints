@@ -1553,6 +1553,14 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             self.nc_id, "set_htr_usd_pool", owner_context, htr_token, usd_token, 3
         )
 
+        # Sign both pools so they're included in pathfinding graph
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", owner_context, htr_token, usd_token, 3
+        )
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", owner_context, htr_token, self.token_b, 3
+        )
+
         # Debug: Check if pathfinding works
         swap_path = self.runner.call_view_method(
             self.nc_id, "find_best_swap_path", 100_00, usd_token, self.token_b, 3
@@ -1659,6 +1667,17 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         self.runner.call_public_method(
             self.nc_id, "set_htr_usd_pool", owner_context, htr_token, usd_token, 3
+        )
+
+        # Sign all 3 pools so they're included in pathfinding graph
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", owner_context, htr_token, usd_token, 3
+        )
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", owner_context, htr_token, self.token_b, 3
+        )
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", owner_context, self.token_b, self.token_c, 3
         )
 
         # Test TOKEN_C price in USD
@@ -1825,6 +1844,21 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Create A/C pool
         pool_key_ac, creator_ac = self._create_pool(
             self.token_a, self.token_c, fee=3, reserve_a=100000_00, reserve_b=300000_00
+        )
+
+        # Sign all 3 pools so they're included in pathfinding graph
+        tx = self._get_any_tx()
+        owner_context = self.create_context(
+            [], tx, Address(self.owner_address), timestamp=self.get_current_timestamp()
+        )
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", owner_context, self.token_a, self.token_b, 3
+        )
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", owner_context, self.token_b, self.token_c, 3
+        )
+        self.runner.call_public_method(
+            self.nc_id, "sign_pool", owner_context, self.token_a, self.token_c, 3
         )
 
         # Track users per pool for liquidity checks and initial reserves for burned liquidity calculation
@@ -2500,4 +2534,3 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # The test passes if we reach here without assertion errors
         self._check_balance()
-

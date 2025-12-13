@@ -4236,7 +4236,7 @@ class DozerPoolManager(Blueprint):
             amount_in: The amount of input tokens
             token_in: The input token
             token_out: The output token
-            max_hops: Maximum number of hops (1-3, but algorithm handles any number)
+            max_hops: Maximum number of hops (1-3, enforced by hard limit)
 
         Returns:
             A SwapPathInfo NamedTuple containing:
@@ -4246,8 +4246,8 @@ class DozerPoolManager(Blueprint):
             - price_impact: Overall price impact
         """
         # Limit max_hops to reasonable number for gas efficiency
-        if max_hops > 5:
-            max_hops = 5
+        if max_hops > 3:
+            max_hops = 3
 
         # Build graph of all possible token pairs and their exchange rates
         graph = self._build_token_graph(amount_in)
@@ -4298,13 +4298,17 @@ class DozerPoolManager(Blueprint):
             Graph structure: token -> {neighbor_token: (output_amount, pool_key, fee)}
 
         Note:
-            Limited to MAX_POOLS_TO_ITERATE pools to prevent DoS attacks when called
-            indirectly by public methods like swap operations
+            Only includes signed pools to prevent routing through untrusted liquidity.
+            Limited to pools in pool_signers to prevent DoS attacks when called
+            indirectly by public methods like swap operations.
         """
         graph = {}
         count = 0
 
         for pool_key in self.all_pools:
+            # Only include signed pools
+            if pool_key not in self.pool_signers:
+                continue
             if count >= MAX_POOLS_TO_ITERATE:
                 break
             count += 1
@@ -4635,7 +4639,7 @@ class DozerPoolManager(Blueprint):
             amount_out: The desired output amount
             token_in: The input token
             token_out: The output token
-            max_hops: Maximum number of hops (1-3, but algorithm handles any number)
+            max_hops: Maximum number of hops (1-3, enforced by hard limit)
 
         Returns:
             A SwapPathExactOutputInfo NamedTuple containing:
@@ -4645,8 +4649,8 @@ class DozerPoolManager(Blueprint):
             - price_impact: Overall price impact
         """
         # Limit max_hops to reasonable number for gas efficiency
-        if max_hops > 5:
-            max_hops = 5
+        if max_hops > 3:
+            max_hops = 3
 
         # Build reverse graph of all possible token pairs and their exchange rates
         graph = self._build_reverse_token_graph(amount_out)
@@ -4697,13 +4701,17 @@ class DozerPoolManager(Blueprint):
             Graph structure: token -> {neighbor_token: (input_amount, pool_key, fee)}
 
         Note:
-            Limited to MAX_POOLS_TO_ITERATE pools to prevent DoS attacks when called
-            indirectly by public methods like swap operations
+            Only includes signed pools to prevent routing through untrusted liquidity.
+            Limited to pools in pool_signers to prevent DoS attacks when called
+            indirectly by public methods like swap operations.
         """
         graph = {}
         count = 0
 
         for pool_key in self.all_pools:
+            # Only include signed pools
+            if pool_key not in self.pool_signers:
+                continue
             if count >= MAX_POOLS_TO_ITERATE:
                 break
             count += 1
