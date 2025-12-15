@@ -231,6 +231,17 @@ class OasisTestCase(BlueprintTestCase):
             Amount(3),
         )
 
+        # Sign the HTR-USD pool so it's included in the token graph
+        sign_ctx = self.create_context(actions=[], vertex=self.tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp())
+        self.runner.call_public_method(
+            self.dozer_manager_id,
+            "sign_pool",
+            sign_ctx,
+            HTR_UID,
+            self.usd_token,
+            Amount(3),
+        )
+
     def initialize_pool(
         self, amount_htr: int = 1000000, amount_b: int = 7000000
     ) -> None:
@@ -249,6 +260,17 @@ class OasisTestCase(BlueprintTestCase):
             self.dozer_manager_id,
             "create_pool",
             pool_ctx,
+            self.pool_fee,
+        )
+
+        # Sign the HTR-TokenB pool so it's included in the token graph
+        sign_ctx = self.create_context(actions=[], vertex=self.tx, caller_id=self.dev_address, timestamp=self.get_current_timestamp())
+        self.runner.call_public_method(
+            self.dozer_manager_id,
+            "sign_pool",
+            sign_ctx,
+            HTR_UID,
+            self.token_b,
             self.pool_fee,
         )
 

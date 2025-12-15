@@ -340,6 +340,7 @@ class Oasis(Blueprint):
             self._get_pool_manager().public(*adjust_actions).withdraw_cashback(self._get_pool_key())
             self._add_user_balance(caller, token_uid, cashback_amount)
 
+    @public
     def close_position(self, ctx: Context) -> None:
         """Close a user's position, removing liquidity from the pool and making funds available for withdrawal.
 
