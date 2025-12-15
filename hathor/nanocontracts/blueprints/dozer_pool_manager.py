@@ -55,6 +55,11 @@ class PoolState(NamedTuple):
     volume_a: Amount
     volume_b: Amount
 
+    # TWAP Oracle fields for manipulation-resistant pricing
+    price0_cumulative_last: Amount  # Cumulative price for token_b/token_a
+    price1_cumulative_last: Amount  # Cumulative price for token_a/token_b
+    block_timestamp_last: int  # Last TWAP update timestamp
+
 
 # Custom error classes
 class PoolExists(NCFail):
@@ -825,6 +830,58 @@ class DozerPoolManager(Blueprint):
         amount_b = (amount_a * reserve_b) // reserve_a
         return Amount(amount_b)
 
+    def _update_twap(self, pool_key: str, ctx: Context) -> None:
+        """Update TWAP oracle for a pool.
+        
+        Called at the start of every swap to maintain cumulative price.
+        Only updates once per block to prevent intra-block manipulation.
+        
+        Args:
+            pool_key: Pool identifier
+            ctx: Execution context for timestamp
+        """
+        pool = self.pools.get(pool_key)
+        if not pool:
+            return
+        
+        current_timestamp = int(ctx.block.timestamp)
+        
+        # Only update once per block to prevent intra-block manipulation
+        if current_timestamp == pool.block_timestamp_last:
+            return
+        
+        time_elapsed = current_timestamp - pool.block_timestamp_last
+        
+        # Skip if first interaction or same block
+        if pool.block_timestamp_last == 0 or time_elapsed == 0:
+            # Just update timestamp
+            self._update_pool(pool_key, block_timestamp_last=current_timestamp)
+            return
+        
+        # Calculate price using high precision to avoid rounding errors
+        # Using 10^18 precision for TWAP calculations
+        TWAP_PRECISION = 10**18
+        
+        if pool.reserve_a > 0 and pool.reserve_b > 0:
+            # price0 = reserve_b / reserve_a (how much token_b per token_a)
+            price0 = (pool.reserve_b * TWAP_PRECISION) // pool.reserve_a
+            # price1 = reserve_a / reserve_b (how much token_a per token_b)
+            price1 = (pool.reserve_a * TWAP_PRECISION) // pool.reserve_b
+            
+            # Accumulate: add (price * time_elapsed)
+            new_price0_cumulative = Amount(pool.price0_cumulative_last + (price0 * time_elapsed))
+            new_price1_cumulative = Amount(pool.price1_cumulative_last + (price1 * time_elapsed))
+            
+            self._update_pool(
+                pool_key,
+                price0_cumulative_last=new_price0_cumulative,
+                price1_cumulative_last=new_price1_cumulative,
+                block_timestamp_last=current_timestamp
+            )
+        else:
+            # Just update timestamp if no liquidity
+            self._update_pool(pool_key, block_timestamp_last=current_timestamp)
+
     def _check_k_not_decreased(
         self,
         k_before: Amount,
@@ -1329,7 +1386,11 @@ class DozerPoolManager(Blueprint):
             transactions=Amount(0),
             last_activity=Timestamp(ctx.block.timestamp),
             volume_a=Amount(0),
-            volume_b=Amount(0)
+            volume_b=Amount(0),
+            # Initialize TWAP oracle fields
+            price0_cumulative_last=Amount(0),
+            price1_cumulative_last=Amount(0),
+            block_timestamp_last=int(ctx.block.timestamp)
         )
 
         # Initialize container attributes separately
@@ -2476,6 +2537,9 @@ class DozerPoolManager(Blueprint):
                        min_accepted_amount=min_accepted_amount,
                        deadline=deadline)
 
+        # Update TWAP oracle before swap
+        self._update_twap(pool_key, ctx)
+
         amount_in = action_in_amount
 
         # Execute the swap using the internal helper method
@@ -2561,6 +2625,9 @@ class DozerPoolManager(Blueprint):
         # Reserve must never reach zero
         if reserve_out <= amount_out:
             raise InsufficientLiquidity("Insufficient liquidity")
+
+        # Update TWAP oracle before swap
+        self._update_twap(pool_key, ctx)
 
         # Calculate amount in
         amount_in = self.get_amount_in(
@@ -3771,11 +3838,109 @@ class DozerPoolManager(Blueprint):
             # hop_price = reserve_out / reserve_in
             final_price = (final_price * reserve_out) // reserve_in
             
-            # Move to next token in the path
+            # Update current_token for the next iteration
             current_token = next_token
         
-        result = Amount(final_price)
-        return result
+        return Amount(final_price)
+
+    @view
+    def get_twap_price(
+        self,
+        token_a: TokenUid,
+        token_b: TokenUid,
+        fee: Amount,
+        window_seconds: int,
+        current_timestamp: int
+    ) -> Amount:
+        """Get Time-Weighted Average Price for a token pair.
+        
+        Returns TWAP to resist price manipulation attacks. Falls back to spot price
+        if insufficient price history is available.
+        
+        Args:
+            token_a: First token (price denominator)
+            token_b: Second token (price numerator)
+            fee: Pool fee
+            window_seconds: TWAP averaging window in seconds (e.g., 86400 for 24 hours)
+            current_timestamp: Current block timestamp from caller's context
+        
+        Returns:
+            TWAP price of token_b in terms of token_a with PRICE_PRECISION (10^8)
+        
+        Raises:
+            PoolNotFound: If pool doesn't exist
+            NCFail: If pool has no liquidity
+        """
+        # Get pool
+        token_a_ordered, token_b_ordered = self._order_tokens(token_a, token_b)
+        pool_key = self._get_pool_key(token_a_ordered, token_b_ordered, fee)
+        pool = self.pools.get(pool_key)
+        
+        if not pool:
+            raise PoolNotFound(f"Pool {pool_key} not found")
+        
+        # Calculate time elapsed since last TWAP update
+        time_elapsed = current_timestamp - pool.block_timestamp_last
+        
+        # Price precision for return value (8 decimal places)
+        PRICE_PRECISION = 10**8
+        
+        # If not enough history or first interaction, fall back to spot price
+        if time_elapsed < window_seconds or pool.block_timestamp_last == 0:
+            if pool.reserve_a == 0 or pool.reserve_b == 0:
+                raise NCFail("Pool has no liquidity")
+            
+            # Return spot price of token_b in terms of token_a
+            # price = how many token_a per 1 token_b = reserve_a / reserve_b
+            if token_a == pool.token_a:
+                # We want token_a / token_b = reserve_a / reserve_b
+                return Amount((pool.reserve_a * PRICE_PRECISION) // pool.reserve_b)
+            else:
+                # token_a is actually pool.token_b, token_b is pool.token_a
+                # We want pool.token_b / pool.token_a = reserve_b / reserve_a
+                return Amount((pool.reserve_b * PRICE_PRECISION) // pool.reserve_a)
+        
+        # Calculate current cumulative price
+        TWAP_PRECISION = 10**18
+        
+        if pool.reserve_a == 0 or pool.reserve_b == 0:
+            raise NCFail("Pool has no liquidity")
+        
+        # In _update_twap:
+        # price0 = reserve_b / reserve_a (token_b per token_a)
+        # price1 = reserve_a / reserve_b (token_a per token_b)
+        # 
+        # We want "price of token_b in terms of token_a" = token_a per token_b
+        # When token_a == pool.token_a: use price1 (reserve_a / reserve_b)
+        # When token_a == pool.token_b: use price0 (reserve_b / reserve_a) 
+        #   because now "token_a" is pool.token_b and we want pool.token_b/pool.token_a
+        
+        # Calculate current prices to add to cumulative
+        price0_now = (pool.reserve_b * TWAP_PRECISION) // pool.reserve_a
+        price1_now = (pool.reserve_a * TWAP_PRECISION) // pool.reserve_b
+        
+        # Calculate current cumulative values
+        current_cumulative0 = pool.price0_cumulative_last + (price0_now * time_elapsed)
+        current_cumulative1 = pool.price1_cumulative_last + (price1_now * time_elapsed)
+        
+        # Determine which cumulative price to use
+        if token_a == pool.token_a:
+            # We want token_a/token_b = reserve_a/reserve_b = price1
+            relevant_cumulative = current_cumulative1
+            last_cumulative = pool.price1_cumulative_last
+        else:
+            # We want token_b/token_a = reserve_b/reserve_a = price0
+            relevant_cumulative = current_cumulative0
+            last_cumulative = pool.price0_cumulative_last
+        
+        # Calculate TWAP over the time window
+        # TWAP = (cumulative_now - cumulative_then) / time_elapsed
+        twap_price_high_precision = (relevant_cumulative - last_cumulative) // time_elapsed
+        
+        # Convert from TWAP_PRECISION (10^18) to PRICE_PRECISION (10^8)
+        twap_price = Amount((twap_price_high_precision * PRICE_PRECISION) // TWAP_PRECISION)
+        
+        return twap_price
 
     @view
     def get_all_token_prices_in_usd(self) -> dict[str, Amount]:

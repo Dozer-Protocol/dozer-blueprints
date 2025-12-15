@@ -248,8 +248,25 @@ class Oasis(Blueprint):
 
         htr_amount = self._quote_add_liquidity_in(deposit_amount)
         assert htr_amount > 0, "htr_amount must be greater than 0"
-        token_price_in_htr = (deposit_amount * PRICE_PRECISION) // htr_amount
-        bonus = self._get_user_bonus(timelock, htr_amount)
+        
+        # Use TWAP price from DozerPoolManager instead of spot price FOR BONUS CALCULATION
+        # This prevents price manipulation attacks where attackers swap to manipulate
+        # the pool price, deposit for inflated bonuses, then undo the swap
+        token_price_in_htr = self._get_pool_manager().view().get_twap_price(
+            HATHOR_TOKEN_UID,
+            self.token_b,
+            self.pool_fee,
+            window_seconds=86400,  # 24-hour TWAP window for low-volume pools
+            current_timestamp=int(ctx.block.timestamp)
+        )
+        
+        # Calculate HTR amount using TWAP for bonus calculation
+        # get_twap_price returns "price of token_b in terms of HTR"
+        # i.e., how many HTR for 1 token_b (with PRICE_PRECISION scaling)
+        # So: HTR_amount = deposit_amount_token_b * price_token_b_in_HTR / PRICE_PRECISION
+        htr_amount_for_bonus = (deposit_amount * token_price_in_htr) // PRICE_PRECISION
+        
+        bonus = self._get_user_bonus(timelock, htr_amount_for_bonus)
 
         now = ctx.block.timestamp
         if htr_amount + bonus > self.oasis_htr_balance:
@@ -685,8 +702,27 @@ class Oasis(Blueprint):
             HTR amount to compensate for loss (capped at user_lp_htr)
         """
         pool_manager = self._get_pool_manager()
-        reserves = pool_manager.view().get_reserves(HATHOR_TOKEN_UID, self.token_b, self.pool_fee)
-        loss_htr = pool_manager.view().quote(loss_in_token_b, reserves[1], reserves[0])
+        
+        # Use TWAP price instead of spot price for IL compensation
+        # This prevents manipulation where user swaps to inflate IL, gets compensated, then undoes swap
+        # Note: We use the current pool state timestamp for TWAP calculation
+        # Get current timestamp from pool state (most recent price update)
+        pool_state = pool_manager.view().pools.get(
+            pool_manager.view()._get_pool_key(HATHOR_TOKEN_UID, self.token_b, self.pool_fee)
+       )
+        current_ts = pool_state.block_timestamp_last if pool_state else 0
+        
+        token_b_price_in_htr = pool_manager.view().get_twap_price(
+            HATHOR_TOKEN_UID,
+            self.token_b,
+            self.pool_fee,
+            window_seconds=86400,  # 24-hour TWAP window
+            current_timestamp=current_ts
+        )
+        
+        # Calculate HTR equivalent of token_b loss using TWAP price
+        # price is token_b/HTR, so HTR = token_b * price / PRICE_PRECISION
+        loss_htr = (loss_in_token_b * token_b_price_in_htr) // PRICE_PRECISION
 
         # Cap compensation at available HTR
         if loss_htr > user_lp_htr:

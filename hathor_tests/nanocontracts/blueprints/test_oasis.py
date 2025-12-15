@@ -3054,3 +3054,211 @@ class OasisTestCase(BlueprintTestCase):
         )
         with pytest.raises(NCFail, match='Not enough HTR balance. Available: 1429, Requested: 1430'):
             self.runner.call_public_method(self.oasis_id, "user_withdraw", ctx)
+
+    def test_operation_no_attack(self):
+        """Baseline test: Normal operation without attack"""
+        dev_initial_deposit = 10_000_000
+        pool_initial_htr = 10_000_000
+        pool_initial_token_b = 100_000
+
+        self.initialize_pool(amount_htr=pool_initial_htr, amount_b=pool_initial_token_b)
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        contract = self.get_readonly_contract(self.oasis_id)
+        assert isinstance(contract, Oasis)
+
+        assert contract.oasis_htr_balance == 10_000_000
+
+        initial_ts = self.get_current_timestamp()
+        
+        # Build realistic TWAP history with random buys and sells
+        import random
+        random.seed(42)  # Deterministic random for tests
+        
+        for hour in range(25):
+            timestamp = initial_ts + (hour * 3600)
+            # Random: 50% buy HTR, 50% sell HTR
+            # Volume: between 100-1000
+            is_buy_htr = random.choice([True, False])
+            volume = random.randint(100, 1000)
+            
+            if is_buy_htr:
+                # Buy HTR with token_b
+                ctx = self.create_context(
+                    caller_id=self.gen_random_address(),
+                    actions=[
+                        NCDepositAction(token_uid=self.token_b, amount=volume // 100),  # Small token_b amount
+                        NCWithdrawalAction(token_uid=HTR_UID, amount=0),
+                    ],
+                    timestamp=timestamp
+                )
+            else:
+                # Sell HTR for token_b
+                ctx = self.create_context(
+                    caller_id=self.gen_random_address(),
+                    actions=[
+                        NCDepositAction(token_uid=HTR_UID, amount=volume),
+                        NCWithdrawalAction(token_uid=self.token_b, amount=0),
+                    ],
+                    timestamp=timestamp
+                )
+            
+            self.runner.call_public_method(
+                self.dozer_manager_id,
+                'swap_exact_tokens_for_tokens',
+                ctx,
+                fee=self.pool_fee,
+                deadline=timestamp + 1000
+            )
+
+        # User deposit after history is built
+        deposit_ts = initial_ts + (25 * 3600)
+        attacker = self.gen_random_address()
+        
+        ctx = self.create_context(
+            caller_id=attacker,
+            actions=[NCDepositAction(token_uid=self.token_b, amount=10_000)],
+            timestamp=deposit_ts
+        )
+        self.runner.call_public_method(self.oasis_id, 'user_deposit', ctx, timelock=12)
+
+        # User close
+        close_ts = deposit_ts + (12 * 30 * 24 * 3600)
+        self.runner.call_public_method(
+            self.oasis_id, 
+            'close_position', 
+            self.create_context(caller_id=attacker, timestamp=close_ts)
+        )
+        result = self.runner.call_view_method(self.oasis_id, 'user_info', address=attacker)
+
+        # Final result: user got normal bonus (around 200k with random trading)
+        # Allow range for price fluctuations from random trades
+        assert 195_000 <= result.max_withdraw_htr <= 210_000, f"Unexpected bonus: {result.max_withdraw_htr}"
+        assert result.max_withdraw_b == 10_000
+
+    def test_operation_with_attack(self):
+        """Test that TWAP prevents price manipulation attacks on bonus calculation"""
+        dev_initial_deposit = 10_000_000
+        pool_initial_htr = 10_000_000
+        pool_initial_token_b = 100_000
+
+        self.initialize_pool(amount_htr=pool_initial_htr, amount_b=pool_initial_token_b)
+        self.initialize_oasis(amount=dev_initial_deposit)
+
+        contract = self.get_readonly_contract(self.oasis_id)
+        assert isinstance(contract, Oasis)
+
+        assert contract.oasis_htr_balance == 10_000_000
+
+        initial_ts = self.get_current_timestamp()
+        
+        # Build realistic TWAP history with random buys and sells
+        import random
+        random.seed(42)  # Same seed as baseline for fair comparison
+        
+        print(f"\n=== Building 24-hour TWAP history with random trading ===")
+        for hour in range(24):
+            timestamp = initial_ts + (hour * 3600)
+            # Random: 50% buy HTR, 50% sell HTR
+            # Volume: between 100-1000
+            is_buy_htr = random.choice([True, False])
+            volume = random.randint(100, 1000)
+            
+            if is_buy_htr:
+                # Buy HTR with token_b  
+                ctx = self.create_context(
+                    caller_id=self.gen_random_address(),
+                    actions=[
+                        NCDepositAction(token_uid=self.token_b, amount=volume // 100),
+                        NCWithdrawalAction(token_uid=HTR_UID, amount=0),
+                    ],
+                    timestamp=timestamp
+                )
+            else:
+                # Sell HTR for token_b
+                ctx = self.create_context(
+                    caller_id=self.gen_random_address(),
+                    actions=[
+                        NCDepositAction(token_uid=HTR_UID, amount=volume),
+                        NCWithdrawalAction(token_uid=self.token_b, amount=0),
+                    ],
+                    timestamp=timestamp
+                )
+            
+            self.runner.call_public_method(
+                self.dozer_manager_id,
+                'swap_exact_tokens_for_tokens',
+                ctx,
+                fee=self.pool_fee,
+                deadline=timestamp + 1000
+            )
+        
+        # Now attacker tries to manipulate AFTER 24 hours of history
+        attack_ts = initial_ts + (24 * 3600)  # 24 hours later
+        
+        print(f"\n=== Attacker attempts manipulation ===")
+        # User attack: Large swap to manipulate price
+        attacker = self.gen_random_address()
+        ctx = self.create_context(
+            caller_id=attacker,
+            actions=[
+                NCDepositAction(token_uid=HTR_UID, amount=100_000),
+                NCWithdrawalAction(token_uid=self.token_b, amount=0),
+            ],
+            timestamp=attack_ts
+        )
+        result = self.runner.call_public_method(
+            self.dozer_manager_id, 
+            'swap_exact_tokens_for_tokens', 
+            ctx, 
+            fee=self.pool_fee, 
+            deadline=attack_ts + 1000
+        )
+        
+        # User deposit right after manipulation (next block)
+        deposit_ts = attack_ts + 1  # Next block
+        ctx = self.create_context(
+            caller_id=attacker,
+            actions=[NCDepositAction(token_uid=self.token_b, amount=10_000)],
+            timestamp=deposit_ts
+        )
+        self.runner.call_public_method(self.oasis_id, 'user_deposit', ctx, timelock=12)
+
+        # User close position
+        close_ts = deposit_ts + (12 * 30 * 24 * 3600)  # 12 months later
+        self.runner.call_public_method(
+            self.oasis_id, 
+            'close_position', 
+            self.create_context(caller_id=attacker, timestamp=close_ts)
+        )
+        result = self.runner.call_view_method(self.oasis_id, 'user_info', address=attacker)
+
+        # With TWAP: Attack should be prevented! 
+        # The 24-hour TWAP should average out the single-block manipulation
+        print(f"\n=== Results ===")
+        print(f"Actual bonus received: {result.max_withdraw_htr}")
+        print(f"Expected with TWAP (attack blocked): ~195k-210k HTR (normal range)")
+        
+        # TWAP should prevent manipulation - user gets similar bonus to baseline
+        # The massive swap should have minimal impact due to 24-hour averaging
+        assert 195_000 <= result.max_withdraw_htr <= 215_000, f"TWAP failed to prevent attack! Got {result.max_withdraw_htr} HTR"
+        assert result.max_withdraw_b == 10_000
+        
+        print(f"✓ TWAP successfully prevented attack! Bonus within normal range.")
+
+        # User can undo swap but attack already failed
+        ctx = self.create_context(
+            caller_id=attacker,
+            actions=[
+                NCDepositAction(token_uid=self.token_b, amount=987),
+                NCWithdrawalAction(token_uid=HTR_UID, amount=0),
+            ],
+            timestamp=attack_ts + 100
+        )
+        self.runner.call_public_method(
+            self.dozer_manager_id, 
+            'swap_exact_tokens_for_tokens', 
+            ctx, 
+            fee=self.pool_fee, 
+            deadline=attack_ts + 2000
+        )
