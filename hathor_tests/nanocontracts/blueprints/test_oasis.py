@@ -123,7 +123,7 @@ class OasisTestCase(BlueprintTestCase):
             "user_lp_b": user_info.token1Amount,  # token_b amount
         }
 
-    def _user_info(self, address: CallerId, timestamp: int = None):
+    def _user_info(self, address: CallerId, timestamp: int|None = None):
         if timestamp is None:
             timestamp = self.get_current_timestamp()
         return self.runner.call_view_method(
@@ -1189,89 +1189,89 @@ class OasisTestCase(BlueprintTestCase):
         self.assertEqual(user_info.user_deposit_b, expected_deposit)
         self.assertEqual(dev_info.user_balance_b, expected_fee)
 
-    # def test_protocol_fee_updates(self) -> None:
-    #     """Test protocol fee updates and validation"""
-    #     test_cases = [
-    #         (500, True),  # 0.5% - valid
-    #         (1000, True),  # 1% - valid (max)
-    #         (0, True),  # 0% - valid
-    #         (1001, False),  # Over max - invalid
-    #         (-1, False),  # Negative - invalid
-    #     ]
-    #     # Initialize pool and contract
-    #     self.initialize_pool()
+    def test_protocol_fee_updates(self) -> None:
+        """Test protocol fee updates and validation"""
+        test_cases = [
+            (400, True),  # 40% - valid
+            (500, True),  # 50% - valid (max)
+            (0, True),  # 0% - valid
+            (501, False),  # Over max - invalid
+            (-1, False),  # Negative - invalid
+        ]
+        # Initialize pool and contract
+        self.initialize_pool()
 
-    #     for fee, should_succeed in test_cases:
-    #         # Create new contract for each test
-    #         oasis_id = self.gen_random_contract_id()
-    #         self.register_blueprint_class(self.gen_random_blueprint_id(), Oasis)
+        for fee, should_succeed in test_cases:
+            # Create new contract for each test
+            oasis_id = self.gen_random_contract_id()
+            self._register_blueprint_class(Oasis, self.gen_random_blueprint_id(), )
 
-    #         ctx = Context(
-    #             [NCDepositAction(amount=10_000_000_00, token_uid=HTR_UID)],  # type: ignore
-    #             self.tx,
-    #             self.dev_address,
-    #             timestamp=self.get_current_timestamp(),
-    #         )
+            ctx = self.create_context(
+                [NCDepositAction(amount=10_000_000_00, token_uid=HTR_UID)],  # type: ignore
+                self.tx,
+                self.dev_address,
+                timestamp=self.get_current_timestamp(),
+            )
 
-    #         if should_succeed:
-    #             self.runner.create_contract(
-    #                 oasis_id,
-    #                 self.oasis_blueprint_id,
-    #                 ctx,
-    #                 self.dozer_manager_id,
-    #                 self.token_b,
-    #                 self.pool_fee,
-    #                 fee,
-    #             )
-    #             # Verify owner is set to dev
-    #             oasis_contract = self.get_readonly_contract(oasis_id)
-    #             assert isinstance(oasis_contract, Oasis)
-    #             self.assertEqual(oasis_contract.owner_address, self.dev_address)
+            if should_succeed:
+                self.runner.create_contract(
+                    oasis_id,
+                    self.oasis_blueprint_id,
+                    ctx,
+                    self.dozer_manager_id,
+                    self.token_b,
+                    self.pool_fee,
+                    fee,
+                )
+                # Verify owner is set to dev
+                oasis_contract = self.get_readonly_contract(oasis_id)
+                assert isinstance(oasis_contract, Oasis)
+                self.assertEqual(oasis_contract.owner_address, self.dev_address)
 
-    #             # Test deposit with fee
-    #             user_address = self._get_any_address()[0]
-    #             deposit_amount = 1_000_00
+                # Test deposit with fee
+                user_address = self._get_any_address()[0]
+                deposit_amount = 1_000_00
 
-    #             deposit_ctx = Context(
-    #                 [NCDepositAction(amount=deposit_amount, token_uid=self.token_b)],
-    #                 self.tx,
-    #                 user_address,
-    #                 timestamp=self.clock.seconds(),
-    #             )
+                deposit_ctx = self.create_context(
+                    [NCDepositAction(token_uid=self.token_b,amount=deposit_amount)],
+                    self.tx,
+                    user_address,
+                    timestamp=self.get_current_timestamp(),
+                )
 
-    #             self.runner.call_public_method(
-    #                 oasis_id, "user_deposit", deposit_ctx, 6, 3 * PRICE_PRECISION
-    #             )
+                self.runner.call_public_method(
+                    oasis_id, "user_deposit", deposit_ctx, 6
+                )
 
-    #             expected_fee = (deposit_amount * fee) // 1000
-    #             expected_deposit = deposit_amount - expected_fee
+                expected_fee = (deposit_amount * fee) // 1000
+                expected_deposit = deposit_amount - expected_fee
 
-    #             user_info = self.runner.call_view_method(
-    #                 oasis_id, "user_info", user_address
-    #             )
-    #             dev_info = self.runner.call_view_method(
-    #                 oasis_id, "user_info", self.dev_address
-    #             )
+                user_info = self.runner.call_view_method(
+                    oasis_id, "user_info", user_address, self.get_current_timestamp()
+                )
+                dev_info = self.runner.call_view_method(
+                    oasis_id, "user_info", self.dev_address, self.get_current_timestamp()
+                )
 
-    #             self.assertEqual(user_info.user_deposit_b, expected_deposit)
-    #             self.assertEqual(dev_info.user_balance_b, expected_fee)
+                self.assertEqual(user_info.user_deposit_b, expected_deposit)
+                self.assertEqual(dev_info.user_balance_b, expected_fee)
 
-    #             oasis_info = self.runner.call_view_method(oasis_id, "oasis_info")
-    #             self.assertEqual(oasis_info.protocol_fee, fee)
-    #         else:
-    #             with self.assertRaises(NCFail):
-    #                 self.runner.create_contract(
-    #                     oasis_id,
-    #                     self.oasis_blueprint_id,
-    #                     ctx,
-    #                     self.dozer_manager_id,
-    #                     self.token_b,
-    #                     fee,
-    #                 )
-    #             with self.assertRaises(NCFail):
-    #                 self.runner.call_public_method(
-    #                     oasis_id, "update_protocol_fee", ctx, fee
-    #                 )
+                oasis_info = self.runner.call_view_method(oasis_id, "oasis_info")
+                self.assertEqual(oasis_info.protocol_fee, fee)
+            else:
+                with self.assertRaises(NCFail):
+                    self.runner.create_contract(
+                        oasis_id,
+                        self.oasis_blueprint_id,
+                        ctx,
+                        self.dozer_manager_id,
+                        self.token_b,
+                        fee,
+                    )
+                with self.assertRaises(NCFail):
+                    self.runner.call_public_method(
+                        oasis_id, "update_protocol_fee", ctx, fee
+                    )
 
     def test_protocol_fee(self) -> None:
         """Test protocol fee collection and management"""
@@ -2512,7 +2512,7 @@ class OasisTestCase(BlueprintTestCase):
         # Initialize contracts
         self.initialize_pool_manager()
 
-        actions = [NCDepositAction(token_uid=HTR_UID, amount=dev_initial_deposit)]
+        actions = [NCDepositAction(token_uid=TokenUid(HTR_UID), amount=dev_initial_deposit)]
         ctx = self.create_context(
             actions=actions,
             caller_id=self.dev_address,
@@ -2646,7 +2646,7 @@ class OasisTestCase(BlueprintTestCase):
         # Initialize contracts
         self.initialize_pool_manager()
 
-        actions = [NCDepositAction(token_uid=HTR_UID, amount=dev_initial_deposit)]
+        actions = [NCDepositAction(token_uid=TokenUid(HTR_UID), amount=dev_initial_deposit)]
         ctx = self.create_context(
             actions=actions,
             caller_id=self.dev_address,
@@ -2787,7 +2787,7 @@ class OasisTestCase(BlueprintTestCase):
         # Initialize contracts
         self.initialize_pool_manager()
 
-        actions = [NCDepositAction(token_uid=HTR_UID, amount=dev_initial_deposit)]
+        actions = [NCDepositAction(token_uid=TokenUid(HTR_UID), amount=dev_initial_deposit)]
         ctx = self.create_context(
             actions=actions,
             caller_id=self.dev_address,
@@ -3029,7 +3029,7 @@ class OasisTestCase(BlueprintTestCase):
         # Initialize contracts
         self.initialize_pool_manager(htr_amount=2_000_000, usd_amount=200_000)
 
-        actions = [NCDepositAction(token_uid=HTR_UID, amount=dev_initial_deposit)]
+        actions = [NCDepositAction(token_uid=TokenUid(HTR_UID), amount=dev_initial_deposit)]
         ctx = self.create_context(
             actions=actions,
             caller_id=self.dev_address,
@@ -3273,7 +3273,7 @@ class OasisTestCase(BlueprintTestCase):
                 "owner_deposit",
                 self.create_context(
                     caller_id=new_owner,
-                    actions=[NCDepositAction(amount=1_000_00, token_uid=HTR_UID)],
+                    actions=[NCDepositAction(amount=1_000_00, token_uid=TokenUid(HTR_UID))],
                 ),
             )
 
@@ -3383,7 +3383,7 @@ class OasisTestCase(BlueprintTestCase):
         withdraw_amount = 10_000_000_01  # 1 more than available
 
         ctx = self.create_context(
-            actions=[NCWithdrawalAction(amount=withdraw_amount, token_uid=HTR_UID)],
+            actions=[NCWithdrawalAction(amount=withdraw_amount, token_uid=TokenUid(HTR_UID))],
             caller_id=self.dev_address,
         )
 
@@ -3391,7 +3391,7 @@ class OasisTestCase(BlueprintTestCase):
             self.runner.call_public_method(self.oasis_id, "owner_withdraw", ctx)
 
         ctx = self.create_context(
-            actions=[NCWithdrawalAction(amount=dev_initial_deposit, token_uid=HTR_UID)],
+            actions=[NCWithdrawalAction(amount=dev_initial_deposit, token_uid=TokenUid(HTR_UID))],
             caller_id=self.dev_address,
         )
         self.runner.call_public_method(self.oasis_id, "owner_withdraw", ctx)
@@ -3485,7 +3485,7 @@ class OasisTestCase(BlueprintTestCase):
                         NCDepositAction(
                             token_uid=self.token_b, amount=volume // 100
                         ),  # Small token_b amount
-                        NCWithdrawalAction(token_uid=HTR_UID, amount=0),
+                        NCWithdrawalAction(token_uid=TokenUid(HTR_UID), amount=0),
                     ],
                     timestamp=timestamp,
                 )
@@ -3494,7 +3494,7 @@ class OasisTestCase(BlueprintTestCase):
                 ctx = self.create_context(
                     caller_id=self.gen_random_address(),
                     actions=[
-                        NCDepositAction(token_uid=HTR_UID, amount=volume),
+                        NCDepositAction(token_uid=TokenUid(HTR_UID), amount=volume),
                         NCWithdrawalAction(token_uid=self.token_b, amount=0),
                     ],
                     timestamp=timestamp,
@@ -3572,7 +3572,7 @@ class OasisTestCase(BlueprintTestCase):
                     caller_id=self.gen_random_address(),
                     actions=[
                         NCDepositAction(token_uid=self.token_b, amount=volume // 100),
-                        NCWithdrawalAction(token_uid=HTR_UID, amount=0),
+                        NCWithdrawalAction(token_uid=TokenUid(HTR_UID), amount=0),
                     ],
                     timestamp=timestamp,
                 )
@@ -3581,7 +3581,7 @@ class OasisTestCase(BlueprintTestCase):
                 ctx = self.create_context(
                     caller_id=self.gen_random_address(),
                     actions=[
-                        NCDepositAction(token_uid=HTR_UID, amount=volume),
+                        NCDepositAction(token_uid=TokenUid(HTR_UID), amount=volume),
                         NCWithdrawalAction(token_uid=self.token_b, amount=0),
                     ],
                     timestamp=timestamp,
@@ -3604,7 +3604,7 @@ class OasisTestCase(BlueprintTestCase):
         ctx = self.create_context(
             caller_id=attacker,
             actions=[
-                NCDepositAction(token_uid=HTR_UID, amount=100_000),
+                NCDepositAction(token_uid=TokenUid(HTR_UID), amount=100_000),
                 NCWithdrawalAction(token_uid=self.token_b, amount=0),
             ],
             timestamp=attack_ts,
@@ -3657,7 +3657,7 @@ class OasisTestCase(BlueprintTestCase):
             caller_id=attacker,
             actions=[
                 NCDepositAction(token_uid=self.token_b, amount=987),
-                NCWithdrawalAction(token_uid=HTR_UID, amount=0),
+                NCWithdrawalAction(token_uid=TokenUid(HTR_UID), amount=0),
             ],
             timestamp=attack_ts + 100,
         )
@@ -3669,7 +3669,7 @@ class OasisTestCase(BlueprintTestCase):
             deadline=attack_ts + 2000,
         )
 
-    def test_operation_no_attack(self):
+    def test_operation_no_attack2(self):
         dev_initial_deposit = 10_000_000
         pool_initial_htr = 10_000_000
         pool_initial_token_b = 100_000
@@ -3731,7 +3731,7 @@ class OasisTestCase(BlueprintTestCase):
         ctx = self.create_context(
             caller_id=attacker,
             actions=[
-                NCDepositAction(token_uid=HTR_UID, amount=100_000),
+                NCDepositAction(token_uid=TokenUid(HTR_UID), amount=100_000),
                 NCWithdrawalAction(token_uid=self.token_b, amount=987),
             ],
             timestamp=swap_ts,
