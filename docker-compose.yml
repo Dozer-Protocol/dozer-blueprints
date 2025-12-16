@@ -12,6 +12,6 @@ services:
 
     # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_crowdsale.py"] # with stdout
     command: bash -c "
-        poetry run pytest --capture=no -s --disable-warnings --tb=short --color=yes hathor_tests/nanocontracts/blueprints/test_oasis.py
+        poetry run pytest --capture=no -s --disable-warnings --tb=short --color=yes hathor_tests/nanocontracts/blueprints/test_oasis.py::OasisTestCase::test_operation_with_attack2
       "
 

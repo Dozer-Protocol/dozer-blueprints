@@ -64,12 +64,12 @@ class PoolState(NamedTuple):
     volume_a: Amount
     volume_b: Amount
 
-    # TWAP Oracle fields for manipulation-resistant pricing
-    price_a_cumulative_last: (
-        Amount  # Cumulative price for token_a/token_b (how many token_b per token_a)
+    # TWAP Oracle fields for manipulation-resistant pricing (windowed average)
+    price_a_window_sum: (
+        Amount  # Weighted sum of price_a over the window period
     )
-    price_b_cumulative_last: (
-        Amount  # Cumulative price for token_b/token_a (how many token_a per token_b)
+    price_b_window_sum: (
+        Amount  # Weighted sum of price_b over the window period
     )
     block_timestamp_last: int  # Last TWAP update timestamp
 
@@ -353,6 +353,9 @@ class DozerPoolManager(Blueprint):
         str, dict[CallerId, int]
     ]  # pool_key -> user -> timestamp
 
+    # TWAP Oracle configuration
+    twap_window: int  # Time window for TWAP calculation in seconds (default 4 hours)
+
     @public
     def initialize(self, ctx: Context) -> None:
         """Initialize the DozerPoolManager contract.
@@ -387,6 +390,9 @@ class DozerPoolManager(Blueprint):
 
         # Initialize pause state
         self.paused = False
+
+        # Initialize TWAP window to 4 hours (14400 seconds)
+        self.twap_window = 14400
 
         self.log.info(
             "contract initialized",
@@ -865,10 +871,11 @@ class DozerPoolManager(Blueprint):
         return Amount(amount_b)
 
     def _update_twap(self, pool_key: str, ctx: Context) -> None:
-        """Update TWAP oracle for a pool.
+        """Update TWAP oracle for a pool using windowed average.
 
-        Called at the start of every swap and liquidity operation to maintain cumulative price.
-        Only updates once per block to prevent intra-block manipulation.
+        Called at the start of every swap and liquidity operation.
+        Uses a fixed time window (twap_window) for the moving average.
+        Formula: NewWindowSum = (Price_Last * T_Elapsed) + (OldWindowSum * T_Remaining / T_Window)
 
         Args:
             pool_key: Pool identifier
@@ -886,37 +893,37 @@ class DozerPoolManager(Blueprint):
 
         time_elapsed = current_timestamp - pool.block_timestamp_last
 
-        # Skip if first interaction or same block
+        # Skip if first interaction
         if pool.block_timestamp_last == 0 or time_elapsed == 0:
             # Just update timestamp
             self._update_pool(pool_key, block_timestamp_last=current_timestamp)
             return
 
-        # Uses module-level PRICE_PRECISION and MAX_UINT32 constants
-        # Cumulative values wrap within VarUint32 range using modulo
-
         if pool.reserve_a > 0 and pool.reserve_b > 0:
-            # price_a = reserve_b / reserve_a (how much token_b per token_a)
+            # Current spot prices
             price_a = (pool.reserve_b * PRICE_PRECISION) // pool.reserve_a
-            # price_b = reserve_a / reserve_b (how much token_a per token_b)
             price_b = (pool.reserve_a * PRICE_PRECISION) // pool.reserve_b
 
-            # Calculate increments
-            increment_a = price_a * time_elapsed
-            increment_b = price_b * time_elapsed
+            # Calculate time weights
+            # If time_elapsed >= twap_window, the old average is entirely replaced
+            time_remaining = max(0, self.twap_window - time_elapsed)
+            time_weight_new = min(time_elapsed, self.twap_window)
 
-            # Add to cumulative with modulo to handle VarUint32 wrapping
-            new_price_a_cumulative = (pool.price_a_cumulative_last + increment_a) % (
-                MAX_UINT32 + 1
+            # Apply windowed average formula:
+            # NewWindowSum = (Price_Last * T_WeightNew) + (OldWindowSum * T_Remaining / T_Window)
+            new_window_sum_a = (
+                price_a * time_weight_new
+                + (pool.price_a_window_sum * time_remaining) // self.twap_window
             )
-            new_price_b_cumulative = (pool.price_b_cumulative_last + increment_b) % (
-                MAX_UINT32 + 1
+            new_window_sum_b = (
+                price_b * time_weight_new
+                + (pool.price_b_window_sum * time_remaining) // self.twap_window
             )
 
             self._update_pool(
                 pool_key,
-                price_a_cumulative_last=Amount(new_price_a_cumulative),
-                price_b_cumulative_last=Amount(new_price_b_cumulative),
+                price_a_window_sum=Amount(new_window_sum_a),
+                price_b_window_sum=Amount(new_window_sum_b),
                 block_timestamp_last=current_timestamp,
             )
         else:
@@ -1481,10 +1488,10 @@ class DozerPoolManager(Blueprint):
             last_activity=Timestamp(ctx.block.timestamp),
             volume_a=Amount(0),
             volume_b=Amount(0),
-            # Initialize TWAP oracle fields with initial prices
-            # Set cumulative to initial_price so first TWAP query returns valid price
-            price_a_cumulative_last=Amount(initial_price_a),
-            price_b_cumulative_last=Amount(initial_price_b),
+            # Initialize TWAP window sums: initial_price * twap_window
+            # This represents a full window at the initial price
+            price_a_window_sum=Amount(initial_price_a * self.twap_window),
+            price_b_window_sum=Amount(initial_price_b * self.twap_window),
             block_timestamp_last=int(ctx.block.timestamp),
         )
 
@@ -3676,6 +3683,55 @@ class DozerPoolManager(Blueprint):
         )
 
     @public
+    def update_twap_window(self, ctx: Context, new_window: int) -> None:
+        """Update the TWAP calculation window and reinitialize all pool window sums.
+
+        Reinitializes window sums using current spot prices as if pools were just created.
+        Formula: new_sum = current_price * new_window
+
+        Args:
+            ctx: The transaction context
+            new_window: The new window duration in seconds (must be > 0)
+
+        Raises:
+            Unauthorized: If the caller is not the owner
+        """
+        if ctx.caller_id != self.owner:
+            raise Unauthorized("Only the owner can update the TWAP window")
+
+        if new_window <= 0:
+            raise InvalidState("TWAP window must be greater than 0")
+
+        old_window = self.twap_window
+
+        # Reinitialize all pool window sums with current spot prices
+        for pool_key in self.all_pools:
+            pool = self.pools[pool_key]
+            if pool.reserve_a > 0 and pool.reserve_b > 0:
+                # Calculate current spot prices
+                price_a = (pool.reserve_b * PRICE_PRECISION) // pool.reserve_a
+                price_b = (pool.reserve_a * PRICE_PRECISION) // pool.reserve_b
+                # Initialize as if pool was just created: price * new_window
+                new_price_a_window_sum = price_a * new_window
+                new_price_b_window_sum = price_b * new_window
+                self._update_pool(
+                    pool_key,
+                    price_a_window_sum=Amount(new_price_a_window_sum),
+                    price_b_window_sum=Amount(new_price_b_window_sum),
+                    block_timestamp_last=int(ctx.block.timestamp),
+                )
+
+        self.twap_window = new_window
+
+        self.log.info(
+            "twap window updated",
+            old_window=old_window,
+            new_window=new_window,
+            pools_migrated=len(self.all_pools),
+            caller=str(ctx.caller_id),
+        )
+
+    @public
     def add_authorized_signer(self, ctx: Context, signer_address: Address) -> None:
         """Add an address to the list of authorized signers.
 
@@ -4142,11 +4198,11 @@ class DozerPoolManager(Blueprint):
     def get_twap_price(
         self, token_a: TokenUid, token_b: TokenUid, fee: Amount, current_timestamp: int
     ) -> Amount:
-        """Get Time-Weighted Average Price for a token pair.
+        """Get Time-Weighted Average Price for a token pair using windowed average.
 
-        Returns TWAP since last update to resist price manipulation attacks.
-        The cumulative prices are initialized when the pool is created, so TWAP
-        is always available.
+        Returns TWAP over the configured window (twap_window) to resist price
+        manipulation attacks. The window sums are initialized when the pool is
+        created, so TWAP is always available.
 
         Args:
             token_a: First token (price denominator)
@@ -4175,51 +4231,38 @@ class DozerPoolManager(Blueprint):
         # Calculate time elapsed since last TWAP update
         time_elapsed = current_timestamp - pool.block_timestamp_last
 
-        # Uses module-level PRICE_PRECISION (10^8) for calculations
-        # This matches the precision used in _update_twap
-
-        # In _update_twap:
-        # price_a = reserve_b / reserve_a (token_b per token_a)
-        # price_b = reserve_a / reserve_b (token_a per token_b)
-        #
-        # We want "price of token_b in terms of token_a" = token_a per token_b
-        # When token_a == pool.token_a: use price_b (reserve_a / reserve_b)
-        # When token_a == pool.token_b: use price_a (reserve_b / reserve_a)
-        #   because now "token_a" is pool.token_b and we want pool.token_b/pool.token_a
-
-        # Calculate current prices to add to cumulative
+        # Calculate current spot prices
         price_a_now = (pool.reserve_b * PRICE_PRECISION) // pool.reserve_a
         price_b_now = (pool.reserve_a * PRICE_PRECISION) // pool.reserve_b
 
-        # Calculate current cumulative values
-        current_cumulative_a = pool.price_a_cumulative_last + (
-            price_a_now * time_elapsed
-        )
-        current_cumulative_b = pool.price_b_cumulative_last + (
-            price_b_now * time_elapsed
-        )
+        # Calculate updated window sums as of current_timestamp
+        # This mirrors the logic in _update_twap
+        if time_elapsed > 0:
+            time_remaining = max(0, self.twap_window - time_elapsed)
+            time_weight_new = min(time_elapsed, self.twap_window)
 
-        # Determine which cumulative price to use
+            current_window_sum_a = (
+                price_a_now * time_weight_new
+                + (pool.price_a_window_sum * time_remaining) // self.twap_window
+            )
+            current_window_sum_b = (
+                price_b_now * time_weight_new
+                + (pool.price_b_window_sum * time_remaining) // self.twap_window
+            )
+        else:
+            current_window_sum_a = pool.price_a_window_sum
+            current_window_sum_b = pool.price_b_window_sum
+
+        # Determine which window sum to use based on token order
+        # price_a = reserve_b / reserve_a (token_b per token_a)
+        # price_b = reserve_a / reserve_b (token_a per token_b)
+        # We want "price of token_b in terms of token_a" = token_a per token_b
         if token_a == pool.token_a:
             # We want token_a/token_b = reserve_a/reserve_b = price_b
-            relevant_cumulative = current_cumulative_b
-            last_cumulative = pool.price_b_cumulative_last
+            twap_price = Amount(current_window_sum_b // self.twap_window)
         else:
             # We want token_b/token_a = reserve_b/reserve_a = price_a
-            relevant_cumulative = current_cumulative_a
-            last_cumulative = pool.price_a_cumulative_last
-
-        # Calculate TWAP since last update
-        # TWAP = (cumulative_now - cumulative_last) / time_elapsed
-        # If time_elapsed is 0 (same block), use current price directly
-        if time_elapsed > 0:
-            twap_price = Amount((relevant_cumulative - last_cumulative) // time_elapsed)
-        else:
-            # Same block - return current price
-            if token_a == pool.token_a:
-                twap_price = Amount(price_b_now)
-            else:
-                twap_price = Amount(price_a_now)
+            twap_price = Amount(current_window_sum_a // self.twap_window)
 
         return twap_price
 
