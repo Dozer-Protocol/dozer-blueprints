@@ -3705,7 +3705,12 @@ class DozerPoolManager(Blueprint):
         old_window = self.twap_window
 
         # Reinitialize all pool window sums with current spot prices
+        # Limit iteration to prevent DoS attacks
+        count = 0
         for pool_key in self.all_pools:
+            if count >= MAX_POOLS_TO_ITERATE:
+                break
+            count += 1
             pool = self.pools[pool_key]
             if pool.reserve_a > 0 and pool.reserve_b > 0:
                 # Calculate current spot prices
@@ -3727,7 +3732,7 @@ class DozerPoolManager(Blueprint):
             "twap window updated",
             old_window=old_window,
             new_window=new_window,
-            pools_migrated=len(self.all_pools),
+            pools_migrated=count,
             caller=str(ctx.caller_id),
         )
 
