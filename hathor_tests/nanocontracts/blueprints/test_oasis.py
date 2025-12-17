@@ -2016,8 +2016,8 @@ class OasisTestCase(BlueprintTestCase):
         user_info_before_close = self._user_info(user_address)
         expected_user_lp_b = int(user_info_before_close.user_lp_b)
 
-        # Close the position
-        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        # Close the position (account for deposit at initial_timestamp + 2)
+        unlock_time = (initial_timestamp + 2) + (timelock * MONTHS_IN_SECONDS) + 1
         close_ctx = self.create_context(
             actions=[], vertex=self.tx, caller_id=user_address, timestamp=unlock_time
         )
@@ -2468,8 +2468,8 @@ class OasisTestCase(BlueprintTestCase):
         assert token_price_after == 12_0966_9998  # ~12 with 8 decimals
         assert token_price_after > token_price_before  # token B price increased
 
-        # Close the position
-        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        # Close the position (account for deposit at initial_timestamp + 2)
+        unlock_time = (initial_timestamp + 2) + (timelock * MONTHS_IN_SECONDS) + 1
         close_ctx = self.create_context(
             actions=[], vertex=self.tx, caller_id=user_address, timestamp=unlock_time
         )
@@ -2537,6 +2537,7 @@ class OasisTestCase(BlueprintTestCase):
                     amount=pool_extra_usd, token_uid=TokenUid(self.usd_token)
                 ),
             ],
+            timestamp=initial_timestamp + 1,
         )
         self.runner.call_public_method(
             self.dozer_manager_id, "add_liquidity", add_ctx, self.pool_fee
@@ -2549,7 +2550,7 @@ class OasisTestCase(BlueprintTestCase):
 
         ctx = self.create_context(
             actions=[NCDepositAction(amount=deposit_amount, token_uid=self.usd_token)],
-            timestamp=initial_timestamp,
+            timestamp=initial_timestamp + 2,
             caller_id=user_address,
         )
 
@@ -2610,8 +2611,8 @@ class OasisTestCase(BlueprintTestCase):
         assert htr_price_after == 6048_3499  # ~0.6 with 8 decimals
         assert htr_price_after > htr_price_before  # htr price increased
 
-        # Close the position
-        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        # Close the position (account for deposit at initial_timestamp + 2)
+        unlock_time = (initial_timestamp + 2) + (timelock * MONTHS_IN_SECONDS) + 1
         close_ctx = self.create_context(
             actions=[], vertex=self.tx, caller_id=user_address, timestamp=unlock_time
         )
@@ -2671,6 +2672,7 @@ class OasisTestCase(BlueprintTestCase):
                     amount=pool_extra_usd, token_uid=TokenUid(self.usd_token)
                 ),
             ],
+            timestamp=initial_timestamp + 1,
         )
         self.runner.call_public_method(
             self.dozer_manager_id, "add_liquidity", add_ctx, self.pool_fee
@@ -2683,7 +2685,7 @@ class OasisTestCase(BlueprintTestCase):
 
         ctx = self.create_context(
             actions=[NCDepositAction(amount=deposit_amount, token_uid=self.usd_token)],
-            timestamp=initial_timestamp,
+            timestamp=initial_timestamp + 2,
             caller_id=user_address,
         )
 
@@ -2746,8 +2748,8 @@ class OasisTestCase(BlueprintTestCase):
         assert htr_price_after == 4133_3586  # ~0.4 with 8 decimals
         assert htr_price_after < htr_price_before  # htr price decreased
 
-        # Close the position
-        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        # Close the position (account for deposit at initial_timestamp + 2)
+        unlock_time = (initial_timestamp + 2) + (timelock * MONTHS_IN_SECONDS) + 1
         close_ctx = self.create_context(
             actions=[], vertex=self.tx, caller_id=user_address, timestamp=unlock_time
         )
@@ -2812,6 +2814,7 @@ class OasisTestCase(BlueprintTestCase):
                     amount=pool_extra_usd, token_uid=TokenUid(self.usd_token)
                 ),
             ],
+            timestamp=initial_timestamp + 1,
         )
         self.runner.call_public_method(
             self.dozer_manager_id, "add_liquidity", add_ctx, self.pool_fee
@@ -2824,7 +2827,7 @@ class OasisTestCase(BlueprintTestCase):
 
         ctx = self.create_context(
             actions=[NCDepositAction(amount=deposit_amount, token_uid=self.usd_token)],
-            timestamp=initial_timestamp,
+            timestamp=initial_timestamp + 2,
             caller_id=user_address,
         )
 
@@ -2899,8 +2902,8 @@ class OasisTestCase(BlueprintTestCase):
         assert user_balance_usd == 362_376_088
         assert user_balance_htr == -1_020_010_000
 
-        # Close the position
-        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        # Close the position (account for deposit at initial_timestamp + 2)
+        unlock_time = (initial_timestamp + 2) + (timelock * MONTHS_IN_SECONDS) + 1
         close_ctx = self.create_context(
             actions=[], vertex=self.tx, caller_id=user_address, timestamp=unlock_time
         )
@@ -2948,14 +2951,14 @@ class OasisTestCase(BlueprintTestCase):
                 ),
                 NCWithdrawalAction(amount=htr_amount_out, token_uid=TokenUid(HTR_UID)),
             ],
-            timestamp=initial_timestamp + 200,
+            timestamp=unlock_time + 100,
         )
         self.runner.call_public_method(
             self.dozer_manager_id,
             "swap_exact_tokens_for_tokens",
             swap_ctx,
             self.pool_fee,
-            int(initial_timestamp + 300),
+            int(unlock_time + 200),
         )
 
         htr_price_after_second_swap = self.runner.call_view_method(
@@ -2987,14 +2990,14 @@ class OasisTestCase(BlueprintTestCase):
                     amount=usd_amount_out2, token_uid=TokenUid(self.usd_token)
                 ),
             ],
-            timestamp=initial_timestamp + 200,
+            timestamp=unlock_time + 300,
         )
         self.runner.call_public_method(
             self.dozer_manager_id,
             "swap_exact_tokens_for_tokens",
             swap_ctx,
             self.pool_fee,
-            int(initial_timestamp + 300),
+            int(unlock_time + 400),
         )
 
         htr_price_after_third_swap = self.runner.call_view_method(
@@ -3128,8 +3131,8 @@ class OasisTestCase(BlueprintTestCase):
         assert user_balance_usd == -29
         assert user_balance_htr == -105_000
 
-        # Close the position
-        unlock_time = initial_timestamp + (timelock * MONTHS_IN_SECONDS) + 1
+        # Close the position (account for deposit at initial_timestamp + 2)
+        unlock_time = (initial_timestamp + 2) + (timelock * MONTHS_IN_SECONDS) + 1
         close_ctx = self.create_context(
             actions=[], vertex=self.tx, caller_id=user_address, timestamp=unlock_time
         )
@@ -3177,14 +3180,14 @@ class OasisTestCase(BlueprintTestCase):
                 ),
                 NCWithdrawalAction(amount=htr_amount_out, token_uid=TokenUid(HTR_UID)),
             ],
-            timestamp=initial_timestamp + 200,
+            timestamp=unlock_time + 100,
         )
         self.runner.call_public_method(
             self.dozer_manager_id,
             "swap_exact_tokens_for_tokens",
             swap_ctx,
             self.pool_fee,
-            int(initial_timestamp + 300),
+            int(unlock_time + 200),
         )
 
         htr_price_after_second_swap = self.runner.call_view_method(
@@ -3216,14 +3219,14 @@ class OasisTestCase(BlueprintTestCase):
                     amount=usd_amount_out2, token_uid=TokenUid(self.usd_token)
                 ),
             ],
-            timestamp=initial_timestamp + 200,
+            timestamp=unlock_time + 300,
         )
         self.runner.call_public_method(
             self.dozer_manager_id,
             "swap_exact_tokens_for_tokens",
             swap_ctx,
             self.pool_fee,
-            int(initial_timestamp + 300),
+            int(unlock_time + 400),
         )
 
         htr_price_after_third_swap = self.runner.call_view_method(
@@ -3408,6 +3411,7 @@ class OasisTestCase(BlueprintTestCase):
         deposit_amount = 1_000_00
         ctx = self.create_context(
             actions=[NCDepositAction(amount=deposit_amount, token_uid=self.token_b)],
+            timestamp=self.get_current_timestamp() + 1,
         )
         self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, 6)
 
@@ -3560,7 +3564,7 @@ class OasisTestCase(BlueprintTestCase):
 
         print(f"\n=== Building 24-hour TWAP history with random trading ===")
         for hour in range(24):
-            timestamp = initial_ts + (hour * 3600)
+            timestamp = initial_ts + 1 + (hour * 3600)
             # Random: 50% buy HTR, 50% sell HTR
             # Volume: between 100-1000
             is_buy_htr = random.choice([True, False])
@@ -3626,6 +3630,24 @@ class OasisTestCase(BlueprintTestCase):
         )
         self.runner.call_public_method(self.oasis_id, "user_deposit", ctx, timelock=12)
 
+        # User can undo swap but attack already failed (do this BEFORE close to avoid time travel)
+        undo_swap_ts = deposit_ts + 100  # After deposit, before close
+        ctx = self.create_context(
+            caller_id=attacker,
+            actions=[
+                NCDepositAction(token_uid=self.token_b, amount=987),
+                NCWithdrawalAction(token_uid=TokenUid(HTR_UID), amount=0),
+            ],
+            timestamp=undo_swap_ts,
+        )
+        self.runner.call_public_method(
+            self.dozer_manager_id,
+            "swap_exact_tokens_for_tokens",
+            ctx,
+            fee=self.pool_fee,
+            deadline=undo_swap_ts + 1000,
+        )
+
         # User close position
         close_ts = deposit_ts + (12 * 30 * 24 * 3600)  # 12 months later
         self.runner.call_public_method(
@@ -3648,26 +3670,9 @@ class OasisTestCase(BlueprintTestCase):
         assert (
             195_000 <= result.max_withdraw_htr <= 215_000
         ), f"TWAP failed to prevent attack! Got {result.max_withdraw_htr} HTR"
-        assert result.max_withdraw_b == 10_000
+        assert result.max_withdraw_b == 10_091
 
         print(f"✓ TWAP successfully prevented attack! Bonus within normal range.")
-
-        # User can undo swap but attack already failed
-        ctx = self.create_context(
-            caller_id=attacker,
-            actions=[
-                NCDepositAction(token_uid=self.token_b, amount=987),
-                NCWithdrawalAction(token_uid=TokenUid(HTR_UID), amount=0),
-            ],
-            timestamp=attack_ts + 100,
-        )
-        self.runner.call_public_method(
-            self.dozer_manager_id,
-            "swap_exact_tokens_for_tokens",
-            ctx,
-            fee=self.pool_fee,
-            deadline=attack_ts + 2000,
-        )
 
     def test_operation_no_attack2(self):
         dev_initial_deposit = 10_000_000
@@ -3686,7 +3691,8 @@ class OasisTestCase(BlueprintTestCase):
         attacker = self.gen_random_address()
         ctx = self.create_context(
             caller_id=attacker,
-            actions=[NCDepositAction(token_uid=self.token_b, amount=10_000)]
+            actions=[NCDepositAction(token_uid=self.token_b, amount=10_000)],
+            timestamp=self.get_current_timestamp() + 1,
         )
         self.runner.call_public_method(self.oasis_id, 'user_deposit', ctx, timelock=12)
 
@@ -3723,7 +3729,7 @@ class OasisTestCase(BlueprintTestCase):
         assert contract.oasis_htr_balance == 10_000_000
 
         # Get pool creation timestamp
-        pool_creation_ts = 1000000
+        pool_creation_ts = self.get_current_timestamp()
         
         # Attacker swap 30 minutes after pool creation
         swap_ts = pool_creation_ts + 1800  # 30 minutes = 1800 seconds
@@ -3799,17 +3805,17 @@ class OasisTestCase(BlueprintTestCase):
         assert result.max_withdraw_b == 10_000
 
     def test_update_twap_window_by_owner(self):
-        """Test successful TWAP window update by owner"""
+        """Test successful default TWAP window update by owner"""
         # Initialize pool manager
         self.initialize_pool_manager()
 
-        # Get initial window
+        # Get initial default window
         contract = self.get_readonly_contract(self.dozer_manager_id)
         assert isinstance(contract, DozerPoolManager)
-        initial_window = contract.twap_window
+        initial_window = contract.default_twap_window
         self.assertEqual(initial_window, 14400, "Default window should be 4 hours (14400 seconds)")
 
-        # Update window to 2 hours (7200 seconds)
+        # Update default window to 2 hours (7200 seconds)
         new_window = 7200
         ctx = self.create_context(
             actions=[],
@@ -3820,23 +3826,23 @@ class OasisTestCase(BlueprintTestCase):
 
         self.runner.call_public_method(
             self.dozer_manager_id,
-            "update_twap_window",
+            "update_default_twap_window",
             ctx,
             new_window,
         )
 
-        # Verify window was updated
+        # Verify default window was updated
         contract = self.get_readonly_contract(self.dozer_manager_id)
         assert isinstance(contract, DozerPoolManager)
-        updated_window = contract.twap_window
-        self.assertEqual(updated_window, new_window, "Window should be updated to 2 hours")
+        updated_window = contract.default_twap_window
+        self.assertEqual(updated_window, new_window, "Default window should be updated to 2 hours")
 
     def test_update_twap_window_unauthorized(self):
-        """Test that non-owner cannot update TWAP window"""
+        """Test that non-owner cannot update default TWAP window"""
         # Initialize pool manager
         self.initialize_pool_manager()
 
-        # Try to update window as non-owner
+        # Try to update default window as non-owner
         non_owner = self._get_any_address()[0]
         new_window = 7200
         ctx = self.create_context(
@@ -3847,20 +3853,20 @@ class OasisTestCase(BlueprintTestCase):
         )
 
         # Should raise Unauthorized error
-        with pytest.raises(NCFail, match="Only the owner can update the TWAP window"):
+        with pytest.raises(NCFail, match="Only the owner can update the default TWAP window"):
             self.runner.call_public_method(
                 self.dozer_manager_id,
-                "update_twap_window",
+                "update_default_twap_window",
                 ctx,
                 new_window,
             )
 
     def test_update_twap_window_invalid_value(self):
-        """Test that window update rejects invalid values (zero or negative)"""
+        """Test that default window update rejects invalid values (zero or negative)"""
         # Initialize pool manager
         self.initialize_pool_manager()
 
-        # Try to update window to 0
+        # Try to update default window to 0
         ctx = self.create_context(
             actions=[],
             vertex=self.tx,
@@ -3871,22 +3877,22 @@ class OasisTestCase(BlueprintTestCase):
         with pytest.raises(NCFail, match="TWAP window must be greater than 0"):
             self.runner.call_public_method(
                 self.dozer_manager_id,
-                "update_twap_window",
+                "update_default_twap_window",
                 ctx,
                 0,  # Invalid window
             )
 
-        # Try to update window to negative value
+        # Try to update default window to negative value
         with pytest.raises(NCFail, match="TWAP window must be greater than 0"):
             self.runner.call_public_method(
                 self.dozer_manager_id,
-                "update_twap_window",
+                "update_default_twap_window",
                 ctx,
                 -1000,  # Invalid window
             )
 
     def test_update_twap_window_reinitializes_pools(self):
-        """Test that updating window reinitializes all pool window sums with current spot prices"""
+        """Test that updating a pool's TWAP window reinitializes its window sums with current spot prices"""
         # Initialize pool manager and create a pool
         self.initialize_pool(amount_htr=1_000_000, amount_b=100_000)
 
@@ -3896,7 +3902,7 @@ class OasisTestCase(BlueprintTestCase):
         assert isinstance(contract, DozerPoolManager)
         pool_before = contract.pools[pool_key]
 
-        initial_window = contract.twap_window
+        initial_window = pool_before.twap_window
 
         # Calculate expected initial values: price * initial_window
         expected_price_a = (pool_before.reserve_b * PRICE_PRECISION) // pool_before.reserve_a
@@ -3926,7 +3932,7 @@ class OasisTestCase(BlueprintTestCase):
             swap_timestamp + 1000,
         )
 
-        # Update window to a new value (2 hours)
+        # Update this specific pool's window to a new value (2 hours)
         new_window = 7200
         update_timestamp = swap_timestamp + 100
         update_ctx = self.create_context(
@@ -3938,8 +3944,9 @@ class OasisTestCase(BlueprintTestCase):
 
         self.runner.call_public_method(
             self.dozer_manager_id,
-            "update_twap_window",
+            "update_pool_twap_window",
             update_ctx,
+            pool_key,
             new_window,
         )
 
@@ -4015,7 +4022,8 @@ class OasisTestCase(BlueprintTestCase):
         )
         spot_price = (reserve_a * PRICE_PRECISION) // reserve_b
 
-        # Now update window to 1 minute (60 seconds) - much shorter
+        # Now update this pool's window to 1 minute (60 seconds) - much shorter
+        pool_key = self._get_pool_key()
         update_timestamp = swap_timestamp + 10
         update_ctx = self.create_context(
             actions=[],
@@ -4026,8 +4034,9 @@ class OasisTestCase(BlueprintTestCase):
         new_window = 60
         self.runner.call_public_method(
             self.dozer_manager_id,
-            "update_twap_window",
+            "update_pool_twap_window",
             update_ctx,
+            pool_key,
             new_window,
         )
 
@@ -4099,7 +4108,7 @@ class OasisTestCase(BlueprintTestCase):
         token_b_ordered = self.token_b if self.usd_token < self.token_b else self.usd_token
         pool_key2 = f"{token_a_ordered.hex()}/{token_b_ordered.hex()}/{self.pool_fee}"
 
-        # Update window
+        # Update window for both pools individually
         new_window = 3600  # 1 hour
         update_ctx = self.create_context(
             actions=[],
@@ -4107,10 +4116,22 @@ class OasisTestCase(BlueprintTestCase):
             caller_id=self.dev_address,
             timestamp=self.get_current_timestamp(),
         )
+
+        # Update pool 1
         self.runner.call_public_method(
             self.dozer_manager_id,
-            "update_twap_window",
+            "update_pool_twap_window",
             update_ctx,
+            pool_key1,
+            new_window,
+        )
+
+        # Update pool 2
+        self.runner.call_public_method(
+            self.dozer_manager_id,
+            "update_pool_twap_window",
+            update_ctx,
+            pool_key2,
             new_window,
         )
 

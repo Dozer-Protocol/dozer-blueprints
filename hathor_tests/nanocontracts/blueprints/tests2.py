@@ -53,7 +53,8 @@ class TestDozerPoolManager(BlueprintTestCase):
         ctx = self.create_context(actions=[
             NCDepositAction(token_uid=token_a, amount=reserve_a),
             NCDepositAction(token_uid=token_b, amount=reserve_b),
-        ])
+        ],
+        timestamp=1)
         pool_key = self.runner.call_public_method(self.contract_id, 'create_pool', ctx, fee)
         assert isinstance(ctx.caller_id, Address)
         return pool_key, ctx.caller_id
@@ -70,7 +71,8 @@ class TestDozerPoolManager(BlueprintTestCase):
         ctx = self.create_context(actions=[
             NCDepositAction(token_uid=token_a, amount=amount_a),
             NCDepositAction(token_uid=token_b, amount=amount_b),
-        ])
+        ],
+        timestamp=10)
         token_uid, amount = self.runner.call_public_method(self.contract_id, 'add_liquidity', ctx, fee)
         assert isinstance(ctx.caller_id, Address)
         return token_uid, amount, ctx.caller_id
@@ -126,7 +128,7 @@ class TestDozerPoolManager(BlueprintTestCase):
         ctx = self.create_context(caller_id=address, actions=[
             NCWithdrawalAction(token_uid=token_a, amount=amount_a),
             NCWithdrawalAction(token_uid=token_b, amount=amount_b),
-        ])
+        ], timestamp=10)
         token_uid, amount = self.runner.call_public_method(self.contract_id, 'remove_liquidity', ctx, fee)
         assert isinstance(ctx.caller_id, Address)
         return token_uid, amount, ctx.caller_id
