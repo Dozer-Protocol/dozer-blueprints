@@ -4747,9 +4747,9 @@ class DozerPoolManager(Blueprint):
             unvisited.remove(current)
 
             # Check all neighbors
-            for neighbor, (reference_output, pool_key, fee) in graph.get(
-                current, {}
-            ).items():
+            if current not in graph:
+                continue
+            for neighbor, (reference_output, pool_key, fee) in graph[current].items():
                 pool = self.pools[pool_key]
                 if neighbor not in unvisited:
                     continue
@@ -5153,7 +5153,7 @@ class DozerPoolManager(Blueprint):
                 reference_input,
                 pool_key,
                 fee,
-            ) in graph.get(current, {}).items():
+            ) in graph[current].items():
                 if neighbor not in unvisited:
                     continue
                 
