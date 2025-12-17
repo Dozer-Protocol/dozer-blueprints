@@ -318,7 +318,7 @@ class TestDozerPoolManager(BlueprintTestCase):
         assert quote.swap_amount == 148
         assert quote.swap_output == 72
 
-        ctx = self.create_context(actions=[NCDepositAction(token_uid=self.token_b, amount=amount_in)])
+        ctx = self.create_context(actions=[NCDepositAction(token_uid=self.token_b, amount=amount_in)], timestamp=10)
         token_uid, amount = self.runner.call_public_method(
             self.contract_id, 'add_liquidity_single_token', ctx, token_out=self.token_a, fee=fee,
         )
@@ -354,7 +354,7 @@ class TestDozerPoolManager(BlueprintTestCase):
         assert quote.token_b_withdrawn == 399999
 
         ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_b, amount=200000)], caller_id=creator
+            actions=[NCWithdrawalAction(token_uid=self.token_b, amount=200000)], caller_id=creator, timestamp=10
         )
         amount = self.runner.call_public_method(
             self.contract_id, 'remove_liquidity_single_token', ctx, pool_key=pool_key, percentage=percentage,
