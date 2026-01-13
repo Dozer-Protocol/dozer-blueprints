@@ -23,7 +23,7 @@ from hathor.nanocontracts.blueprints.dozer_pool_manager import DozerPoolManager
 # from hathor.nanocontracts.blueprints.dozer_pool_v1 import Dozer_Pool_v1
 # from hathor.nanocontracts.blueprints.dozer_pool_v1_1 import Dozer_Pool_v1_1
 # from hathor.nanocontracts.blueprints.khensu import Khensu
-# from hathor.nanocontracts.blueprints.khensu_manager import KhensuManager
+from hathor.nanocontracts.blueprints.khensu_manager import KhensuManager
 from hathor.nanocontracts.blueprints.oasis import Oasis
 from hathor.nanocontracts.blueprints.stake import Stake
 
@@ -47,7 +47,7 @@ _blueprints_mapper: dict[str, Type["Blueprint"]] = {
     "Vesting": Vesting,
     "DozerPoolManager": DozerPoolManager,
     "DozerTools": DozerTools,
-    # "KhensuManager": KhensuManager,
+    "KhensuManager": KhensuManager,
 }
 
 __all__ = [
@@ -63,5 +63,5 @@ __all__ = [
     "Stake",
     # "TokenManager",
     "Vesting",
-    # "KhensuManager",
+    "KhensuManager",
 ]
