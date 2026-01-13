@@ -17,13 +17,12 @@ from __future__ import annotations
 import hashlib
 import traceback
 from itertools import chain
-from typing import TYPE_CHECKING, Any, Iterable, Optional, cast
+from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 from structlog import get_logger
 from typing_extensions import assert_never
 
 from hathor.consensus.context import ReorgInfo
-from hathor.feature_activation.feature import Feature
 from hathor.transaction import BaseTransaction, Block, Transaction
 from hathor.transaction.exceptions import TokenNotFound
 from hathor.transaction.nc_execution_state import NCExecutionState
@@ -145,26 +144,11 @@ class BlockConsensusAlgorithm:
         """
         Determine whether we should proceed to execute Nano transactions while making the necessary initializations.
         """
-        from hathor.conf.settings import NanoContractsSetting
         assert not block.is_genesis
 
-        match self._settings.ENABLE_NANO_CONTRACTS:
-            case NanoContractsSetting.ENABLED:
-                return True
-
-            case NanoContractsSetting.FEATURE_ACTIVATION:
-                parent = block.get_block_parent()
-                is_active_on_parent = self.feature_service.is_feature_active(
-                    vertex=parent,
-                    feature=Feature.NANO_CONTRACTS,
-                )
-                return is_active_on_parent
-
-            case NanoContractsSetting.DISABLED:
-                return False
-
-            case _:  # pragma: no cover
-                assert_never(self._settings.ENABLE_NANO_CONTRACTS)
+        from hathor.feature_activation.utils import is_nano_active
+        parent = block.get_block_parent()
+        return is_nano_active(settings=self._settings, feature_service=self.feature_service, block=parent)
 
     def _nc_execute_calls(self, block: Block, *, is_reorg: bool) -> None:
         """Internal method to execute the method calls for transactions confirmed by this block.
@@ -239,7 +223,10 @@ class BlockConsensusAlgorithm:
                     block_storage.set_address_seqnum(Address(nc_header.nc_address), nc_header.nc_seqnum)
                 continue
 
-            runner = self._runner_factory.create(block_storage=block_storage, seed=seed_hasher.digest())
+            runner = self._runner_factory.create(
+                block_storage=block_storage,
+                seed=seed_hasher.digest(),
+            )
             exception_and_tb: tuple[NCFail, str] | None = None
             token_dict = tx.get_complete_token_info(block_storage)
             should_verify_sum_after_execution = any(token_info.version is None for token_info in token_dict.values())
@@ -331,7 +318,7 @@ class BlockConsensusAlgorithm:
         from hathor.verification.transaction_verifier import TransactionVerifier
         try:
             token_dict = tx.get_complete_token_info(block_storage)
-            TransactionVerifier.verify_sum(self._settings, token_dict)
+            TransactionVerifier.verify_sum(self._settings, tx, token_dict)
         except TokenNotFound as e:
             # At this point, any nonexistent token would have made a prior validation fail. For example, if there
             # was a withdrawal of a nonexistent token, it would have failed in the balance validation before.
@@ -465,10 +452,6 @@ class BlockConsensusAlgorithm:
             meta = block.get_metadata()
             if not meta.voided_by:
                 storage.indexes.height.add_new(block.get_height(), block.hash, block.timestamp)
-                storage.update_best_block_tips_cache([block.hash])
-            # The following assert must be true, but it is commented out for performance reasons.
-            if self._settings.SLOW_ASSERTS:
-                assert len(storage.get_best_block_tips(skip_cache=True)) == 1
         else:
             # Resolve all other cases, but (i).
             log = self.log.new(block=block.hash_hex)
@@ -481,66 +464,54 @@ class BlockConsensusAlgorithm:
             self.mark_as_voided(block, skip_remove_first_block_markers=True)
 
             # Get the score of the best chains.
-            heads = [cast(Block, storage.get_transaction(h)) for h in storage.get_best_block_tips()]
-            best_score: int | None = None
-            for head in heads:
-                head_meta = head.get_metadata(force_reload=True)
-                if best_score is None:
-                    best_score = head_meta.score
-                else:
-                    # All heads must have the same score.
-                    assert best_score == head_meta.score
-            assert best_score is not None
+            head = storage.get_best_block()
+            head_meta = head.get_metadata(force_reload=True)
+            best_score = head_meta.score
 
             # Calculate the score.
             # We cannot calculate score before getting the heads.
             score = self.calculate_score(block)
 
             # Finally, check who the winner is.
-            if score < best_score:
-                # Just update voided_by from parents.
+            winner = False
+
+            if score > best_score:
+                winner = True
+            elif score == best_score:
+                # Use block hashes as a tie breaker.
+                if block.hash < head.hash:
+                    winner = True
+
+            if head_meta.voided_by:
+                # The head cannot be stale. But the current block conflict resolution has already been
+                # resolved and it might void the head. If this happened, it means that block has a greater
+                # score so we just assert it.
+                assert score > best_score
+                assert winner
+
+            if not winner:
+                # Not enough score, just update voided_by from parents.
                 self.update_voided_by_from_parents(block)
-
             else:
-                # Either everyone has the same score or there is a winner.
-                valid_heads = []
-                for head in heads:
-                    meta = head.get_metadata()
-                    if not meta.voided_by:
-                        valid_heads.append(head)
-
-                # We must have at most one valid head.
-                # Either we have a single best chain or all chains have already been voided.
-                assert len(valid_heads) <= 1, 'We must never have more than one valid head'
-
+                # Winner, winner, chicken dinner!
                 # Add voided_by to all heads.
                 common_block = self._find_first_parent_in_best_chain(block)
-                self.add_voided_by_to_multiple_chains(block, heads, common_block)
+                self.add_voided_by_to_multiple_chains([head], common_block)
 
-                if score > best_score:
-                    # We have a new winner candidate.
-                    self.update_score_and_mark_as_the_best_chain_if_possible(block)
-                    # As `update_score_and_mark_as_the_best_chain_if_possible` may affect `voided_by`,
-                    # we need to check that block is not voided.
-                    meta = block.get_metadata()
-                    height = block.get_height()
-                    if not meta.voided_by:
-                        # It is only a re-org if common_block not in heads
-                        # This must run before updating the indexes.
-                        if common_block not in heads:
-                            self.mark_as_reorg_if_needed(common_block, block)
-                        self.log.debug('index new winner block', height=height, block=block.hash_hex)
-                        # We update the height cache index with the new winner chain
-                        storage.indexes.height.update_new_chain(height, block)
-                        storage.update_best_block_tips_cache([block.hash])
-                else:
+                # We have a new winner candidate.
+                self.update_score_and_mark_as_the_best_chain_if_possible(block)
+                # As `update_score_and_mark_as_the_best_chain_if_possible` may affect `voided_by`,
+                # we need to check that block is not voided.
+                meta = block.get_metadata()
+                height = block.get_height()
+                if not meta.voided_by:
+                    # It is only a re-org if common_block not in heads
                     # This must run before updating the indexes.
-                    meta = block.get_metadata()
-                    if not meta.voided_by:
+                    if common_block != head:
                         self.mark_as_reorg_if_needed(common_block, block)
-                    best_block_tips = [blk.hash for blk in heads]
-                    best_block_tips.append(block.hash)
-                    storage.update_best_block_tips_cache(best_block_tips)
+                    self.log.debug('index new winner block', height=height, block=block.hash_hex)
+                    # We update the height cache index with the new winner chain
+                    storage.indexes.height.update_new_chain(height, block)
 
     def mark_as_reorg_if_needed(self, common_block: Block, new_best_block: Block) -> None:
         """Mark as reorg only if reorg size > 0."""
@@ -603,7 +574,7 @@ class BlockConsensusAlgorithm:
             return True
         return False
 
-    def add_voided_by_to_multiple_chains(self, block: Block, heads: list[Block], first_block: Block) -> None:
+    def add_voided_by_to_multiple_chains(self, heads: list[Block], first_block: Block) -> None:
         # We need to go through all side chains because there may be non-voided blocks
         # that must be voided.
         # For instance, imagine two chains with intersection with both heads voided.
@@ -630,31 +601,13 @@ class BlockConsensusAlgorithm:
         self.update_score_and_mark_as_the_best_chain(block)
         self.remove_voided_by_from_chain(block)
 
-        best_score: int
         if self.update_voided_by_from_parents(block):
             storage = block.storage
-            heads = [cast(Block, storage.get_transaction(h)) for h in storage.get_best_block_tips()]
-            best_score = 0
-            best_heads: list[Block]
-            for head in heads:
-                head_meta = head.get_metadata(force_reload=True)
-                if head_meta.score < best_score:
-                    continue
-
-                if head_meta.score > best_score:
-                    best_heads = [head]
-                    best_score = head_meta.score
-                else:
-                    assert best_score == head_meta.score
-                    best_heads.append(head)
-            assert isinstance(best_score, int) and best_score > 0
-
-            assert len(best_heads) > 0
-            first_block = self._find_first_parent_in_best_chain(best_heads[0])
-            self.add_voided_by_to_multiple_chains(best_heads[0], [block], first_block)
-            if len(best_heads) == 1:
-                assert best_heads[0].hash != block.hash
-                self.update_score_and_mark_as_the_best_chain_if_possible(best_heads[0])
+            head = storage.get_best_block()
+            first_block = self._find_first_parent_in_best_chain(head)
+            self.add_voided_by_to_multiple_chains([block], first_block)
+            if head.hash != block.hash:
+                self.update_score_and_mark_as_the_best_chain_if_possible(head)
 
     def update_score_and_mark_as_the_best_chain(self, block: Block) -> None:
         """ Update score and mark the chain as the best chain.
@@ -772,6 +725,8 @@ class BlockConsensusAlgorithm:
     def remove_first_block_markers(self, block: Block) -> None:
         """ Remove all `meta.first_block` pointing to this block.
         """
+        from hathor.nanocontracts import NC_EXECUTION_FAIL_ID
+
         assert block.storage is not None
         storage = block.storage
 
@@ -779,12 +734,12 @@ class BlockConsensusAlgorithm:
         bfs = BFSTimestampWalk(storage, is_dag_verifications=True, is_dag_funds=True, is_left_to_right=False)
         for tx in bfs.run(block, skip_root=True):
             if tx.is_block:
-                bfs.skip_neighbors(tx)
+                bfs.skip_neighbors()
                 continue
 
             meta = tx.get_metadata()
             if meta.first_block != block.hash:
-                bfs.skip_neighbors(tx)
+                bfs.skip_neighbors()
                 continue
 
             if tx.is_nano_contract():
@@ -794,8 +749,15 @@ class BlockConsensusAlgorithm:
                     tx.storage.indexes.handle_contract_unexecution(tx)
                 meta.nc_execution = NCExecutionState.PENDING
                 meta.nc_calls = None
+                meta.nc_events = None
+                if meta.voided_by == {tx.hash, NC_EXECUTION_FAIL_ID}:
+                    assert isinstance(tx, Transaction)
+                    self.context.transaction_algorithm.remove_voided_by(tx, tx.hash)
+                    assert meta.voided_by == {NC_EXECUTION_FAIL_ID}
+                    meta.voided_by = None
             meta.first_block = None
             self.context.save(tx)
+            bfs.add_neighbors()
 
     def _score_block_dfs(self, block: BaseTransaction, used: set[bytes],
                          mark_as_best_chain: bool, newest_timestamp: int) -> int:
@@ -824,11 +786,11 @@ class BlockConsensusAlgorithm:
                 for tx in bfs.run(parent, skip_root=False):
                     assert tx.hash is not None
                     if tx.is_block:
-                        bfs.skip_neighbors(tx)
+                        bfs.skip_neighbors()
                         continue
 
                     if tx.hash in used:
-                        bfs.skip_neighbors(tx)
+                        bfs.skip_neighbors()
                         continue
                     used.add(tx.hash)
 
@@ -836,7 +798,7 @@ class BlockConsensusAlgorithm:
                     if meta.first_block:
                         first_block = storage.get_transaction(meta.first_block)
                         if first_block.timestamp <= newest_timestamp:
-                            bfs.skip_neighbors(tx)
+                            bfs.skip_neighbors()
                             continue
 
                     if mark_as_best_chain:
@@ -845,6 +807,7 @@ class BlockConsensusAlgorithm:
                         self.context.save(tx)
 
                     score += weight_to_work(tx.weight)
+                    bfs.add_neighbors()
 
         # Always save the score when it is calculated.
         meta = block.get_metadata()

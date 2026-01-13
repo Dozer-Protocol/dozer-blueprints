@@ -40,6 +40,7 @@ from hathor.nanocontracts.exception import (
     NCInvalidPublicMethodCallFromView,
     NCInvalidSyscall,
     NCMethodNotFound,
+    NCTypeError,
     NCUninitializedContractError,
     NCViewMethodError,
 )
@@ -471,6 +472,9 @@ class Runner:
             rules = BalanceRules.get_rules(self._settings, action)
             rules.nc_caller_execution_rule(previous_changes_tracker)
 
+        # All calls must begin with non-negative balance.
+        previous_changes_tracker.validate_balances_are_positive()
+
         # Update the balances with the fee payment amount. Since some tokens could be created during contract
         # execution, the verification of the tokens and amounts will be done after it
         for fee in fees:
@@ -669,6 +673,9 @@ class Runner:
         # impact the original context. Since the runner relies on the context for other critical checks, any
         # unauthorized modification would pose a serious security risk.
         ret = self._metered_executor.call(method, args=(ctx.copy(), *args))
+
+        # All calls must end with non-negative balances.
+        call_record.changes_tracker.validate_balances_are_positive()
 
         if method_name == NC_INITIALIZE_METHOD:
             self._check_all_field_initialized(blueprint)
@@ -1241,6 +1248,9 @@ class Runner:
     @_forbid_syscall_from_view('emit_event')
     def syscall_emit_event(self, data: bytes) -> None:
         """Emit a custom event from a Nano Contract."""
+        if not isinstance(data, bytes):
+            raise NCTypeError(f'got {type(data)} instead of bytes')
+        data = bytes(data)  # force actual bytes because isinstance could be True for "compatible" types
         assert self._call_info is not None
         self._call_info.nc_logger.__emit_event__(data)
 
@@ -1267,11 +1277,15 @@ class Runner:
             NCInvalidSyscall when the token isn't found.
         """
         call_record = self.get_current_call_record()
-        changes_tracker = self.get_current_changes_tracker()
-        assert call_record.contract_id == changes_tracker.nc_id
 
-        if changes_tracker.has_token(token_uid):
-            return changes_tracker.get_token(token_uid)
+        # We need to check in all contracts executed by this call because any of them could have created the token.
+        assert self._call_info is not None
+        for change_trackers_list in self._call_info.change_trackers.values():
+            if len(change_trackers_list) == 0:
+                continue
+            change_tracker = change_trackers_list[-1]
+            if change_tracker.has_token(token_uid):
+                return change_tracker.get_token(token_uid)
 
         # Special case for HTR token (native token with UID 00)
         if token_uid == HATHOR_TOKEN_UID:
@@ -1437,7 +1451,12 @@ class RunnerFactory:
         self.tx_storage = tx_storage
         self.nc_storage_factory = nc_storage_factory
 
-    def create(self, *, block_storage: NCBlockStorage, seed: bytes | None = None) -> Runner:
+    def create(
+        self,
+        *,
+        block_storage: NCBlockStorage,
+        seed: bytes | None = None,
+    ) -> Runner:
         return Runner(
             reactor=self.reactor,
             settings=self.settings,

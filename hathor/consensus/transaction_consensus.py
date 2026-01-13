@@ -391,7 +391,7 @@ class TransactionConsensusAlgorithm:
 
             meta2 = tx2.get_metadata()
             if not (meta2.voided_by and voided_hash in meta2.voided_by):
-                bfs.skip_neighbors(tx2)
+                bfs.skip_neighbors()
                 continue
             if meta2.voided_by:
                 meta2.voided_by.discard(voided_hash)
@@ -402,6 +402,7 @@ class TransactionConsensusAlgorithm:
                 tx.storage.add_to_indexes(tx2)
             self.context.save(tx2)
             self.assert_valid_consensus(tx2)
+            bfs.add_neighbors()
 
         from hathor.transaction import Transaction
         for tx2 in check_list:
@@ -488,7 +489,6 @@ class TransactionConsensusAlgorithm:
             if tx2.is_block:
                 assert isinstance(tx2, Block)
                 self.context.block_algorithm.mark_as_voided(tx2)
-                tx2.storage.update_best_block_tips_cache(None)
 
             assert not meta2.voided_by or voided_hash not in meta2.voided_by
             if tx2.hash != tx.hash and meta2.conflict_with and not meta2.voided_by:
@@ -505,6 +505,7 @@ class TransactionConsensusAlgorithm:
             self.context.save(tx2)
             tx2.storage.del_from_indexes(tx2, relax_assert=True)
             self.assert_valid_consensus(tx2)
+            bfs.add_neighbors()
 
         for tx2 in check_list:
             self.check_conflicts(tx2)

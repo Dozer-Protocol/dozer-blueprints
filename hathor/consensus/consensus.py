@@ -22,6 +22,7 @@ from structlog import get_logger
 from hathor.consensus.block_consensus import BlockConsensusAlgorithmFactory
 from hathor.consensus.context import ConsensusAlgorithmContext
 from hathor.consensus.transaction_consensus import TransactionConsensusAlgorithmFactory
+from hathor.feature_activation.utils import is_fee_active
 from hathor.profiler import get_cpu_profiler
 from hathor.pubsub import HathorEvents, PubSubManager
 from hathor.transaction import BaseTransaction, Transaction
@@ -342,53 +343,44 @@ class ConsensusAlgorithm:
             # Mempool is empty, nothing to remove.
             return []
 
-        # Find "mempool origin" txs, that is, a set of txs that when used as roots
-        # of a left-to-right BFS guarantees it'll reach all mempool txs.
-        mempool_origin: set[Transaction] = set()
-        mempool_origin_bfs = BFSTimestampWalk(
-            storage, is_dag_funds=True, is_dag_verifications=True, is_left_to_right=False
-        )
-        for tx in mempool_origin_bfs.run(mempool_tips, skip_root=True):
-            if not isinstance(tx, Transaction):
-                mempool_origin_bfs.skip_neighbors(tx)
-                continue
-            if tx.get_metadata().first_block is not None:
-                mempool_origin.add(tx)
-                mempool_origin_bfs.skip_neighbors(tx)
-
         mempool_rules: tuple[Callable[[Transaction], bool], ...] = (
             lambda tx: self._reward_lock_mempool_rule(tx, new_best_height),
             lambda tx: self._unknown_contract_mempool_rule(tx),
             lambda tx: self._nano_activation_rule(storage, tx),
+            lambda tx: self._fee_tokens_activation_rule(storage, tx),
             self._checkdatasig_count_rule,
         )
 
-        # From the mempool origin, find the leftmost mempool txs that are invalid.
-        leftmost_invalid_txs: set[BaseTransaction] = set()
         find_invalid_bfs = BFSTimestampWalk(
-            storage, is_dag_funds=True, is_dag_verifications=True, is_left_to_right=True
+            storage, is_dag_funds=True, is_dag_verifications=True, is_left_to_right=False
         )
-        for vertex in find_invalid_bfs.run(mempool_origin, skip_root=True):
-            if not isinstance(vertex, Transaction):
-                # Don't skip neighbors continue the walk, it will always be bound by the reorg+mempool size
-                continue
-            if vertex.get_metadata().first_block is not None:
-                # We may reach other confirmed txs from the mempool origin, so we just skip them.
-                # But don't skip neighbors, continue the walk, it will always be bound by the reorg+mempool size
-                continue
-            # At this point, it's a mempool tx, so we have to re-verify it.
-            if not all(rule(vertex) for rule in mempool_rules):
-                leftmost_invalid_txs.add(vertex)
-                find_invalid_bfs.skip_neighbors(vertex)
 
-        # From the leftmost invalid txs, mark all vertices to the right as invalid.
+        invalid_txs: set[BaseTransaction] = set()
+
+        # Run a right-to-left BFS starting from the mempool tips.
+        for tx in find_invalid_bfs.run(mempool_tips, skip_root=False):
+            if not isinstance(tx, Transaction):
+                find_invalid_bfs.skip_neighbors()
+                continue
+
+            if tx.get_metadata().first_block is not None:
+                find_invalid_bfs.skip_neighbors()
+                continue
+
+            # At this point, it's a mempool tx, so we have to re-verify it.
+            if not all(rule(tx) for rule in mempool_rules):
+                invalid_txs.add(tx)
+            find_invalid_bfs.add_neighbors()
+
+        # From the invalid txs, mark all vertices to the right as invalid. This includes both txs and blocks.
         to_remove: list[BaseTransaction] = []
         find_to_remove_bfs = BFSTimestampWalk(
             storage, is_dag_funds=True, is_dag_verifications=True, is_left_to_right=True
         )
-        for vertex in find_to_remove_bfs.run(leftmost_invalid_txs, skip_root=False):
+        for vertex in find_to_remove_bfs.run(invalid_txs, skip_root=False):
             vertex.set_validation(ValidationState.INVALID)
             to_remove.append(vertex)
+            find_to_remove_bfs.add_neighbors()
 
         to_remove.reverse()
         return to_remove
@@ -428,24 +420,36 @@ class ConsensusAlgorithm:
 
     def _nano_activation_rule(self, storage: TransactionStorage, tx: Transaction) -> bool:
         """Check whether a tx became invalid because the reorg changed the nano feature activation state."""
+        from hathor.feature_activation.utils import is_nano_active
         from hathor.nanocontracts import OnChainBlueprint
-        from hathor.nanocontracts.utils import is_nano_active
-        from hathor.transaction.token_creation_tx import TokenCreationTransaction
-        from hathor.transaction.token_info import TokenVersion
 
         best_block = storage.get_best_block()
         if is_nano_active(settings=self._settings, block=best_block, feature_service=self.feature_service):
             # When nano is active, this rule has no effect.
             return True
 
-        # The nano feature activation is actually used to enable 4 use cases:
-
+        # The nano feature activation is actually used to enable 2 use cases:
         if tx.is_nano_contract():
             return False
 
         if isinstance(tx, OnChainBlueprint):
             return False
 
+        return True
+
+    def _fee_tokens_activation_rule(self, storage: TransactionStorage, tx: Transaction) -> bool:
+        """
+        Check whether a tx became invalid because the reorg changed the fee-based tokens feature activation state.
+        """
+        from hathor.transaction.token_creation_tx import TokenCreationTransaction
+        from hathor.transaction.token_info import TokenVersion
+
+        best_block = storage.get_best_block()
+        if is_fee_active(settings=self._settings, block=best_block, feature_service=self.feature_service):
+            # When fee-based tokens feature is active, this rule has no effect.
+            return True
+
+        # The fee-based tokens feature activation is actually used to enable 2 use cases:
         if isinstance(tx, TokenCreationTransaction) and tx.token_version == TokenVersion.FEE:
             return False
 
