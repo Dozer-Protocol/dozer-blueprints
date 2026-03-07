@@ -1370,23 +1370,23 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # Add signer
         self.runner.call_public_method(
-            self.nc_id, "add_authorized_signer", owner_context, signer_address
+            self.nc_id, "add_authorized_signer", owner_context, Address(signer_address)
         )
 
         # Verify signer was added
         is_authorized = self.runner.call_view_method(
-            self.nc_id, "is_authorized_signer", signer_address
+            self.nc_id, "is_authorized_signer", Address(signer_address)
         )
         self.assertTrue(is_authorized)
 
         # Remove signer
         self.runner.call_public_method(
-            self.nc_id, "remove_authorized_signer", owner_context, signer_address
+            self.nc_id, "remove_authorized_signer", owner_context, Address(signer_address)
         )
 
         # Verify signer was removed
         is_authorized = self.runner.call_view_method(
-            self.nc_id, "is_authorized_signer", signer_address
+            self.nc_id, "is_authorized_signer", Address(signer_address)
         )
         self.assertFalse(is_authorized)
 
@@ -2534,3 +2534,101 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
 
         # The test passes if we reach here without assertion errors
         self._check_balance()
+
+    def test_swap_exact_through_path_inflated_withdrawal_rejected_1hop(self):
+        """Withdrawal > computed output must raise InvalidAction — 1-hop path.
+        """
+        pool_key, _ = self._create_pool(self.token_a, self.token_b, fee=3)
+        deadline = self.get_current_timestamp() + 365 * 24 * 60 * 60
+
+        # Deposit 1_00 base units (1.00 display). Legitimate output is ~99 base
+        # units at 1:1 reserves with fee=3/1000. Request 50_000 — far above the
+        # computed output but within the pool balance so the network layer passes.
+        context = self._prepare_swap_context(self.token_a, 1_00, self.token_b, 50_000)
+
+        with self.assertRaises(InvalidAction):
+            self.runner.call_public_method(
+                self.nc_id,
+                "swap_exact_tokens_for_tokens_through_path",
+                context,
+                pool_key,
+                deadline,
+            )
+
+        # Pool state must remain intact — no HTR should have been drained.
+        self._check_balance()
+
+    def test_swap_exact_through_path_inflated_withdrawal_rejected_2hop(self):
+        """Withdrawal > computed output must raise InvalidAction — 2-hop path.
+        """
+        pool_key_ab, _ = self._create_pool(self.token_a, self.token_b, fee=3)
+        pool_key_bc, _ = self._create_pool(self.token_b, self.token_c, fee=3)
+        path = f"{pool_key_ab},{pool_key_bc}"
+        deadline = self.get_current_timestamp() + 365 * 24 * 60 * 60
+
+        context = self._prepare_swap_context(self.token_a, 1_00, self.token_c, 50_000)
+
+        with self.assertRaises(InvalidAction):
+            self.runner.call_public_method(
+                self.nc_id,
+                "swap_exact_tokens_for_tokens_through_path",
+                context,
+                path,
+                deadline,
+            )
+
+        self._check_balance()
+
+    def test_swap_exact_through_path_inflated_withdrawal_rejected_3hop(self):
+        """Withdrawal > computed output must raise InvalidAction — 3-hop path.
+        """
+        pool_key_ab, _ = self._create_pool(self.token_a, self.token_b, fee=3)
+        pool_key_bc, _ = self._create_pool(self.token_b, self.token_c, fee=3)
+        pool_key_cd, _ = self._create_pool(self.token_c, self.token_d, fee=3)
+        path = f"{pool_key_ab},{pool_key_bc},{pool_key_cd}"
+        deadline = self.get_current_timestamp() + 365 * 24 * 60 * 60
+
+        context = self._prepare_swap_context(self.token_a, 1_00, self.token_d, 50_000)
+
+        with self.assertRaises(InvalidAction):
+            self.runner.call_public_method(
+                self.nc_id,
+                "swap_exact_tokens_for_tokens_through_path",
+                context,
+                path,
+                deadline,
+            )
+
+        self._check_balance()
+
+    # ------------------------------------------------------------------ #
+    # replenish_funds                                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_replenish_funds_owner_only(self):
+        """Non-owner callers must be rejected with Unauthorized."""
+        tx = self._get_any_tx()
+        actions = [NCDepositAction(token_uid=self.token_a, amount=1_000)]
+        non_owner_context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp(),
+        )
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.nc_id, "replenish_funds", non_owner_context
+            )
+
+    def test_replenish_funds_accepts_owner_deposit(self):
+        """Owner depositing a single token must succeed without error."""
+        tx = self._get_any_tx()
+        actions = [NCDepositAction(token_uid=self.token_a, amount=5_000)]
+        context = self.create_context(
+            actions=actions,
+            vertex=tx,
+            caller_id=Address(self.owner_address),
+            timestamp=self.get_current_timestamp(),
+        )
+        # Must complete without raising — the network credits the deposit.
+        self.runner.call_public_method(self.nc_id, "replenish_funds", context)
