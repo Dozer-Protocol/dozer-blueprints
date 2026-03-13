@@ -337,11 +337,6 @@ class DozerPoolManager(Blueprint):
     pool_user_last_action_timestamp: dict[str, dict[CallerId, int]]  # pool_key -> user -> timestamp
     # TWAP Oracle configuration
     default_twap_window: int  # Default time window for TWAP calculation (applied to new pools)
-
-    # Balance invariant tracking
-    tracked_balance: dict[TokenUid, Amount]  # Expected contract balance per token (sum of reserve + total_change across all pools)
-    balance_tracking_initialized: bool  # True after initialize_balance_tracking has been called
-
     @public
     def initialize(self, ctx: Context) -> None:
         """Initialize the DozerPoolManager contract.
@@ -378,10 +373,6 @@ class DozerPoolManager(Blueprint):
         # Initialize pause state
         self.paused = False
 
-        # Balance invariant tracking (populated by initialize_balance_tracking after upgrade)
-        self.tracked_balance = {}
-        self.balance_tracking_initialized = False
-
         # Initialize default TWAP window to 4 hours (14400 seconds)
         # This is used for new pools; existing pools maintain their individual windows
         self.default_twap_window = 14400
@@ -416,11 +407,7 @@ class DozerPoolManager(Blueprint):
 
     def _get_withdrawal_action(self, ctx: Context, token_uid: TokenUid) -> NCWithdrawalAction:
         """Get and validate a withdrawal action for a token.
-
-        Also asserts the balance invariant as a pre-condition so any prior drain
-        is detected before funds leave the contract.
         """
-        self._assert_balance_invariant(token_uid)
         action = ctx.get_single_action(token_uid)
         if not isinstance(action, NCWithdrawalAction):
             raise InvalidAction(f"Must provide a withdrawal action for {token_uid.hex()}")
@@ -436,52 +423,9 @@ class DozerPoolManager(Blueprint):
             return token_b, token_a
         return token_a, token_b
 
-    def _update_tracked_balance(self, token: TokenUid, delta: int) -> None:
-        """Adjust the tracked expected balance for a token by delta (can be negative)."""
-        self.tracked_balance[token] = Amount(self.tracked_balance.get(token, Amount(0)) + delta)
-
-    def _assert_balance_invariant(self, token_uid: TokenUid) -> None:
-        """Raise NCFail if tracked_balance diverges from the real contract balance (pre-condition)."""
-        if not self.balance_tracking_initialized:
-            return
-        expected = self.tracked_balance.get(token_uid, Amount(0))
-        actual = self.syscall.get_balance_before_current_call(token_uid)
-        if expected != actual:
-            raise NCFail(
-                f"Balance invariant violated for {token_uid.hex()}: "
-                f"expected {expected}, got {actual}"
-            )
-
-    def _assert_post_condition_invariants(self, ctx: Context) -> None:
-        """Post-condition: verify tracked_balance matches the effective contract balance
-        (including pending actions) for every token touched by this call.
-
-        Called at the end of every public method that transfers tokens so any
-        discrepancy introduced during the call is caught before it is committed.
-        """
-        if not self.balance_tracking_initialized:
-            return
-        for token_uid in ctx.actions.keys():
-            expected = self.tracked_balance.get(token_uid, Amount(0))
-            actual = self.syscall.get_current_balance(token_uid)
-            if expected != actual:
-                raise NCFail(
-                    f"Post-condition balance invariant violated for {token_uid.hex()}: "
-                    f"expected {expected}, got {actual}"
-                )
-
     def _update_pool(self, pool_key: str, **kwargs) -> None:
         """Update pool state with specified fields using _replace()."""
         pool = self.pools[pool_key]
-        if self.balance_tracking_initialized:
-            old_a = pool.reserve_a + pool.total_change_a
-            new_a = kwargs.get('reserve_a', pool.reserve_a) + kwargs.get('total_change_a', pool.total_change_a)
-            if new_a != old_a:
-                self._update_tracked_balance(pool.token_a, new_a - old_a)
-            old_b = pool.reserve_b + pool.total_change_b
-            new_b = kwargs.get('reserve_b', pool.reserve_b) + kwargs.get('total_change_b', pool.total_change_b)
-            if new_b != old_b:
-                self._update_tracked_balance(pool.token_b, new_b - old_b)
         self.pools[pool_key] = pool._replace(**kwargs)
 
     def _setup_pool_from_context(self, ctx: Context, fee: Amount) -> tuple[str, PoolState, CallerId]:
@@ -1444,11 +1388,6 @@ class DozerPoolManager(Blueprint):
             twap_window=self.default_twap_window,  # Use default window for new pools
         )
 
-        # Update balance tracking for the new pool's initial reserves
-        if self.balance_tracking_initialized:
-            self._update_tracked_balance(token_a, action_a_amount)
-            self._update_tracked_balance(token_b, action_b_amount)
-
         # Initialize container attributes separately
         # User receives initial_liquidity (not including burned amount)
         self.pool_user_liquidity[pool_key] = {ctx.caller_id: Amount(initial_liquidity)}
@@ -1499,7 +1438,6 @@ class DozerPoolManager(Blueprint):
                       user_liquidity=initial_liquidity,
                       fee_numerator=fee)
 
-        self._assert_post_condition_invariants(ctx)
         return pool_key
 
     @public(allow_deposit=True)
@@ -1593,7 +1531,6 @@ class DozerPoolManager(Blueprint):
                           change_token='token_b',
                           change_amount=change)
 
-            self._assert_post_condition_invariants(ctx)
             return (pool.token_b, change)
         else:
             optimal_a = self.quote(action_b_amount, reserve_b, reserve_a)
@@ -1651,7 +1588,6 @@ class DozerPoolManager(Blueprint):
                           change_token='token_a',
                           change_amount=change)
 
-            self._assert_post_condition_invariants(ctx)
             return (pool.token_a, change)
 
     @public(allow_withdrawal=True)
@@ -1772,7 +1708,6 @@ class DozerPoolManager(Blueprint):
                       amount_b_withdrawn=optimal_b,
                       change_b=change)
 
-        self._assert_post_condition_invariants(ctx)
         return (pool.token_b, change)
 
     @public(allow_deposit=True)
@@ -1955,13 +1890,11 @@ class DozerPoolManager(Blueprint):
                       protocol_liquidity=result.protocol_liquidity_increase)
 
         if result.excess_a > 0:
-            ret = (token_a, result.excess_a)
+            return (token_a, result.excess_a)
         elif result.excess_b > 0:
-            ret = (token_b, result.excess_b)
+            return (token_b, result.excess_b)
         else:
-            ret = (token_in, Amount(0))
-        self._assert_post_condition_invariants(ctx)
-        return ret
+            return (token_in, Amount(0))
 
     def _isqrt(self, n: Amount) -> Amount:
         """
@@ -2552,7 +2485,6 @@ class DozerPoolManager(Blueprint):
                       swap_amount=result.swap_amount,
                       protocol_liquidity=result.protocol_liquidity_increase)
 
-        self._assert_post_condition_invariants(ctx)
         return Amount(total_amount_out)
 
     @public(allow_withdrawal=True, allow_deposit=True)
@@ -2636,15 +2568,13 @@ class DozerPoolManager(Blueprint):
                       amount_out=amount_out,
                       slippage=change_in)
 
-        result = SwapResult(
+        return SwapResult(
             action_in_amount,
             change_in,
             action_in.token_uid,
             amount_out,
             action_out.token_uid,
         )
-        self._assert_post_condition_invariants(ctx)
-        return result
 
     @public(allow_withdrawal=True, allow_deposit=True)
     def swap_tokens_for_exact_tokens(
@@ -2723,15 +2653,13 @@ class DozerPoolManager(Blueprint):
             ctx,
         )
 
-        result = SwapResult(
+        return SwapResult(
             action_in_amount,
             change_in,
             action_in.token_uid,
             amount_out,
             action_out.token_uid,
         )
-        self._assert_post_condition_invariants(ctx)
-        return result
 
     @public(allow_withdrawal=True, allow_deposit=True)
     def swap_exact_tokens_for_tokens_through_path(
@@ -2859,15 +2787,13 @@ class DozerPoolManager(Blueprint):
             self._update_change(user_address, slippage_out, token_out, last_pool_key)
             amount_out = withdrawal_action.amount
 
-        result = SwapResult(
+        return SwapResult(
             Amount(amount_in),
             Amount(slippage_out),
             token_in,
             Amount(amount_out),
             token_out,
         )
-        self._assert_post_condition_invariants(ctx)
-        return result
 
     def _swap_exact_out(
         self,
@@ -3103,15 +3029,13 @@ class DozerPoolManager(Blueprint):
                 ctx,
             )
 
-            result = SwapResult(
+            return SwapResult(
                 Amount(actual_amount_in),
                 change_in,
                 token_in,
                 Amount(amount_out),
                 token_out,
             )
-            self._assert_post_condition_invariants(ctx)
-            return result
 
         # For multi-hop paths, we need to calculate backwards
         # This implementation handles 2 or 3 hops
@@ -3231,15 +3155,13 @@ class DozerPoolManager(Blueprint):
                 ctx,
             )
 
-            result = SwapResult(
+            return SwapResult(
                 Amount(actual_amount_in),
                 change_in,
                 token_in,
                 Amount(amount_out),
                 token_out,
             )
-            self._assert_post_condition_invariants(ctx)
-            return result
 
         # For 3-hop path: token_in -> first_intermediate -> second_intermediate -> token_out
         if len(path) == 3:
@@ -3380,15 +3302,13 @@ class DozerPoolManager(Blueprint):
                 ctx,
             )
 
-            result = SwapResult(
+            return SwapResult(
                 Amount(actual_amount_in),
                 change_in,
                 token_in,
                 Amount(amount_out),
                 token_out,
             )
-            self._assert_post_condition_invariants(ctx)
-            return result
 
         # This should never happen due to the path length validation above
         raise InvalidPath("Invalid path length")
@@ -3477,7 +3397,6 @@ class DozerPoolManager(Blueprint):
                       new_balance_a=new_balance_a,
                       new_balance_b=new_balance_b)
 
-        self._assert_post_condition_invariants(ctx)
 
     @public
     def change_protocol_fee(self, ctx: Context, new_fee: int) -> None:
@@ -3822,8 +3741,9 @@ class DozerPoolManager(Blueprint):
         if len(ctx.actions) != 1:
             raise InvalidAction("Must provide exactly one token deposit")
 
-        token = list(ctx.actions.keys())[0]
-        deposit_action = self._get_deposit_action(ctx, token)
+        deposit_action = list(ctx.actions.values())[0][0]
+        if not isinstance(deposit_action, NCDepositAction):
+            raise InvalidAction("Must provide a deposit action")
 
         self.log.info(
             'funds replenished',
@@ -3831,41 +3751,6 @@ class DozerPoolManager(Blueprint):
             token=deposit_action.token_uid.hex(),
             amount=deposit_action.amount,
         )
-
-    @public
-    def initialize_balance_tracking(self, ctx: Context) -> None:
-        """Populate tracked_balance from current pool state.
-
-        Must be called by the owner once after a contract upgrade that introduces
-        balance tracking. Safe to call again to reset the tracker (e.g. after a
-        replenish_funds call on a drained contract).
-
-        Raises:
-            Unauthorized: If the caller is not the owner.
-        """
-        if ctx.caller_id != self.owner:
-            raise Unauthorized("Only the owner can initialize balance tracking")
-        # Accumulate in a regular dict (DictContainer doesn't support iteration/clear),
-        # then overwrite each key so repeated calls produce the correct reset state.
-        totals: dict = {}
-        for pool_key in self.all_pools:
-            pool = self.pools[pool_key]
-            totals[pool.token_a] = totals.get(pool.token_a, 0) + pool.reserve_a + pool.total_change_a
-            totals[pool.token_b] = totals.get(pool.token_b, 0) + pool.reserve_b + pool.total_change_b
-        for token, amount in totals.items():
-            self.tracked_balance[token] = Amount(amount)
-        self.balance_tracking_initialized = True
-        self.log.info('balance tracking initialized', caller=str(ctx.caller_id), pools=len(self.all_pools))
-
-    @view
-    def get_tracked_balance(self, token_uid: TokenUid) -> Amount:
-        """Return the internally tracked expected balance for a token.
-
-        Compare this against the contract's actual balance (via the state API) to
-        verify the invariant: tracked_balance == contract_balance.
-        Returns 0 if balance tracking has not been initialized yet.
-        """
-        return self.tracked_balance.get(token_uid, Amount(0))
 
     @view
     def is_paused(self) -> bool:
