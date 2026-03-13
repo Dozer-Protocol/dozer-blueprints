@@ -3741,9 +3741,8 @@ class DozerPoolManager(Blueprint):
         if len(ctx.actions) != 1:
             raise InvalidAction("Must provide exactly one token deposit")
 
-        deposit_action = list(ctx.actions.values())[0][0]
-        if not isinstance(deposit_action, NCDepositAction):
-            raise InvalidAction("Must provide a deposit action")
+        token = list(ctx.actions.keys())[0]
+        deposit_action = self._get_deposit_action(ctx, token)
 
         self.log.info(
             'funds replenished',
