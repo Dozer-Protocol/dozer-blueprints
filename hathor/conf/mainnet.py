@@ -13,10 +13,11 @@
 # limitations under the License.
 
 from hathor.checkpoint import Checkpoint as cp
-from hathor.conf.settings import FeatureSetting, HathorSettings
+from hathor.conf.settings import HathorSettings
 from hathor.feature_activation.feature import Feature
 from hathor.feature_activation.model.criteria import Criteria
 from hathor.feature_activation.settings import Settings as FeatureActivationSettings
+from hathorlib.conf.settings import FeatureSetting
 
 SETTINGS = HathorSettings(
     P2PKH_VERSION_BYTE=b'\x28',
@@ -255,6 +256,26 @@ SETTINGS = HathorSettings(
                 minimum_activation_height=6_048_000,  # 5 weeks
                 lock_in_on_timeout=False,
                 version='0.67.0',
+                signal_support_by_default=True,
+            ),
+            Feature.FEE_TOKENS: Criteria(
+                # XXX: parity with hathor/conf/mainnet.yml
+                bit=2,
+                start_height=6_249_600,
+                timeout_height=6_592_320,
+                minimum_activation_height=6_350_400,
+                lock_in_on_timeout=False,
+                version='0.69.0',
+                signal_support_by_default=True,
+            ),
+            Feature.OPCODES_V2: Criteria(
+                # XXX: parity with hathor/conf/mainnet.yml
+                bit=3,
+                start_height=6_249_600,
+                timeout_height=6_592_320,
+                minimum_activation_height=6_350_400,
+                lock_in_on_timeout=False,
+                version='0.69.0',
                 signal_support_by_default=True,
             ),
         }

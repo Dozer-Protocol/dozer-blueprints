@@ -181,7 +181,7 @@ def add_new_tx(
     manager: HathorManager,
     address: str,
     value: int,
-    advance_clock: int | None = None,
+    advance_clock: int = 1,
     propagate: bool = True,
     name: str | None = None,
 ) -> Transaction:
@@ -211,7 +211,7 @@ def add_new_tx(
 def add_new_transactions(
     manager: HathorManager,
     num_txs: int,
-    advance_clock: int | None = None,
+    advance_clock: int = 1,
     propagate: bool = True,
     name: str | None = None,
 ) -> list[Transaction]:
@@ -752,6 +752,7 @@ class EventMocker:
     next_id: int = 0
     tx_data = TxData(
         hash='abc',
+        name='tx name',
         nonce=123,
         timestamp=456,
         signal_bits=0,

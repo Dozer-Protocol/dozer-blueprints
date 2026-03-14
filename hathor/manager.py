@@ -47,11 +47,11 @@ from hathor.mining import BlockTemplate, BlockTemplates
 from hathor.mining.cpu_mining_service import CpuMiningService
 from hathor.nanocontracts.runner import Runner
 from hathor.nanocontracts.runner.runner import RunnerFactory
-from hathor.nanocontracts.storage import NCBlockStorage, NCContractStorage
+from hathor.nanocontracts.storage import NCBlockStorage, NCContractStorage, get_block_storage_from_block
 from hathor.p2p.manager import ConnectionsManager
 from hathor.p2p.peer import PrivatePeer
 from hathor.p2p.peer_id import PeerId
-from hathor.pubsub import HathorEvents, PubSubManager
+from hathor.pubsub import EventArguments, HathorEvents, PubSubManager
 from hathor.reactor import ReactorProtocol as Reactor
 from hathor.reward_lock import is_spent_reward_locked
 from hathor.stratum import StratumFactory
@@ -222,6 +222,7 @@ class HathorManager:
         if self.wallet:
             self.wallet.pubsub = self.pubsub
             self.wallet.reactor = self.reactor
+            self._subscribe_wallet(self.wallet)
 
         # It will be inject later by the builder.
         # XXX Remove this attribute after all dependencies are cleared.
@@ -250,6 +251,14 @@ class HathorManager:
         self.lc_check_sync_state = LoopingCall(self.check_sync_state)
         self.lc_check_sync_state.clock = self.reactor
         self.lc_check_sync_state_interval = self.CHECK_SYNC_STATE_INTERVAL
+
+    def _subscribe_wallet(self, wallet: BaseWallet) -> None:
+        """Register a wallet on pubsub."""
+        def handler(event: HathorEvents, args: EventArguments) -> None:
+            assert event == HathorEvents.NETWORK_NEW_TX_PROCESSING
+            wallet.on_new_tx(args.tx)
+
+        self.pubsub.subscribe(HathorEvents.NETWORK_NEW_TX_PROCESSING, handler)
 
     def get_default_capabilities(self) -> list[str]:
         """Return the default capabilities for this manager."""
@@ -400,7 +409,7 @@ class HathorManager:
     def get_nc_runner(self, block: Block) -> Runner:
         """Return a contract runner for a given block."""
         nc_storage_factory = self.consensus_algorithm.nc_storage_factory
-        block_storage = nc_storage_factory.get_block_storage_from_block(block)
+        block_storage = get_block_storage_from_block(nc_storage_factory, block)
         return self.runner_factory.create(
             block_storage=block_storage,
         )
@@ -412,7 +421,7 @@ class HathorManager:
 
     def get_nc_block_storage(self, block: Block) -> NCBlockStorage:
         """Return the nano block storage for a given block."""
-        return self.consensus_algorithm.nc_storage_factory.get_block_storage_from_block(block)
+        return get_block_storage_from_block(self.consensus_algorithm.nc_storage_factory, block)
 
     def get_nc_storage(self, block: Block, nc_id: VertexId) -> NCContractStorage:
         """Return a contract storage with the contract state at a given block."""
@@ -439,8 +448,6 @@ class HathorManager:
             self.wallet._manually_initialize()
 
         self.tx_storage.pre_init()
-        assert self.tx_storage.indexes is not None
-
         self._bit_signaling_service.start()
 
         started_at = int(time.time())
@@ -517,7 +524,6 @@ class HathorManager:
 
         This method needs the essential indexes to be already initialized.
         """
-        assert self.tx_storage.indexes is not None
         # based on the current best-height, filter-out checkpoints that aren't expected to exist in the database
         best_height = self.tx_storage.get_height_best_block()
         expected_checkpoints = [cp for cp in self.checkpoints if cp.height <= best_height]

@@ -223,7 +223,6 @@ class VertexHeadersTest(unittest.TestCase):
         assert self.manager.vertex_handler.on_new_mempool_transaction(tx_ok)
 
         assert self.manager.tx_storage.transaction_exists(tx_ok.hash)
-        assert self.manager.tx_storage.indexes.mempool_tips is not None
         mempool_hashes = {
             tx.hash for tx in self.manager.tx_storage.indexes.mempool_tips.iter_all(self.manager.tx_storage)
         }
@@ -283,7 +282,6 @@ class VertexHeadersTest(unittest.TestCase):
 
         assert self.manager.vertex_handler.on_new_mempool_transaction(tx_ok)
 
-        assert self.manager.tx_storage.indexes.mempool_tips is not None
         mempool_hashes = {
             tx.hash for tx in self.manager.tx_storage.indexes.mempool_tips.iter_all(self.manager.tx_storage)
         }
@@ -364,7 +362,8 @@ class VertexHeadersTest(unittest.TestCase):
             blk = artifacts.get_typed_vertex(f'b{height}', Block)
             checkpoints.append(Checkpoint(height=height, hash=blk.hash))
 
-        new_settings = self._settings._replace(CHECKPOINTS=checkpoints)
+        assert self._settings is not None
+        new_settings = self._settings.model_copy(update={'CHECKPOINTS': checkpoints})
         manager2 = self.create_peer('unittests', settings=new_settings)
         assert [(cp.height, cp.hash) for cp in manager2.checkpoints] == [(cp.height, cp.hash) for cp in checkpoints]
         artifacts.propagate_with(manager2, up_to='b30')
