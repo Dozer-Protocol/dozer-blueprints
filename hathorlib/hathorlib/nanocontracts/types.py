@@ -15,13 +15,15 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum, unique
-from typing import Any, Callable, Generic, Protocol, Self, TypeAlias, TypeVar, cast
+from typing import Any, Callable, Generic, Protocol, Self, TypeAlias, TypeVar
 
 from typing_extensions import override
 
-from hathorlib.conf.settings import HathorSettings
+from hathorlib.conf.settings import HATHOR_TOKEN_UID, HathorSettings
 from hathorlib.nanocontracts.blueprint_syntax_validation import (
     validate_has_ctx_arg,
     validate_has_not_ctx_arg,
@@ -34,9 +36,6 @@ from hathorlib.serialization import SerializationError
 from hathorlib.utils import get_deposit_token_withdraw_amount
 from hathorlib.utils.address import decode_address, get_address_b58_from_bytes
 from hathorlib.utils.typing import InnerTypeMixin
-
-# Well-known constant: HTR token UID is always 0x00
-HATHOR_TOKEN_UID: bytes = b'\x00'
 
 # XXX: mypy gives the following errors on all subclasses of `bytes` that use FauxImmutableMeta:
 #
@@ -109,6 +108,8 @@ CallerId: TypeAlias = Address | ContractId
 T = TypeVar('T')
 B = TypeVar('B', bound=type)
 
+NC_HTR_TOKEN_UID: TokenUid = TokenUid(HATHOR_TOKEN_UID)
+
 NC_INITIALIZE_METHOD: str = 'initialize'
 NC_FALLBACK_METHOD: str = 'fallback'
 
@@ -149,6 +150,26 @@ def set_checksig_backend(fn: ChecksigBackend) -> None:
     _checksig_backend = fn
 
 
+@contextmanager
+def checksig_backend(fn: ChecksigBackend) -> Iterator[None]:
+    """Temporarily replace the global checksig backend, restoring the previous one on exit.
+
+    Example::
+
+        with checksig_backend(my_custom_backend):
+            # checksig() calls will use my_custom_backend
+            ...
+        # previous backend is restored
+    """
+    global _checksig_backend
+    previous = _checksig_backend
+    _checksig_backend = fn
+    try:
+        yield
+    finally:
+        _checksig_backend = previous
+
+
 class RawSignedData(InnerTypeMixin[T], Generic[T]):
     """A wrapper class to sign data.
 
@@ -156,10 +177,7 @@ class RawSignedData(InnerTypeMixin[T], Generic[T]):
     """
 
     def __init__(self, data: T, script_input: bytes) -> None:
-        # mypy: disable-error-code="import-not-found"
-        from hathor.nanocontracts.nc_types import (  # type: ignore[import-not-found]
-            make_nc_type_for_return_type as make_nc_type,
-        )
+        from hathorlib.nanocontracts.nc_types import make_nc_type_for_return_type as make_nc_type
 
         self.data = data
         self.script_input = script_input
@@ -176,7 +194,7 @@ class RawSignedData(InnerTypeMixin[T], Generic[T]):
 
     def get_data_bytes(self) -> bytes:
         """Return the serialized data."""
-        return cast(bytes, self.__nc_type.to_bytes(self.data))
+        return self.__nc_type.to_bytes(self.data)
 
     def get_sighash_all_data(self) -> bytes:
         """Workaround to be able to pass `self` for ScriptExtras. See the method `checksig`."""
@@ -518,11 +536,10 @@ class NCRawArgs:
         return f"NCRawArgs('{str(self)}')"
 
     def try_parse_as(self, arg_types: tuple[type, ...]) -> tuple[Any, ...] | None:
-        # mypy: disable-error-code="import-not-found"
-        from hathor.nanocontracts.method import ArgsOnly  # type: ignore[import-not-found]
+        from hathorlib.nanocontracts.method import ArgsOnly
         try:
             args_parser = ArgsOnly.from_arg_types(arg_types)
-            return cast(tuple[Any, ...], args_parser.deserialize_args_bytes(self.args_bytes))
+            return args_parser.deserialize_args_bytes(self.args_bytes)
         except (NCSerializationError, SerializationError, TypeError, ValueError):
             return None
 

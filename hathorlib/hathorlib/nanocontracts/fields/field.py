@@ -23,7 +23,7 @@ from hathorlib.nanocontracts.nc_types import NCType
 from hathorlib.nanocontracts.nc_types.utils import TypeAliasMap, TypeToNCTypeMap
 
 if TYPE_CHECKING:
-    from hathorlib.nanocontracts.blueprint import Blueprint  # type: ignore[import-not-found]
+    from hathorlib.nanocontracts.blueprint import Blueprint
 
 T = TypeVar('T')
 
@@ -46,7 +46,7 @@ class Field(Generic[T]):
 
     __slots__ = ('_prefix', '_container_node_factory')
     _prefix: bytes
-    _container_node_factory: ContainerNodeFactory
+    _container_node_factory: ContainerNodeFactory[T]
 
     class TypeMap(NamedTuple):
         alias_map: TypeAliasMap
@@ -60,7 +60,7 @@ class Field(Generic[T]):
 
     def __init__(self, prefix: bytes, type_: type[T], type_map: TypeMap) -> None:
         self._prefix = prefix
-        self._container_node_factory = ContainerNodeFactory(type_, type_map)
+        self._container_node_factory = ContainerNodeFactory[T](type_, type_map)
 
     @final
     @staticmethod

@@ -20,7 +20,6 @@ import hashlib
 import time
 import weakref
 from abc import ABC, abstractmethod
-from enum import IntEnum
 from itertools import chain
 from math import isfinite, log
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Iterator, Optional, TypeAlias, TypeVar
@@ -39,6 +38,7 @@ from hathor.transaction.validation_state import ValidationState
 from hathor.types import TokenUid, TxOutputScript, VertexId
 from hathor.util import classproperty
 from hathor.utils.weight import weight_to_work
+from hathorlib.base_transaction import TxVersion  # noqa: F401
 
 if TYPE_CHECKING:
     from _hashlib import HASH
@@ -78,49 +78,32 @@ def aux_calc_weight(w1: float, w2: float, multiplier: int) -> float:
     return a + log(1 + 2**(b - a) * multiplier, 2)
 
 
-# Versions are sequential for blocks and transactions
-class TxVersion(IntEnum):
-    REGULAR_BLOCK = 0
-    REGULAR_TRANSACTION = 1
-    TOKEN_CREATION_TRANSACTION = 2
-    MERGE_MINED_BLOCK = 3
-    # DEPRECATED_NANO_CONTRACT = 4  # XXX: Temporary to keep compatibility
-    POA_BLOCK = 5
-    ON_CHAIN_BLUEPRINT = 6
+def get_cls_from_tx_version(tx_version: TxVersion) -> type['BaseTransaction']:
+    from hathor.transaction.block import Block
+    from hathor.transaction.merge_mined_block import MergeMinedBlock
+    from hathor.transaction.poa import PoaBlock
+    from hathor.transaction.token_creation_tx import TokenCreationTransaction
+    from hathor.transaction.transaction import Transaction
 
-    @classmethod
-    def _missing_(cls, value: Any) -> None:
-        assert isinstance(value, int), f"Value '{value}' must be an integer"
-        assert value <= _ONE_BYTE, f'Value {hex(value)} must not be larger than one byte'
+    cls_map: dict[TxVersion, type[BaseTransaction]] = {
+        TxVersion.REGULAR_BLOCK: Block,
+        TxVersion.REGULAR_TRANSACTION: Transaction,
+        TxVersion.TOKEN_CREATION_TRANSACTION: TokenCreationTransaction,
+        TxVersion.MERGE_MINED_BLOCK: MergeMinedBlock,
+        TxVersion.POA_BLOCK: PoaBlock
+    }
 
-        raise ValueError(f'Invalid version: {value}')
+    settings = get_global_settings()
+    if settings.ENABLE_NANO_CONTRACTS:
+        from hathor.nanocontracts.on_chain_blueprint import OnChainBlueprint
+        cls_map[TxVersion.ON_CHAIN_BLUEPRINT] = OnChainBlueprint
 
-    def get_cls(self) -> type['BaseTransaction']:
-        from hathor.transaction.block import Block
-        from hathor.transaction.merge_mined_block import MergeMinedBlock
-        from hathor.transaction.poa import PoaBlock
-        from hathor.transaction.token_creation_tx import TokenCreationTransaction
-        from hathor.transaction.transaction import Transaction
+    cls = cls_map.get(tx_version)
 
-        cls_map: dict[TxVersion, type[BaseTransaction]] = {
-            TxVersion.REGULAR_BLOCK: Block,
-            TxVersion.REGULAR_TRANSACTION: Transaction,
-            TxVersion.TOKEN_CREATION_TRANSACTION: TokenCreationTransaction,
-            TxVersion.MERGE_MINED_BLOCK: MergeMinedBlock,
-            TxVersion.POA_BLOCK: PoaBlock
-        }
-
-        settings = get_global_settings()
-        if settings.ENABLE_NANO_CONTRACTS:
-            from hathor.nanocontracts.on_chain_blueprint import OnChainBlueprint
-            cls_map[TxVersion.ON_CHAIN_BLUEPRINT] = OnChainBlueprint
-
-        cls = cls_map.get(self)
-
-        if cls is None:
-            raise ValueError('Invalid version.')
-        else:
-            return cls
+    if cls is None:
+        raise ValueError('Invalid version.')
+    else:
+        return cls
 
 
 _base_transaction_log = logger.new()
@@ -314,6 +297,15 @@ class GenericVertex(ABC, Generic[StaticMetadataT]):
         """Sum of the value of the outputs"""
         return sum(output.value for output in self.outputs if not output.is_token_authority())
 
+    def resolve_spent_output(self, index: int) -> 'TxOutput':
+        """Return the output at `index` that an input may spend.
+
+        Default implementation indexes `self.outputs` directly. Subclasses with
+        additional output spaces (e.g. shielded outputs) override this to make
+        the lookup aware of those spaces.
+        """
+        return self.outputs[index]
+
     def get_target(self, override_weight: Optional[float] = None) -> int:
         """Target to be achieved in the mining process"""
         if not isfinite(self.weight):
@@ -443,7 +435,7 @@ class GenericVertex(ABC, Generic[StaticMetadataT]):
 
         for txin in self.inputs:
             tx2 = self.storage.get_transaction(txin.tx_id)
-            txout = tx2.outputs[txin.index]
+            txout = tx2.resolve_spent_output(txin.index)
             add_address_from_output(txout)
 
         for txout in self.outputs:
@@ -792,7 +784,7 @@ class GenericVertex(ABC, Generic[StaticMetadataT]):
 
         for index, tx_in in enumerate(self.inputs):
             tx2 = self.storage.get_transaction(tx_in.tx_id)
-            tx2_out = tx2.outputs[tx_in.index]
+            tx2_out = tx2.resolve_spent_output(tx_in.index)
             output = serialize_output(tx2, tx2_out)
             output['tx_id'] = tx2.hash_hex
             output['index'] = tx_in.index

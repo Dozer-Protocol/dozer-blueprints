@@ -1,9 +1,16 @@
-"""
-Copyright (c) Hathor Labs and its affiliates.
-
-This source code is licensed under the MIT license found in the
-LICENSE file in the root directory of this source tree.
-"""
+# Copyright 2026 Hathor Labs
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import os
 from enum import StrEnum, auto, unique
@@ -104,10 +111,6 @@ class HathorSettings(BaseModel):
     # enable peer whitelist
     ENABLE_PEER_WHITELIST: bool = False
 
-    # weather to use the whitelist with sync-v2 peers, does not affect whether the whitelist is enabled or not, it will
-    # always be enabled for sync-v1 if it is enabled
-    USE_PEER_WHITELIST_ON_SYNC_V2: bool = True
-
     # Genesis pre-mined tokens
     GENESIS_TOKEN_UNITS: int = 1 * (10 ** 9)  # 1B
 
@@ -156,6 +159,9 @@ class HathorSettings(BaseModel):
 
     # Average time between blocks.
     AVG_TIME_BETWEEN_BLOCKS: int = 30  # in seconds
+
+    # Average time between blocks after REDUCE_DAA_TARGET feature activation (in tenths of a second).
+    REDUCED_AVG_TIME_BETWEEN_BLOCKS_10X: int = 75  # 7.5 seconds
 
     # Genesis pre-mined outputs
     # P2PKH HMcJymyctyhnWsWTXqhP9txDwgNZaMWf42
@@ -306,9 +312,12 @@ class HathorSettings(BaseModel):
     #     print('w1 is greater than or equal to w2')
     WEIGHT_TOL: float = 1e-10
 
-    # Maximum difference between the weight and the min_weight.
+    # Maximum difference between the tx weight and its min_weight once the activation threshold is crossed.
     MAX_TX_WEIGHT_DIFF: float = 4.0
+    # Apply the maximum tx weight difference rule only when tx.weight is strictly greater than this threshold.
     MAX_TX_WEIGHT_DIFF_ACTIVATION: float = 32.0
+    # Maximum serialized size in bytes for any non-genesis tx or block accepted by consensus.
+    MAX_SERIALIZED_VERTEX_SIZE: int = 48_000
 
     # Maximum number of txs or blocks (each, not combined) to show on the dashboard
     MAX_DASHBOARD_COUNT: int = 15
@@ -369,6 +378,11 @@ class HathorSettings(BaseModel):
 
     # Number max of connections in the p2p network
     PEER_MAX_CONNECTIONS: int = 125
+
+    # Max Number of each connection slot (int):
+    P2P_PEER_MAX_INCOMING_CONNECTIONS: int = 50
+    P2P_PEER_MAX_OUTGOING_CONNECTIONS: int = 60
+    P2P_PEER_MAX_BOOTSTRAP_PEERS_CONNECTIONS: int = 15
 
     # Maximum period without receiving any messages from ther peer (in seconds).
     PEER_IDLE_TIMEOUT: int = 60
@@ -513,6 +527,12 @@ class HathorSettings(BaseModel):
     # Used to enable opcodes V2.
     ENABLE_OPCODES_V2: FeatureSetting = FeatureSetting.DISABLED
 
+    # Used to enable Nano Runtime V2.
+    ENABLE_NANO_RUNTIME_V2: FeatureSetting = FeatureSetting.DISABLED
+
+    # Used to restrict duplicate actions.
+    RESTRICT_DUP_ACTIONS: FeatureSetting = FeatureSetting.DISABLED
+
     # List of enabled blueprints.
     BLUEPRINTS: dict[bytes, str] = {}
 
@@ -551,5 +571,22 @@ class HathorSettings(BaseModel):
             raise ValueError(
                 f'invalid tokens: GENESIS_TOKENS={genesis_tokens}, '
                 f'GENESIS_TOKEN_UNITS={genesis_token_units}, DECIMAL_PLACES={decimal_places}'
+            )
+        return self
+
+    @model_validator(mode='after')
+    def _validate_peer_connection_slots(self) -> Self:
+        slot_total = (
+            self.P2P_PEER_MAX_INCOMING_CONNECTIONS
+            + self.P2P_PEER_MAX_OUTGOING_CONNECTIONS
+            + self.P2P_PEER_MAX_BOOTSTRAP_PEERS_CONNECTIONS
+        )
+        if self.PEER_MAX_CONNECTIONS != slot_total:
+            raise ValueError(
+                f'PEER_MAX_CONNECTIONS ({self.PEER_MAX_CONNECTIONS}) must equal '
+                f'P2P_PEER_MAX_INCOMING_CONNECTIONS ({self.P2P_PEER_MAX_INCOMING_CONNECTIONS}) + '
+                f'P2P_PEER_MAX_OUTGOING_CONNECTIONS ({self.P2P_PEER_MAX_OUTGOING_CONNECTIONS}) + '
+                f'P2P_PEER_MAX_BOOTSTRAP_PEERS_CONNECTIONS '
+                f'({self.P2P_PEER_MAX_BOOTSTRAP_PEERS_CONNECTIONS}) = {slot_total}'
             )
         return self

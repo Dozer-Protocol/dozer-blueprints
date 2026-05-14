@@ -16,17 +16,16 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Container as ContainerAbc, Mapping
-from typing import Any, ClassVar, Generic, TypeAlias, TypeVar
+from typing import ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from typing_extensions import TYPE_CHECKING, Self, final, get_origin, override
 
+from hathorlib.nanocontracts.blueprint_env import NCAttrCache
 from hathorlib.nanocontracts.nc_types import BoolNCType, NCType
 from hathorlib.nanocontracts.storage.contract_storage import NCContractStorage
 
-NCAttrCache: TypeAlias = dict[bytes, Any] | None
-
 if TYPE_CHECKING:
-    from hathorlib.nanocontracts.blueprint import Blueprint  # type: ignore[import-not-found]
+    from hathorlib.nanocontracts.blueprint import Blueprint
     from hathorlib.nanocontracts.fields.field import Field
 
 T = TypeVar('T')
@@ -118,8 +117,8 @@ class ContainerNodeFactory(Generic[T]):
         self.type_map = type_map
         self.check_is_container(type_, type_map)
 
-    def build(self, instance: Blueprint) -> ContainerNode:
-        return ContainerNode.from_type(
+    def build(self, instance: Blueprint) -> ContainerNode[T]:
+        return ContainerNode[T].from_type(
             instance.syscall.__storage__,
             self.type_,
             type_map=self.type_map,
@@ -237,7 +236,7 @@ class ContainerProxy(ContainerNode[P]):
     @override
     def get_value(self, prefix: bytes) -> P:
         if self.cache is not None and prefix in self.cache:
-            return self.cache[prefix]
+            return cast(P, self.cache[prefix])
 
         container = self._build_container(prefix)
         is_init_key = KEY_SEPARATOR.join([prefix, INIT_KEY])
@@ -304,7 +303,7 @@ class ContainerLeaf(ContainerNode[T]):
     @override
     def get_value(self, prefix: bytes) -> T:
         if self.cache is not None and prefix in self.cache:
-            return self.cache[prefix]
+            return cast(T, self.cache[prefix])
         obj = self.storage.get_obj(prefix, self._nc_type)
         if self.cache is not None:
             self.cache[prefix] = obj
