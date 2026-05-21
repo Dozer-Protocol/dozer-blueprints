@@ -108,6 +108,8 @@ class Stake(Blueprint):
     user_actual_stake: dict[Address, Amount]  # Only actual deposits (for total_staked tracking)
     user_debit: dict[Address, int]  # Changed to int for fixed-point arithmetic
     user_stake_timestamp: dict[Address, int]  # For timelock
+    user_locked_until: dict[Address, int]  # Governance lock timestamp per user
+    authorized_governance_contracts: dict[ContractId, bool]  # Contracts allowed to lock stake
 
     # Version tracking
     contract_version: str  # Semantic version string (e.g., "1.0.0")
@@ -136,6 +138,9 @@ class Stake(Blueprint):
             < self.user_stake_timestamp[address] + MIN_PERIOD_DAYS * DAY_IN_SECONDS
         ):
             raise InvalidTime("Staking period not completed")
+        locked_until = self.user_locked_until.get(address, 0)
+        if int(ctx.block.timestamp) < locked_until:
+            raise InvalidTime("Stake is locked for governance")
 
     def _amount_check(self, amount: Amount, earnings_per_day: int) -> None:
         """Checks if the contract can run for at least one month"""
@@ -144,16 +149,24 @@ class Stake(Blueprint):
 
     def _get_single_deposit_action(self, ctx: Context) -> NCDepositAction:
         """Get a single deposit action for the specified token."""
+        if len(ctx.actions) != 1:
+            raise InvalidActions("Exactly one deposit action required")
         action = ctx.get_single_action(self.token_uid)
         if not isinstance(action, NCDepositAction):
             raise InvalidActions("Expected deposit action")
+        if action.amount <= 0:
+            raise InvalidAmount("Deposit amount must be positive")
         return action
 
     def _get_single_withdrawal_action(self, ctx: Context) -> NCWithdrawalAction:
         """Get a single withdrawal action for the specified token."""
+        if len(ctx.actions) != 1:
+            raise InvalidActions("Exactly one withdrawal action required")
         action = ctx.get_single_action(self.token_uid)
         if not isinstance(action, NCWithdrawalAction):
             raise InvalidActions("Expected withdrawal action")
+        if action.amount <= 0:
+            raise InvalidAmount("Withdrawal amount must be positive")
         return action
 
     def _validate_owner_auth(self, ctx: Context) -> None:
@@ -167,12 +180,15 @@ class Stake(Blueprint):
 
     def _safe_pay(self, amount: int, address: Address) -> None:
         """Safe payment handling"""
-        if amount <= self.owner_balance:
-            self.owner_balance = Amount(self.owner_balance - amount)
-            self.user_deposits[address] = Amount(
-                self.user_deposits.get(address, 0) + amount
-            )
-            self._validate_state()
+        if amount == 0:
+            return
+        if amount > self.owner_balance:
+            raise InsufficientBalance("insufficient owner balance for rewards")
+        self.owner_balance = Amount(self.owner_balance - amount)
+        self.user_deposits[address] = Amount(
+            self.user_deposits.get(address, 0) + amount
+        )
+        self._validate_state()
 
     def _update_pool(self, ctx: Context):
         """Update pool with fixed-point arithmetic"""
@@ -223,6 +239,8 @@ class Stake(Blueprint):
         self.user_actual_stake = {}
         self.user_debit = {}
         self.user_stake_timestamp = {}
+        self.user_locked_until = {}
+        self.authorized_governance_contracts = {}
         # Set creator_contract_id (for DozerTools routing)
         self.creator_contract_id = creator_contract_id
         # Initialize version
@@ -252,11 +270,20 @@ class Stake(Blueprint):
         address = Address(ctx.caller_id)
         if address not in self.user_deposits:
             raise Unauthorized("user not staked")
+        locked_until = self.user_locked_until.get(address, 0)
+        if int(ctx.block.timestamp) < locked_until:
+            raise InvalidTime("Stake is locked for governance")
         amount = action.amount
         if amount > self.user_deposits[address]:
             raise InsufficientBalance("insufficient funds")
+        if address not in self.user_actual_stake:
+            self.user_actual_stake[address] = self.user_deposits[address]
+        amount_from_stake = min(amount, self.user_actual_stake[address])
         self.user_deposits[address] = Amount(self.user_deposits[address] - amount)
-        self.total_staked = Amount(self.total_staked - amount)
+        self.user_actual_stake[address] = Amount(
+            self.user_actual_stake[address] - amount_from_stake
+        )
+        self.total_staked = Amount(self.total_staked - amount_from_stake)
         self._validate_state()
 
     @public(allow_deposit=True)
@@ -309,6 +336,38 @@ class Stake(Blueprint):
             self.user_deposits[address] * self.rewards_per_share
         ) // PRECISION
         self._validate_state()
+
+    @public
+    def authorize_governance_contract(
+        self, ctx: Context, governance_contract: ContractId
+    ) -> None:
+        """Authorize a DAO/governance contract to lock user stakes."""
+        if ctx.caller_id != self.owner_address and ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise Unauthorized("Only owner or creator contract can authorize governance")
+        self.authorized_governance_contracts[governance_contract] = True
+
+    @public
+    def revoke_governance_contract(
+        self, ctx: Context, governance_contract: ContractId
+    ) -> None:
+        """Remove a DAO/governance contract from the stake-lock allowlist."""
+        if ctx.caller_id != self.owner_address and ContractId(ctx.caller_id) != self.creator_contract_id:
+            raise Unauthorized("Only owner or creator contract can revoke governance")
+        self.authorized_governance_contracts[governance_contract] = False
+
+    @public
+    def lock_stake_for_governance(
+        self, ctx: Context, user_address: Address, locked_until: Timestamp
+    ) -> None:
+        """Lock a user's stake until a proposal ends."""
+        caller_contract = ContractId(ctx.caller_id)
+        if not self.authorized_governance_contracts.get(caller_contract, False):
+            raise Unauthorized("Governance contract is not authorized")
+        if user_address not in self.user_actual_stake or self.user_actual_stake[user_address] == 0:
+            raise InsufficientBalance("No actual stake to lock")
+        current_lock = self.user_locked_until.get(user_address, 0)
+        if int(locked_until) > current_lock:
+            self.user_locked_until[user_address] = int(locked_until)
 
     @public(allow_withdrawal=True)
     def unstake(self, ctx: Context) -> None:
@@ -375,6 +434,8 @@ class Stake(Blueprint):
 
     @view
     def get_max_withdrawal(self, address: Address, timestamp: Timestamp) -> Amount:
+        if int(timestamp) < self.user_locked_until.get(address, 0):
+            return Amount(0)
         if self.paused:
             return Amount(self.user_deposits.get(address, 0))
 
@@ -396,6 +457,14 @@ class Stake(Blueprint):
             return Amount(self.user_deposits[address] + pending)
         else:
             return Amount(0)
+
+    @view
+    def get_actual_stake(self, address: Address) -> Amount:
+        return Amount(self.user_actual_stake.get(address, Amount(0)))
+
+    @view
+    def get_locked_until(self, address: Address) -> int:
+        return self.user_locked_until.get(address, 0)
 
     @view
     def get_user_info(self, address: Address) -> StakeUserInfo:
@@ -477,7 +546,9 @@ class Stake(Blueprint):
         time_since_stake = int(timestamp) - stake_time
         days_since_stake = time_since_stake // DAY_IN_SECONDS
         days_until_unlock = max(0, MIN_PERIOD_DAYS - days_since_stake)
-        can_unstake = days_until_unlock == 0
+        locked_until = self.user_locked_until.get(address, 0)
+        governance_locked = int(timestamp) < locked_until
+        can_unstake = days_until_unlock == 0 and not governance_locked
 
         # Calculate pending rewards
         pending = self._pending_rewards(address)

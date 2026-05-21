@@ -1,4 +1,5 @@
 import os
+import time
 from hathor.conf.get_settings import HathorSettings
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprints.stake import Stake
@@ -28,12 +29,12 @@ class DAOTestCase(BlueprintTestCase):
         # Set up DAO contract
         self.dao_contract_id = self.gen_random_contract_id()
         self.dao_blueprint_id = self.gen_random_blueprint_id()
-        self.register_blueprint_class(self.dao_blueprint_id, DAO)
+        self._register_blueprint_class(DAO, self.dao_blueprint_id)
 
         # Set up Stake contract
         self.stake_contract_id = self.gen_random_contract_id()
         self.stake_blueprint_id = self.gen_random_blueprint_id()
-        self.register_blueprint_class(self.stake_blueprint_id, Stake)
+        self._register_blueprint_class(Stake, self.stake_blueprint_id)
 
         # Generate test tokens and addresses
         self.token_uid = self.gen_random_token_uid()
@@ -47,6 +48,7 @@ class DAOTestCase(BlueprintTestCase):
 
         # Initialize base tx
         self.tx = self.get_genesis_tx()
+        self.now = int(time.time())
 
     def _get_any_address(self) -> tuple[Address, KeyPair]:
         password = os.urandom(12)
@@ -60,7 +62,7 @@ class DAOTestCase(BlueprintTestCase):
         # Initialize stake contract
         stake_ctx = self.create_context(
             actions=[NCDepositAction(token_uid=self.token_uid, amount=10000_00)],
-            address=self.admin_address,
+            caller_id=self.admin_address,
             timestamp=self.now,
         )
         self.runner.create_contract(
@@ -69,10 +71,11 @@ class DAOTestCase(BlueprintTestCase):
             stake_ctx,
             self.earnings_per_day,
             self.token_uid,
+            self.dao_contract_id,
         )
 
         # Initialize DAO contract
-        dao_ctx = self.create_context(address=self.admin_address, timestamp=self.now)
+        dao_ctx = self.create_context(caller_id=self.admin_address, timestamp=self.now)
         self.runner.create_contract(
             self.dao_contract_id,
             self.dao_blueprint_id,
@@ -84,6 +87,15 @@ class DAOTestCase(BlueprintTestCase):
             self.voting_period_days,
             self.quorum_percentage,
             self.proposal_threshold,
+            self.dao_contract_id,
+        )
+
+        auth_ctx = self.create_context(caller_id=self.admin_address, timestamp=self.now)
+        self.runner.call_public_method(
+            self.stake_contract_id,
+            "authorize_governance_contract",
+            auth_ctx,
+            self.dao_contract_id,
         )
 
     def test_initialize(self) -> None:
@@ -107,13 +119,13 @@ class DAOTestCase(BlueprintTestCase):
         stake_amount = self.proposal_threshold
         stake_ctx = self.create_context(
             actions=[NCDepositAction(token_uid=self.token_uid, amount=stake_amount)],
-            address=user_addr,
+            caller_id=user_addr,
             timestamp=self.now,
         )
         self.runner.call_public_method(self.stake_contract_id, "stake", stake_ctx)
 
         # Create proposal
-        proposal_ctx = self.create_context(address=user_addr, timestamp=self.now)
+        proposal_ctx = self.create_context(caller_id=user_addr, timestamp=self.now)
         proposal_id = self.runner.call_public_method(
             self.dao_contract_id,
             "create_proposal",
@@ -148,13 +160,13 @@ class DAOTestCase(BlueprintTestCase):
                 actions=[
                     NCDepositAction(token_uid=self.token_uid, amount=stake_amount)
                 ],
-                address=addr,
+                caller_id=addr,
                 timestamp=self.now,
             )
             self.runner.call_public_method(self.stake_contract_id, "stake", ctx)
 
         # Create proposal
-        proposal_ctx = self.create_context(address=stakers[0], timestamp=self.now)
+        proposal_ctx = self.create_context(caller_id=stakers[0], timestamp=self.now)
         proposal_id = self.runner.call_public_method(
             self.dao_contract_id,
             "create_proposal",
@@ -165,7 +177,7 @@ class DAOTestCase(BlueprintTestCase):
 
         # Cast votes
         for i, staker in enumerate(stakers):
-            vote_ctx = self.create_context(address=staker, timestamp=self.now)
+            vote_ctx = self.create_context(caller_id=staker, timestamp=self.now)
             self.runner.call_public_method(
                 self.dao_contract_id,
                 "cast_vote",
@@ -182,6 +194,51 @@ class DAOTestCase(BlueprintTestCase):
         self.assertEqual(proposal.for_votes, stake_amount * 2)
         self.assertEqual(proposal.against_votes, stake_amount)
         self.assertEqual(proposal.total_voters, 3)
+
+    def test_vote_locks_stake_until_proposal_end(self) -> None:
+        """Voting snapshots principal and prevents unstaking until proposal end."""
+        self.initialize_contracts()
+
+        voter = self._get_any_address()[0]
+        stake_amount = self.proposal_threshold
+        stake_ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=self.token_uid, amount=stake_amount)],
+            caller_id=voter,
+            timestamp=self.now,
+        )
+        self.runner.call_public_method(self.stake_contract_id, "stake", stake_ctx)
+
+        proposal_time = self.now + 25 * 24 * 60 * 60
+        proposal_id = self.runner.call_public_method(
+            self.dao_contract_id,
+            "create_proposal",
+            self.create_context(caller_id=voter, timestamp=proposal_time),
+            "Lock Test",
+            "Voting should lock stake",
+        )
+
+        self.runner.call_public_method(
+            self.dao_contract_id,
+            "cast_vote",
+            self.create_context(caller_id=voter, timestamp=proposal_time),
+            proposal_id,
+            True,
+        )
+
+        locked_until = self.runner.call_view_method(
+            self.stake_contract_id, "get_locked_until", voter
+        )
+        self.assertGreater(locked_until, self.now + 30 * 24 * 60 * 60)
+
+        unstake_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=stake_amount)],
+            caller_id=voter,
+            timestamp=self.now + 30 * 24 * 60 * 60,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.stake_contract_id, "unstake", unstake_ctx
+            )
 
     def test_quorum_calculation(self) -> None:
         """Test quorum calculation"""
@@ -200,7 +257,7 @@ class DAOTestCase(BlueprintTestCase):
                 actions=[
                     NCDepositAction(token_uid=self.token_uid, amount=stake_per_user)
                 ],
-                address=addr,
+                caller_id=addr,
                 timestamp=self.now,
             )
             self.runner.call_public_method(self.stake_contract_id, "stake", ctx)
@@ -209,7 +266,7 @@ class DAOTestCase(BlueprintTestCase):
         proposal_id = self.runner.call_public_method(
             self.dao_contract_id,
             "create_proposal",
-            self.create_context(address=stakers[0], timestamp=self.now),
+            self.create_context(caller_id=stakers[0], timestamp=self.now),
             "Quorum Test",
             "Testing quorum calculation",
         )
@@ -221,7 +278,7 @@ class DAOTestCase(BlueprintTestCase):
             self.runner.call_public_method(
                 self.dao_contract_id,
                 "cast_vote",
-                self.create_context(address=stakers[i], timestamp=self.now),
+                self.create_context(caller_id=stakers[i], timestamp=self.now),
                 proposal_id,
                 True,
             )

@@ -11,6 +11,7 @@ services:
       # - ./.git:/app/.git
 
     # command: ["poetry", "run", "pytest","-rP", "hathor/tests/nanocontracts/blueprints/test_crowdsale.py"] # with stdout
+    #poetry run pytest --capture=no -s --disable-warnings --tb=short --color=yes hathor_tests/nanocontracts/blueprints/test_dozer_pool_manager.py hathor_tests/nanocontracts/blueprints/tests2.py hathor_tests/nanocontracts/blueprints/tests3.py hathor_tests/nanocontracts/blueprints/test_oasis.py
     command: bash -c "
-      poetry run pytest --capture=no -s --disable-warnings --tb=short --color=yes hathor_tests/nanocontracts/blueprints/test_dozer_pool_manager.py hathor_tests/nanocontracts/blueprints/tests2.py hathor_tests/nanocontracts/blueprints/tests3.py hathor_tests/nanocontracts/blueprints/test_oasis.py
+      poetry run pytest --capture=no -s --disable-warnings --tb=short --color=yes hathor_tests/nanocontracts/blueprints/test_dozer_tools.py hathor_tests/nanocontracts/blueprints/test_crowdsale.py hathor_tests/nanocontracts/blueprints/test_dao.py hathor_tests/nanocontracts/blueprints/test_stake_edge_cases.py hathor_tests/nanocontracts/blueprints/test_stake.py hathor_tests/nanocontracts/blueprints/test_vesting.py
       "

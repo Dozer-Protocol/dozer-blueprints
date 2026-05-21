@@ -43,7 +43,7 @@ class VestingTestCase(BlueprintTestCase):
         # Set up contract
         self.contract_id = self.gen_random_contract_id()
         self.blueprint_id = self.gen_random_blueprint_id()
-        self._register_blueprint_class( Vesting,self.blueprint_id)
+        self._register_blueprint_class(Vesting, self.blueprint_id)
 
         # Generate test tokens and addresses
         self.token_uid = self.gen_random_token_uid()
@@ -151,11 +151,11 @@ class VestingTestCase(BlueprintTestCase):
 
         # Test basic configuration
         amount = 100_000_00
-        beneficiary = self._configure_vesting(0, amount)
+        beneficiary = self._configure_vesting(3, amount)
 
         # Verify configuration
         info = self.runner.call_view_method(
-            self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
+            self.contract_id, "get_vesting_info", 3, Timestamp(self.now)
         )
 
         self.assertEqual(info.beneficiary, beneficiary.hex())
@@ -165,13 +165,35 @@ class VestingTestCase(BlueprintTestCase):
 
         # Test insufficient balance
         with self.assertRaises(InsufficientAvailableBalance):
-            self._configure_vesting(1, self.initial_deposit + 1)
+            self._configure_vesting(4, self.initial_deposit + 1)
+
+    def test_factory_reserved_allocations_cannot_be_claimed_by_beneficiary(self):
+        """Special allocation slots are only claimable by the creator contract."""
+        self._initialize_contract()
+        amount = 100_000_00
+        beneficiary = self._configure_vesting(0, amount, 0, 0)
+
+        start_ctx = self.create_context(
+            caller_id=self.admin_address,
+            timestamp=self.now,
+        )
+        self.runner.call_public_method(self.contract_id, "start_vesting", start_ctx)
+
+        claim_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=amount)],
+            caller_id=beneficiary,
+            timestamp=self.now + self.month_in_seconds,
+        )
+        with self.assertRaises(InvalidBeneficiary):
+            self.runner.call_public_method(
+                self.contract_id, "claim_allocation", claim_ctx, 0
+            )
 
     def test_start_vesting(self):
         """Test vesting schedule start."""
         self._initialize_contract()
         amount = 100_000_00
-        beneficiary = self._configure_vesting(0, amount)
+        beneficiary = self._configure_vesting(3, amount)
 
         start_time = self.now
         ctx = self.create_context(
@@ -188,7 +210,7 @@ class VestingTestCase(BlueprintTestCase):
 
         # Test cannot configure after start
         with self.assertRaises(NCFail):
-            self._configure_vesting(1, amount)
+            self._configure_vesting(4, amount)
 
     def test_claim_allocation(self):
         """Test token claiming process."""
@@ -196,7 +218,7 @@ class VestingTestCase(BlueprintTestCase):
         amount = 100_000_00
         cliff_months = 6
         vesting_months = 12
-        beneficiary = self._configure_vesting(0, amount, cliff_months, vesting_months)
+        beneficiary = self._configure_vesting(3, amount, cliff_months, vesting_months)
 
         # Start vesting
         start_time = self.now
@@ -214,7 +236,7 @@ class VestingTestCase(BlueprintTestCase):
         )
         with self.assertRaises(InsufficientVestedAmount):
             self.runner.call_public_method(
-                self.contract_id, "claim_allocation", early_claim_ctx, 0
+                self.contract_id, "claim_allocation", early_claim_ctx, 3
             )
 
         # Claim one month after cliff
@@ -228,12 +250,12 @@ class VestingTestCase(BlueprintTestCase):
             timestamp=after_cliff,
         )
         self.runner.call_public_method(
-            self.contract_id, "claim_allocation", claim_ctx, 0
+            self.contract_id, "claim_allocation", claim_ctx, 3
         )
 
         # Verify withdrawal
         info = self.runner.call_view_method(
-            self.contract_id, "get_vesting_info", 0, Timestamp(after_cliff)
+            self.contract_id, "get_vesting_info", 3, Timestamp(after_cliff)
         )
         self.assertEqual(info.withdrawn, monthly_vesting)
 
@@ -243,7 +265,7 @@ class VestingTestCase(BlueprintTestCase):
         amount = 100_000_00
         cliff_months = 6
         vesting_months = 12
-        beneficiary = self._configure_vesting(0, amount, cliff_months, vesting_months)
+        beneficiary = self._configure_vesting(3, amount, cliff_months, vesting_months)
 
         # Start vesting
         start_time = self.now
@@ -254,7 +276,9 @@ class VestingTestCase(BlueprintTestCase):
         self.runner.call_public_method(self.contract_id, "start_vesting", start_ctx)
 
         # Wait until tokens are fully vested
-        after_vesting = start_time + ((cliff_months + vesting_months) * self.month_in_seconds)
+        after_vesting = start_time + (
+            (cliff_months + vesting_months) * self.month_in_seconds
+        )
 
         # Admin tries to claim beneficiary's allocation (should fail)
         admin_claim_ctx = self.create_context(
@@ -265,7 +289,7 @@ class VestingTestCase(BlueprintTestCase):
 
         with self.assertRaises(InvalidBeneficiary):
             self.runner.call_public_method(
-                self.contract_id, "claim_allocation", admin_claim_ctx, 0
+                self.contract_id, "claim_allocation", admin_claim_ctx, 3
             )
 
         # Verify that beneficiary can still claim successfully
@@ -275,12 +299,12 @@ class VestingTestCase(BlueprintTestCase):
             timestamp=after_vesting,
         )
         self.runner.call_public_method(
-            self.contract_id, "claim_allocation", beneficiary_claim_ctx, 0
+            self.contract_id, "claim_allocation", beneficiary_claim_ctx, 3
         )
 
         # Verify successful withdrawal by beneficiary
         info = self.runner.call_view_method(
-            self.contract_id, "get_vesting_info", 0, Timestamp(after_vesting)
+            self.contract_id, "get_vesting_info", 3, Timestamp(after_vesting)
         )
         self.assertEqual(info.withdrawn, amount)
 
@@ -288,7 +312,7 @@ class VestingTestCase(BlueprintTestCase):
         """Test beneficiary change functionality."""
         self._initialize_contract()
         amount = 100_000_00
-        old_beneficiary = self._configure_vesting(0, amount)
+        old_beneficiary = self._configure_vesting(3, amount)
         new_beneficiary = self._get_any_address()[0]
 
         # Change beneficiary
@@ -297,12 +321,12 @@ class VestingTestCase(BlueprintTestCase):
             timestamp=self.now,
         )
         self.runner.call_public_method(
-            self.contract_id, "change_beneficiary", ctx, 0, new_beneficiary
+            self.contract_id, "change_beneficiary", ctx, 3, new_beneficiary
         )
 
         # Verify change
         info = self.runner.call_view_method(
-            self.contract_id, "get_vesting_info", 0, Timestamp(self.now)
+            self.contract_id, "get_vesting_info", 3, Timestamp(self.now)
         )
         self.assertEqual(info.beneficiary, new_beneficiary.hex())
 
@@ -316,7 +340,7 @@ class VestingTestCase(BlueprintTestCase):
                 self.contract_id,
                 "change_beneficiary",
                 unauthorized_ctx,
-                0,
+                3,
                 new_beneficiary,
             )
 
@@ -365,7 +389,7 @@ class VestingTestCase(BlueprintTestCase):
         amount = 120_000_00
         cliff_months = 6
         vesting_months = 12
-        beneficiary = self._configure_vesting(0, amount, cliff_months, vesting_months)
+        beneficiary = self._configure_vesting(3, amount, cliff_months, vesting_months)
 
         # Start vesting
         start_time = self.now
@@ -388,7 +412,7 @@ class VestingTestCase(BlueprintTestCase):
         for months, expected_vested in check_points:
             timestamp = start_time + (months * self.month_in_seconds)
             info = self.runner.call_view_method(
-                self.contract_id, "get_vesting_info", 0, Timestamp(timestamp)
+                self.contract_id, "get_vesting_info", 3, Timestamp(timestamp)
             )
             self.assertEqual(
                 info.vested, expected_vested, f"Incorrect vesting at {months} months"
@@ -398,9 +422,9 @@ class VestingTestCase(BlueprintTestCase):
         """Test multiple vesting allocations."""
         self._initialize_contract()
         allocations = [
-            (0, 100_000_00, 6, 24, "Team"),
-            (1, 200_000_00, 12, 36, "Treasury"),
-            (2, 150_000_00, 3, 12, "Advisors"),
+            (3, 100_000_00, 6, 24, "Team"),
+            (4, 200_000_00, 12, 36, "Treasury"),
+            (5, 150_000_00, 3, 12, "Advisors"),
         ]
 
         # Configure allocations

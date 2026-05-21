@@ -54,7 +54,14 @@ class BlueprintService:
         self.feature_service = feature_service
 
         if settings.ENABLE_NANO_CONTRACTS:
-            blueprints = NCBlueprintCatalog.generate_blueprints_from_settings(settings)
+            # Build the blueprint catalog directly from our mapper, bypassing the global
+            # _BLUEPRINTS_MAPPER registration mechanism that changed in hathor-core v0.70.0.
+            from hathor.nanocontracts.blueprints import _blueprints_mapper
+            blueprints: dict[bytes, type] = {
+                _id: _blueprints_mapper[_name]
+                for _id, _name in settings.BLUEPRINTS.items()
+                if _name in _blueprints_mapper
+            }
             self.register_blueprints(blueprints)
 
     def get_on_chain_blueprint(self, blueprint_id: BlueprintId) -> OnChainBlueprint:

@@ -181,7 +181,7 @@ class DAO(Blueprint):
     @public
     def create_proposal(self, ctx: Context, title: str, description: str) -> int:
         """Create new proposal if caller meets staking threshold."""
-        staked = self._get_voting_power(ctx, ctx.caller_id)
+        staked = self._get_voting_power(ctx, Address(ctx.caller_id))
         if staked < self.proposal_threshold:
             raise NCFail("Insufficient staked tokens")
 
@@ -190,7 +190,7 @@ class DAO(Blueprint):
 
         self.proposal_titles[proposal_id] = title
         self.proposal_descriptions[proposal_id] = description
-        self.proposal_creators[proposal_id] = ctx.caller_id
+        self.proposal_creators[proposal_id] = Address(ctx.caller_id)
         self.proposal_start_times[proposal_id] = ctx.block.timestamp
         self.proposal_end_times[proposal_id] = (
             ctx.block.timestamp + self.voting_period_seconds
@@ -212,13 +212,16 @@ class DAO(Blueprint):
         if ctx.block.timestamp >= self.proposal_end_times[proposal_id]:
             raise NCFail("Voting period ended")
 
-        vote_key = (proposal_id, ctx.caller_id)
+        voter = Address(ctx.caller_id)
+        vote_key = (proposal_id, voter)
         if vote_key in self.vote_support:
             raise NCFail("Already voted")
 
-        power = self._get_voting_power(ctx, ctx.caller_id)
+        power = self._get_voting_power(ctx, voter)
         if power == 0:
             raise NCFail("No voting power")
+
+        self._lock_voter_stake(ctx, voter, self.proposal_end_times[proposal_id])
 
         self.vote_support[vote_key] = support
         self.vote_power[vote_key] = power
@@ -248,16 +251,27 @@ class DAO(Blueprint):
         if ContractId(ctx.caller_id) != self.creator_contract_id:
             raise NCFail("Only creator contract can call this method")
 
-    def _get_voting_power(self, ctx: Context, address: bytes) -> Amount:
+    def _get_voting_power(self, ctx: Context, address: Address) -> Amount:
         """Get voting power from staking contract."""
-        return self.syscall.call_view_method(
-            self.staking_contract, "get_max_withdrawal", address, ctx.block.timestamp
-        )
+        return self.syscall.get_contract(
+            self.staking_contract, blueprint_id=None
+        ).view().get_actual_stake(address)
 
     def _get_total_staked(self, ctx: Context) -> Amount:
         """Get total staked from staking contract."""
-        info = self.syscall.call_view_method(self.staking_contract, "front_end_api")
+        info = self.syscall.get_contract(
+            self.staking_contract, blueprint_id=None
+        ).view().front_end_api()
         return info.total_staked
+
+    def _lock_voter_stake(
+        self, ctx: Context, address: Address, locked_until: Timestamp
+    ) -> None:
+        """Lock voting stake in the staking contract until proposal end."""
+        self.syscall.get_contract(
+            self.staking_contract,
+            blueprint_id=None,
+        ).public().lock_stake_for_governance(address, locked_until)
 
     @view
     def get_proposal(self, proposal_id: int) -> ProposalInfo | None:
@@ -426,6 +440,8 @@ class DAO(Blueprint):
         power = self._get_voting_power(ctx, user_address)
         if power == 0:
             raise NCFail("No voting power")
+
+        self._lock_voter_stake(ctx, user_address, self.proposal_end_times[proposal_id])
 
         self.vote_support[vote_key] = support
         self.vote_power[vote_key] = power

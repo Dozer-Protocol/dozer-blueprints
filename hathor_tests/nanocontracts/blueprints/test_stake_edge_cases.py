@@ -64,7 +64,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         address_bytes = decode_address(not_none(address_b58))
         return address_bytes, key
 
-    def _initialize_contract(self, amount: int | None = None, earnings_per_day: int | None = None) -> None:
+    def _initialize_contract(
+        self, amount: int | None = None, earnings_per_day: int | None = None
+    ) -> None:
         """Initialize contract with token deposit."""
         if amount is None:
             amount = self.initial_deposit
@@ -108,9 +110,13 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         # Create a contract with low owner balance but enough for MIN_PERIOD_DAYS
         # Need at least MIN_PERIOD_DAYS * earnings_per_day
         low_earnings = 10  # 0.1 tokens per day
-        low_owner_balance = MIN_PERIOD_DAYS * low_earnings + 1000_00  # Enough for min + 1000 tokens
+        low_owner_balance = (
+            MIN_PERIOD_DAYS * low_earnings + 1000_00
+        )  # Enough for min + 1000 tokens
         self.contract_id = self.gen_random_contract_id()
-        self._initialize_contract(amount=low_owner_balance, earnings_per_day=low_earnings)
+        self._initialize_contract(
+            amount=low_owner_balance, earnings_per_day=low_earnings
+        )
 
         # Stake tokens
         stake_amount = self.base_stake
@@ -135,7 +141,11 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
 
         # Withdraw only deposits (should always work)
         unstake_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(stake_amount)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx.caller_id),
             timestamp=initial_time + time_passed,
@@ -193,7 +203,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         low_earnings = 1  # 1 token per day (0.01 tokens)
         low_owner_balance = MIN_PERIOD_DAYS * low_earnings  # Just enough
         self.contract_id = self.gen_random_contract_id()
-        self._initialize_contract(amount=low_owner_balance, earnings_per_day=low_earnings)
+        self._initialize_contract(
+            amount=low_owner_balance, earnings_per_day=low_earnings
+        )
 
         stake_amount = self.base_stake
         ctx = self._stake_tokens(stake_amount)
@@ -219,13 +231,19 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         # Try 1 second before 30 days (should fail)
         one_second_before_30_days = MIN_PERIOD_DAYS * DAY_IN_SECONDS - 1
         unstake_ctx_before = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(stake_amount)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx.caller_id),
             timestamp=initial_time + one_second_before_30_days,
         )
         with self.assertRaises(InvalidTime):
-            self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx_before)
+            self.runner.call_public_method(
+                self.contract_id, "unstake", unstake_ctx_before
+            )
 
         # Try exactly at 30 days boundary (should succeed - timelock check is <, not <=)
         exactly_30_days = MIN_PERIOD_DAYS * DAY_IN_SECONDS
@@ -237,12 +255,18 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         )
 
         unstake_ctx_boundary = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(max_withdrawal_boundary))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(max_withdrawal_boundary)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx.caller_id),
             timestamp=initial_time + exactly_30_days,
         )
-        self.runner.call_public_method(self.contract_id, "unstake", unstake_ctx_boundary)
+        self.runner.call_public_method(
+            self.contract_id, "unstake", unstake_ctx_boundary
+        )
 
         # Verify success
         user_info = self.runner.call_view_method(
@@ -317,7 +341,11 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
 
             # Create unstake context with exact amount
             unstake_ctx = self.create_context(
-                actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(max_withdrawal))],
+                actions=[
+                    NCWithdrawalAction(
+                        token_uid=self.token_uid, amount=Amount(max_withdrawal)
+                    )
+                ],
                 vertex=self.tx,
                 caller_id=Address(ctx.caller_id),
                 timestamp=timestamp,
@@ -401,7 +429,11 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         # Partial unstake (50%)
         partial_amount = stake_amount // 2
         unstake_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(partial_amount))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(partial_amount)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx.caller_id),
             timestamp=timestamp,
@@ -437,7 +469,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         )
 
         final_unstake_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(final_max))],
+            actions=[
+                NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(final_max))
+            ],
             vertex=self.tx,
             caller_id=Address(ctx.caller_id),
             timestamp=timestamp + DAY_IN_SECONDS,
@@ -472,7 +506,11 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
 
         # Withdraw only deposits
         unstake_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(stake_amount)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx.caller_id),
             timestamp=initial_time + time_passed,
@@ -530,7 +568,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         # Verify APY calculation: (annual_rewards * 100) / total_staked
         # But annual_rewards uses the reconstructed earnings_per_day which has precision loss
         reconstructed_earnings = (self.earnings_per_day * PRECISION) // DAY_IN_SECONDS
-        reconstructed_earnings_per_day = (reconstructed_earnings * DAY_IN_SECONDS) // PRECISION
+        reconstructed_earnings_per_day = (
+            reconstructed_earnings * DAY_IN_SECONDS
+        ) // PRECISION
         annual_rewards = reconstructed_earnings_per_day * 365
         expected_apy = (annual_rewards * 100) // stake_amount
         self.assertEqual(stats_after.estimated_apy, expected_apy)
@@ -588,16 +628,25 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         print(f"Total staked: {contract_2.total_staked}")
         print(f"Expected total_staked (deposits only): {expected_total_staked}")
 
-        self.assertEqual(contract_2.total_staked, expected_total_staked,
-                        "total_staked should only count actual deposits, not compounded rewards")
+        self.assertEqual(
+            contract_2.total_staked,
+            expected_total_staked,
+            "total_staked should only count actual deposits, not compounded rewards",
+        )
 
         # user_deposits WILL include auto-compounded rewards
-        expected_deposits_with_compounding = stake_amount_1 + stake_amount_2 + expected_pending
-        print(f"Expected user_deposits (with auto-compounding): ~{expected_deposits_with_compounding}")
+        expected_deposits_with_compounding = (
+            stake_amount_1 + stake_amount_2 + expected_pending
+        )
+        print(
+            f"Expected user_deposits (with auto-compounding): ~{expected_deposits_with_compounding}"
+        )
 
         # Verify auto-compounding happened (within precision tolerance)
         # NOTE: Auto-compounding is implemented via _safe_pay adding pending rewards to user_deposits
-        print(f"Auto-compound check: deposits={user_info_2.deposits}, base_deposits={stake_amount_1 + stake_amount_2}")
+        print(
+            f"Auto-compound check: deposits={user_info_2.deposits}, base_deposits={stake_amount_1 + stake_amount_2}"
+        )
         if user_info_2.deposits > stake_amount_1 + stake_amount_2:
             print("✓ Auto-compounding detected")
         else:
@@ -605,8 +654,11 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
 
         # Timestamp should NOT change (keeps original lock time)
         if Address(user_address) in contract_2.user_stake_timestamp:
-            self.assertEqual(initial_timestamp, contract_2.user_stake_timestamp[Address(user_address)],
-                        "Stake timestamp should not change on subsequent stakes")
+            self.assertEqual(
+                initial_timestamp,
+                contract_2.user_stake_timestamp[Address(user_address)],
+                "Stake timestamp should not change on subsequent stakes",
+            )
 
         print("✓ total_staked correctly excludes compounded rewards")
         print("✓ user_deposits includes auto-compounded rewards")
@@ -632,7 +684,11 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
 
         # Verify we can withdraw everything
         unstake_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(max_withdrawal))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(max_withdrawal)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx2.caller_id),
             timestamp=final_time,
@@ -667,12 +723,15 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         time_2 = self.clock.seconds()
 
         # Check pending rewards before second stake
-        pending_before_stake = self.runner.call_view_method(
-            self.contract_id,
-            "get_max_withdrawal",
-            ctx1.caller_id,
-            int(time_2),
-        ) - stake_1
+        pending_before_stake = (
+            self.runner.call_view_method(
+                self.contract_id,
+                "get_max_withdrawal",
+                ctx1.caller_id,
+                int(time_2),
+            )
+            - stake_1
+        )
 
         print(f"\n=== Rewards Auto-Compounding Test ===")
         print(f"Pending rewards before second stake: {pending_before_stake}")
@@ -690,18 +749,25 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
 
         print(f"Deposits after second stake: {user_info.deposits}")
         print(f"Total staked after second stake: {contract.total_staked}")
-        print(f"Expected total_staked (no compounding in total_staked): {stake_1 + stake_2}")
+        print(
+            f"Expected total_staked (no compounding in total_staked): {stake_1 + stake_2}"
+        )
 
         # CRITICAL: total_staked should ONLY include actual deposits, NOT compounded rewards
         # user_deposits may include compounded rewards (auto-compounding feature)
         # but total_staked should only track actual new deposit amounts
-        self.assertEqual(contract.total_staked, stake_1 + stake_2,
-                        "total_staked should only include actual deposits, not compounded rewards")
+        self.assertEqual(
+            contract.total_staked,
+            stake_1 + stake_2,
+            "total_staked should only include actual deposits, not compounded rewards",
+        )
 
         # user_deposits WILL include compounded rewards (this is the auto-compounding feature)
         expected_user_deposits = stake_1 + stake_2 + pending_before_stake
         print(f"Actual user_deposits: {user_info.deposits}")
-        print(f"Expected user_deposits (with auto-compounding): {expected_user_deposits}")
+        print(
+            f"Expected user_deposits (with auto-compounding): {expected_user_deposits}"
+        )
         print(f"Difference: {abs(user_info.deposits - expected_user_deposits)}")
 
         # Auto-compounding adds pending rewards to user_deposits
@@ -716,7 +782,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         print("======================================\n")
 
         # Wait for unlock period from FIRST stake
-        time_until_unlock = (time_1 + MIN_PERIOD_DAYS * DAY_IN_SECONDS) - self.clock.seconds()
+        time_until_unlock = (
+            time_1 + MIN_PERIOD_DAYS * DAY_IN_SECONDS
+        ) - self.clock.seconds()
         if time_until_unlock > 0:
             self.clock.advance(time_until_unlock + 1)
         final_time = self.clock.seconds()
@@ -730,7 +798,11 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         )
 
         unstake_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(max_withdrawal))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(max_withdrawal)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx2.caller_id),
             timestamp=final_time,
@@ -814,7 +886,11 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         # Partial unstake (50%)
         partial_amount = initial_stake // 2
         unstake_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(partial_amount))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(partial_amount)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx1.caller_id),
             timestamp=self.clock.seconds(),
@@ -870,7 +946,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         # First partial unstake: 300 tokens
         unstake_1 = 300_00
         unstake_ctx_1 = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(unstake_1))],
+            actions=[
+                NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(unstake_1))
+            ],
             vertex=self.tx,
             caller_id=Address(ctx1.caller_id),
             timestamp=self.clock.seconds(),
@@ -881,7 +959,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         assert isinstance(contract_1, Stake)
         expected_1 = stake_1 - unstake_1
 
-        print(f"Step 2 - Unstake {unstake_1}, remaining: {contract_1.total_staked}, expected: {expected_1}")
+        print(
+            f"Step 2 - Unstake {unstake_1}, remaining: {contract_1.total_staked}, expected: {expected_1}"
+        )
         self.assertEqual(contract_1.total_staked, expected_1)
 
         # Wait and add second stake: 500 tokens
@@ -893,14 +973,18 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         assert isinstance(contract_2, Stake)
         expected_2 = expected_1 + stake_2
 
-        print(f"Step 3 - Stake {stake_2}, total: {contract_2.total_staked}, expected: {expected_2}")
+        print(
+            f"Step 3 - Stake {stake_2}, total: {contract_2.total_staked}, expected: {expected_2}"
+        )
         self.assertEqual(contract_2.total_staked, expected_2)
 
         # Wait and do second partial unstake: 400 tokens
         self.clock.advance(2 * DAY_IN_SECONDS)
         unstake_2 = 400_00
         unstake_ctx_2 = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(unstake_2))],
+            actions=[
+                NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(unstake_2))
+            ],
             vertex=self.tx,
             caller_id=Address(ctx2.caller_id),
             timestamp=self.clock.seconds(),
@@ -911,7 +995,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         assert isinstance(contract_3, Stake)
         expected_3 = expected_2 - unstake_2
 
-        print(f"Step 4 - Unstake {unstake_2}, remaining: {contract_3.total_staked}, expected: {expected_3}")
+        print(
+            f"Step 4 - Unstake {unstake_2}, remaining: {contract_3.total_staked}, expected: {expected_3}"
+        )
         self.assertEqual(contract_3.total_staked, expected_3)
 
         # Add third stake: 200 tokens
@@ -923,7 +1009,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         assert isinstance(contract_4, Stake)
         expected_4 = expected_3 + stake_3
 
-        print(f"Step 5 - Stake {stake_3}, total: {contract_4.total_staked}, expected: {expected_4}")
+        print(
+            f"Step 5 - Stake {stake_3}, total: {contract_4.total_staked}, expected: {expected_4}"
+        )
         self.assertEqual(contract_4.total_staked, expected_4)
 
         # Final verification: withdraw everything
@@ -938,7 +1026,11 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         print(f"Step 6 - Max withdrawal: {max_withdrawal}")
 
         final_unstake_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(max_withdrawal))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(max_withdrawal)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx3.caller_id),
             timestamp=final_time,
@@ -948,7 +1040,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         final_contract = self.get_readonly_contract(self.contract_id)
         assert isinstance(final_contract, Stake)
 
-        print(f"Final - Total staked after full withdrawal: {final_contract.total_staked}")
+        print(
+            f"Final - Total staked after full withdrawal: {final_contract.total_staked}"
+        )
         self.assertEqual(final_contract.total_staked, 0)
         print("======================================\n")
 
@@ -970,7 +1064,11 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         # Unstake half
         unstake_amount = stake_1 // 2
         unstake_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(unstake_amount))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(unstake_amount)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx1.caller_id),
             timestamp=base_time,
@@ -1025,7 +1123,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         print(f"  Expected rewards: ~{expected_rewards_10_days}")
         print(f"  Actual rewards: {actual_rewards_10_days}")
         print(f"  Difference: {abs(expected_rewards_10_days - actual_rewards_10_days)}")
-        print(f"  Accuracy: {(actual_rewards_10_days / expected_rewards_10_days * 100):.2f}%")
+        print(
+            f"  Accuracy: {(actual_rewards_10_days / expected_rewards_10_days * 100):.2f}%"
+        )
 
         # Verify rewards are in reasonable range (within 10% due to precision)
         self.assertGreater(actual_rewards_10_days, expected_rewards_10_days * 0.9)
@@ -1052,8 +1152,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         print(f"  Total time staked: 20 days")
 
         # Verify rewards continue to accrue
-        self.assertGreater(max_withdrawal_2, max_withdrawal_1,
-                          "Rewards should continue increasing")
+        self.assertGreater(
+            max_withdrawal_2, max_withdrawal_1, "Rewards should continue increasing"
+        )
 
         print("✓ Rewards are accruing correctly")
         print("==============================\n")

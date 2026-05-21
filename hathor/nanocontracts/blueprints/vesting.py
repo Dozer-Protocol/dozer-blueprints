@@ -19,6 +19,7 @@ from hathor import (
 
 
 MAX_ALLOCATIONS = 10
+FIRST_USER_ALLOCATION = 3
 MONTH_IN_SECONDS = 30 * 24 * 3600  # 30 days in seconds
 PRECISION = 10**8
 
@@ -110,6 +111,7 @@ class Vesting(Blueprint):
     vesting_start: Timestamp
     is_started: bool
     creator_contract_id: ContractId  # DozerTools contract that created this
+    paused: bool
 
     # Balance tracking
     available_balance: Amount
@@ -141,22 +143,37 @@ class Vesting(Blueprint):
         if ContractId(ctx.caller_id) != self.creator_contract_id:
             raise NCFail("Only creator contract can call this method")
 
+    def _check_not_paused(self) -> None:
+        if self.paused:
+            raise NCFail("Contract is paused")
+
+    def _is_factory_reserved_index(self, index: int) -> bool:
+        return index < FIRST_USER_ALLOCATION
+
     def _get_single_deposit_action(
         self, ctx: Context, token_uid: TokenUid
     ) -> NCDepositAction:
         """Get a single deposit action for the specified token."""
+        if len(ctx.actions) != 1:
+            raise NCFail("Exactly one deposit action required")
         action = ctx.get_single_action(token_uid)
         if not isinstance(action, NCDepositAction):
             raise NCFail("Expected deposit action")
+        if action.amount <= 0:
+            raise InvalidTokenDeposit("Deposit amount must be positive")
         return action
 
     def _get_single_withdrawal_action(
         self, ctx: Context, token_uid: TokenUid
     ) -> NCWithdrawalAction:
         """Get a single withdrawal action for the specified token."""
+        if len(ctx.actions) != 1:
+            raise NCFail("Exactly one withdrawal action required")
         action = ctx.get_single_action(token_uid)
         if not isinstance(action, NCWithdrawalAction):
             raise NCFail("Expected withdrawal action")
+        if action.amount <= 0:
+            raise InsufficientVestedAmount("Withdrawal amount must be positive")
         return action
 
     def _calculate_vested_amount(self, index: int, timestamp: Timestamp) -> Amount:
@@ -195,6 +212,7 @@ class Vesting(Blueprint):
         self.available_balance = Amount(action.amount)
         self.total_allocated = Amount(0)
         self.is_started = False
+        self.paused = False
         # Set creator_contract_id (for DozerTools routing)
         self.creator_contract_id = creator_contract_id
 
@@ -225,11 +243,14 @@ class Vesting(Blueprint):
         name: str,
     ) -> None:
         """Configure vesting allocation slot."""
+        self._check_not_paused()
         self._only_admin(ctx)
         self._validate_index(index)
 
         if self.is_started:
             raise NCFail("Cannot configure after vesting started")
+        if self.is_configured.get(index, False):
+            raise NCFail("Allocation already configured")
 
         if amount > self.available_balance:
             raise InsufficientAvailableBalance
@@ -251,6 +272,7 @@ class Vesting(Blueprint):
     @public
     def start_vesting(self, ctx: Context) -> None:
         """Start vesting schedule for all configured allocations."""
+        self._check_not_paused()
         self._only_admin(ctx)
 
         if self.is_started:
@@ -262,6 +284,7 @@ class Vesting(Blueprint):
     @public(allow_withdrawal=True)
     def claim_allocation(self, ctx: Context, index: int) -> None:
         """Claim vested tokens for an allocation."""
+        self._check_not_paused()
         self._validate_index(index)
 
         if not self.is_configured.get(index, False):
@@ -272,12 +295,14 @@ class Vesting(Blueprint):
 
         beneficiary = self.allocation_addresses[index]
         # Allow creator_contract to claim special allocations (indices 0, 1, 2)
-        is_special_allocation = index in [0, 1, 2]
+        is_special_allocation = self._is_factory_reserved_index(index)
         is_creator_contract = ContractId(ctx.caller_id) == self.creator_contract_id
 
         if is_special_allocation and is_creator_contract:
             # Creator contract (DozerTools) can claim special allocations
             pass
+        elif is_special_allocation:
+            raise InvalidBeneficiary("Factory-reserved allocation")
         elif ctx.caller_id != beneficiary:
             raise InvalidBeneficiary("Only beneficiary can claim")
 
@@ -299,7 +324,11 @@ class Vesting(Blueprint):
         self, ctx: Context, index: int, new_beneficiary: Address
     ) -> None:
         """Change beneficiary address for allocation."""
+        self._check_not_paused()
         self._validate_index(index)
+
+        if self._is_factory_reserved_index(index):
+            raise InvalidBeneficiary("Factory-reserved allocation")
 
         if not self.is_configured.get(index, False):
             raise AllocationNotConfigured
@@ -313,6 +342,7 @@ class Vesting(Blueprint):
     @public(allow_deposit=True)
     def deposit_tokens(self, ctx: Context) -> None:
         """Deposit additional tokens to available balance."""
+        self._check_not_paused()
         self._only_admin(ctx)
 
         action = self._get_single_deposit_action(ctx, self.token_uid)
@@ -321,6 +351,7 @@ class Vesting(Blueprint):
     @public(allow_withdrawal=True)
     def withdraw_available(self, ctx: Context) -> None:
         """Withdraw tokens from available balance."""
+        self._check_not_paused()
         self._only_admin(ctx)
 
         action = self._get_single_withdrawal_action(ctx, self.token_uid)
@@ -329,6 +360,18 @@ class Vesting(Blueprint):
             raise InsufficientAvailableBalance
 
         self.available_balance = Amount(self.available_balance - action.amount)
+
+    @public
+    def pause(self, ctx: Context) -> None:
+        """Pause fund-moving vesting operations."""
+        self._only_admin(ctx)
+        self.paused = True
+
+    @public
+    def unpause(self, ctx: Context) -> None:
+        """Resume fund-moving vesting operations."""
+        self._only_admin(ctx)
+        self.paused = False
 
     # @public(allow_withdrawal=True)
     # def admin_claim_allocation(self, ctx: Context, index: int) -> None:
@@ -403,6 +446,7 @@ class Vesting(Blueprint):
         self, ctx: Context, user_address: Address, index: int
     ) -> None:
         """Claim vested tokens for an allocation via DozerTools routing."""
+        self._check_not_paused()
         self._only_creator_contract(ctx)
         self._validate_index(index)
 
@@ -415,7 +459,7 @@ class Vesting(Blueprint):
         beneficiary = self.allocation_addresses[index]
         # Special allocations (indices 0, 1, 2) are owned by creator_contract
         # and don't need user_address validation
-        is_special_allocation = index in [0, 1, 2]
+        is_special_allocation = self._is_factory_reserved_index(index)
 
         if not is_special_allocation and user_address != beneficiary:
             raise InvalidBeneficiary("Only beneficiary can claim")
@@ -438,8 +482,12 @@ class Vesting(Blueprint):
         self, ctx: Context, user_address: Address, index: int, new_beneficiary: Address
     ) -> None:
         """Change beneficiary address for allocation via DozerTools routing."""
+        self._check_not_paused()
         self._only_creator_contract(ctx)
         self._validate_index(index)
+
+        if self._is_factory_reserved_index(index):
+            raise InvalidBeneficiary("Factory-reserved allocation")
 
         if not self.is_configured.get(index, False):
             raise AllocationNotConfigured

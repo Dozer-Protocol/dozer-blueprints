@@ -48,6 +48,9 @@ class CrowdsaleParticipantInfo(NamedTuple):
     deposited: int
     tokens_due: int
     has_claimed: bool
+    gross_deposited: int
+    participation_fees_paid: int
+    refundable_amount: int
 
 
 class CrowdsaleSaleProgress(NamedTuple):
@@ -69,7 +72,6 @@ class CrowdsaleWithdrawalInfo(NamedTuple):
 
 
 BASIS_POINTS = 10000  # For fee calculations
-HARD_CAP_MARGIN_BP = 50  # 0.5% margin for hard cap (in basis points)
 
 
 class SaleState:
@@ -121,6 +123,7 @@ class Crowdsale(Blueprint):
     # Sale state
     state: int
     total_raised: Amount  # Total HTR received
+    total_gross_raised: Amount  # Total gross HTR received before fees
     total_sold: Amount  # Total tokens sold
     participants_count: int  # Number of unique participants
 
@@ -136,6 +139,8 @@ class Crowdsale(Blueprint):
 
     # Participant tracking
     deposits: dict[Address, Amount]  # HTR deposits per address
+    gross_deposits: dict[Address, Amount]  # Gross HTR deposits per address
+    participation_fees_paid: dict[Address, Amount]  # Fees paid per address
     claimed: dict[Address, bool]  # Claim status per address
 
     # Withdrawal tracking
@@ -150,6 +155,35 @@ class Crowdsale(Blueprint):
 
     # Version tracking
     contract_version: str  # Semantic version string (e.g., "1.0.0")
+
+    def _ceil_div(self, numerator: Amount, denominator: Amount) -> Amount:
+        if denominator <= 0:
+            raise NCFail("Invalid denominator")
+        return Amount((numerator + denominator - 1) // denominator)
+
+    def _get_exact_deposit_action(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> NCDepositAction:
+        if len(ctx.actions) != 1:
+            raise NCFail("Exactly one deposit action required")
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCDepositAction):
+            raise NCFail("Expected deposit action")
+        if action.amount <= 0:
+            raise NCFail(CrowdsaleErrors.INVALID_AMOUNT)
+        return action
+
+    def _get_exact_withdrawal_action(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> NCWithdrawalAction:
+        if len(ctx.actions) != 1:
+            raise NCFail("Exactly one withdrawal action required")
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Expected withdrawal action")
+        if action.amount <= 0:
+            raise NCFail(CrowdsaleErrors.INVALID_AMOUNT)
+        return action
 
     @public(allow_deposit=True)
     def initialize(
@@ -183,9 +217,7 @@ class Crowdsale(Blueprint):
             raise NCFail("Invalid rate or minimum deposit")
 
         # Validate token deposit
-        action = ctx.get_single_action(token_uid)
-        if not isinstance(action, NCDepositAction):
-            raise NCFail("Expected deposit action")
+        action = self._get_exact_deposit_action(ctx, token_uid)
 
         # Validate sufficient tokens for hard cap
         tokens_needed = hard_cap * rate
@@ -208,6 +240,7 @@ class Crowdsale(Blueprint):
         # Initialize state
         self.state = SaleState.PENDING
         self.total_raised = Amount(0)
+        self.total_gross_raised = Amount(0)
         self.total_sold = Amount(0)
         self.participants_count = 0
         self.initial_token_deposit = Amount(action.amount)
@@ -235,6 +268,8 @@ class Crowdsale(Blueprint):
 
         # Initialize tracking dictionaries
         self.deposits = {}
+        self.gross_deposits = {}
+        self.participation_fees_paid = {}
         self.claimed = {}
 
         # Initialize withdrawal tracking
@@ -254,9 +289,7 @@ class Crowdsale(Blueprint):
         self._validate_sale_active(ctx)
 
         # Validate HTR deposit
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCDepositAction):
-            raise NCFail("Expected deposit action")
+        action = self._get_exact_deposit_action(ctx, TokenUid(HTR_UID))
 
         gross_amount = Amount(action.amount)
 
@@ -267,11 +300,7 @@ class Crowdsale(Blueprint):
         if net_amount < self.min_deposit:
             raise NCFail(CrowdsaleErrors.BELOW_MIN)
 
-        # Check hard cap with margin to allow deposits up to hard cap + margin
-        hard_cap_with_margin = self.hard_cap + (
-            self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
-        )
-        if self.total_raised + net_amount > hard_cap_with_margin:
+        if self.total_raised + net_amount > self.hard_cap:
             raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
         # Update participant tracking
@@ -283,7 +312,15 @@ class Crowdsale(Blueprint):
         self.deposits[participant_address] = Amount(
             self.deposits.get(participant_address, Amount(0)) + net_amount
         )
+        self.gross_deposits[participant_address] = Amount(
+            self.gross_deposits.get(participant_address, Amount(0)) + gross_amount
+        )
+        self.participation_fees_paid[participant_address] = Amount(
+            self.participation_fees_paid.get(participant_address, Amount(0))
+            + participation_fee
+        )
         self.total_raised = Amount(self.total_raised + net_amount)
+        self.total_gross_raised = Amount(self.total_gross_raised + gross_amount)
         self.total_sold = Amount(self.total_sold + self._calculate_tokens(net_amount))
 
         # Track GROSS amount in HTR balance and participation fees separately
@@ -317,9 +354,7 @@ class Crowdsale(Blueprint):
         tokens_due = self._calculate_tokens(deposit)
 
         # Validate token withdrawal
-        action = ctx.get_single_action(self.token_uid)
-        if not isinstance(action, NCWithdrawalAction):
-            raise NCFail("Expected withdrawal action")
+        action = self._get_exact_withdrawal_action(ctx, self.token_uid)
         if action.amount != tokens_due:
             raise NCFail("Invalid withdrawal amount")
 
@@ -346,19 +381,20 @@ class Crowdsale(Blueprint):
             raise NCFail("No refund available")
 
         # Validate HTR withdrawal
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCWithdrawalAction):
-            raise NCFail("Expected withdrawal action")
-        if action.amount != deposit:
+        gross_deposit = self.gross_deposits.get(participant_address, Amount(0))
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+        if action.amount != gross_deposit:
             raise NCFail("Invalid withdrawal amount")
 
         self.deposits[participant_address] = Amount(
             self.deposits[participant_address] - deposit
         )
+        self.gross_deposits[participant_address] = Amount(0)
+        self.participation_fees_paid[participant_address] = Amount(0)
 
         # Mark as claimed and update balance
         self.claimed[participant_address] = True
-        self.htr_balance = Amount(self.htr_balance - deposit)
+        self.htr_balance = Amount(self.htr_balance - gross_deposit)
 
     def _is_owner(self, ctx: Context) -> bool:
         """Check if the caller is the owner."""
@@ -379,9 +415,7 @@ class Crowdsale(Blueprint):
         withdrawable = self.total_raised - platform_fee
 
         # Validate owner HTR withdrawal
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCWithdrawalAction):
-            raise NCFail("Expected withdrawal action")
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
         if action.amount != withdrawable:
             raise NCFail("Invalid withdrawal amount")
 
@@ -410,9 +444,7 @@ class Crowdsale(Blueprint):
             raise NCFail("No unsold tokens to withdraw")
 
         # Validate token withdrawal action
-        action = ctx.get_single_action(self.token_uid)
-        if not isinstance(action, NCWithdrawalAction):
-            raise NCFail("Expected withdrawal action")
+        action = self._get_exact_withdrawal_action(ctx, self.token_uid)
         if action.amount != unsold_tokens:
             raise NCFail(f"Invalid withdrawal amount. Expected {unsold_tokens}")
 
@@ -433,9 +465,7 @@ class Crowdsale(Blueprint):
         platform_fee = self._calculate_platform_fee(self.total_raised)
 
         # Validate platform fee withdrawal
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCWithdrawalAction):
-            raise NCFail("Expected withdrawal action")
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
         if action.amount != platform_fee:
             raise NCFail("Invalid withdrawal amount")
 
@@ -447,20 +477,19 @@ class Crowdsale(Blueprint):
     def withdraw_participation_fees(self, ctx: Context) -> None:
         """Withdraw participation fees (platform/DozerTools owner only).
 
-        Can be called at any time, regardless of sale state.
-        Works even if participation_fee is 0 (will withdraw 0).
+        Participation fees are collectable only after a successful sale.
         """
         if Address(ctx.caller_id) != self.platform:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        if self.state != SaleState.COMPLETED_SUCCESS:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.participation_fees_withdrawn:
             raise NCFail("Participation fees already withdrawn")
 
         total_fees = self.total_participation_fees_collected
 
         # Validate withdrawal
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCWithdrawalAction):
-            raise NCFail("Expected withdrawal action")
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
         if action.amount != total_fees:
             raise NCFail(
                 f"Invalid withdrawal amount. Expected: {total_fees}, Got: {action.amount}"
@@ -532,8 +561,12 @@ class Crowdsale(Blueprint):
 
     @public
     def finalize(self, ctx: Context) -> None:
-        """Force end sale early (only owner)."""
-        if not self._is_owner(ctx):
+        """Finalize the sale.
+
+        The owner can finalize early. After end_time, anyone may finalize so
+        participant funds cannot be stranded by an inactive owner.
+        """
+        if not self._is_owner(ctx) and ctx.block.timestamp <= self.end_time:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state not in {
             SaleState.ACTIVE,
@@ -558,7 +591,7 @@ class Crowdsale(Blueprint):
         """
         if self.participation_fee == 0:
             return Amount(0)
-        return Amount(amount * self.participation_fee // BASIS_POINTS)
+        return self._ceil_div(Amount(amount * self.participation_fee), Amount(BASIS_POINTS))
 
     def _calculate_platform_fee(self, amount: Amount) -> Amount:
         """Calculate platform fee for given amount.
@@ -567,7 +600,7 @@ class Crowdsale(Blueprint):
         """
         if self.platform_fee == 0:
             return Amount(0)
-        return Amount(amount * self.platform_fee // BASIS_POINTS)
+        return self._ceil_div(Amount(amount * self.platform_fee), Amount(BASIS_POINTS))
 
     @view
     def get_sale_info(self) -> CrowdsaleSaleInfo:
@@ -590,10 +623,16 @@ class Crowdsale(Blueprint):
     def get_participant_info(self, address: Address) -> CrowdsaleParticipantInfo:
         """Get participant-specific information."""
         deposit = self.deposits.get(address, Amount(0))
+        gross_deposit = self.gross_deposits.get(address, Amount(0))
+        fees_paid = self.participation_fees_paid.get(address, Amount(0))
+        refundable = gross_deposit if self.state == SaleState.COMPLETED_FAILED else Amount(0)
         return CrowdsaleParticipantInfo(
             deposited=deposit,
             tokens_due=self._calculate_tokens(deposit),
             has_claimed=self.claimed.get(address, False),
+            gross_deposited=gross_deposit,
+            participation_fees_paid=fees_paid,
+            refundable_amount=refundable,
         )
 
     @view
@@ -666,9 +705,7 @@ class Crowdsale(Blueprint):
         self._validate_sale_active(ctx)
 
         # Validate HTR deposit
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCDepositAction):
-            raise NCFail("Expected deposit action")
+        action = self._get_exact_deposit_action(ctx, TokenUid(HTR_UID))
 
         gross_amount = Amount(action.amount)
 
@@ -679,11 +716,7 @@ class Crowdsale(Blueprint):
         if net_amount < self.min_deposit:
             raise NCFail(CrowdsaleErrors.BELOW_MIN)
 
-        # Check hard cap with margin to allow deposits up to hard cap + margin
-        hard_cap_with_margin = self.hard_cap + (
-            self.hard_cap * HARD_CAP_MARGIN_BP // BASIS_POINTS
-        )
-        if self.total_raised + net_amount > hard_cap_with_margin:
+        if self.total_raised + net_amount > self.hard_cap:
             raise NCFail(CrowdsaleErrors.ABOVE_MAX)
 
         # Update participant tracking
@@ -694,7 +727,15 @@ class Crowdsale(Blueprint):
         self.deposits[user_address] = Amount(
             self.deposits.get(user_address, Amount(0)) + net_amount
         )
+        self.gross_deposits[user_address] = Amount(
+            self.gross_deposits.get(user_address, Amount(0)) + gross_amount
+        )
+        self.participation_fees_paid[user_address] = Amount(
+            self.participation_fees_paid.get(user_address, Amount(0))
+            + participation_fee
+        )
         self.total_raised = Amount(self.total_raised + net_amount)
+        self.total_gross_raised = Amount(self.total_gross_raised + gross_amount)
         self.total_sold = Amount(self.total_sold + self._calculate_tokens(net_amount))
 
         # Track GROSS amount in HTR balance and participation fees separately
@@ -729,9 +770,7 @@ class Crowdsale(Blueprint):
         tokens_due = self._calculate_tokens(deposit)
 
         # Validate token withdrawal
-        action = ctx.get_single_action(self.token_uid)
-        if not isinstance(action, NCWithdrawalAction):
-            raise NCFail("Expected withdrawal action")
+        action = self._get_exact_withdrawal_action(ctx, self.token_uid)
         if action.amount != tokens_due:
             raise NCFail("Invalid withdrawal amount")
 
@@ -757,17 +796,18 @@ class Crowdsale(Blueprint):
             raise NCFail("No refund available")
 
         # Validate HTR withdrawal
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCWithdrawalAction):
-            raise NCFail("Expected withdrawal action")
-        if action.amount != deposit:
+        gross_deposit = self.gross_deposits.get(user_address, Amount(0))
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+        if action.amount != gross_deposit:
             raise NCFail("Invalid withdrawal amount")
 
         self.deposits[user_address] = Amount(self.deposits[user_address] - deposit)
+        self.gross_deposits[user_address] = Amount(0)
+        self.participation_fees_paid[user_address] = Amount(0)
 
         # Mark as claimed and update balance
         self.claimed[user_address] = True
-        self.htr_balance = Amount(self.htr_balance - deposit)
+        self.htr_balance = Amount(self.htr_balance - gross_deposit)
 
     @public
     def routed_pause(self, ctx: Context, user_address: Address) -> None:
@@ -840,9 +880,7 @@ class Crowdsale(Blueprint):
         withdrawable = self.total_raised - platform_fee
 
         # Validate owner HTR withdrawal
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCWithdrawalAction):
-            raise NCFail("Expected withdrawal action")
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
         if action.amount != withdrawable:
             raise NCFail("Invalid withdrawal amount")
 
@@ -875,15 +913,57 @@ class Crowdsale(Blueprint):
             raise NCFail("No unsold tokens to withdraw")
 
         # Validate token withdrawal action
-        action = ctx.get_single_action(self.token_uid)
-        if not isinstance(action, NCWithdrawalAction):
-            raise NCFail("Expected withdrawal action")
+        action = self._get_exact_withdrawal_action(ctx, self.token_uid)
         if action.amount != unsold_tokens:
             raise NCFail(f"Invalid withdrawal amount. Expected {unsold_tokens}")
 
         # Update balance and mark as withdrawn
         self.sale_token_balance = Amount(self.sale_token_balance - unsold_tokens)
         self.unsold_tokens_withdrawn = True
+
+    @public(allow_withdrawal=True)
+    def routed_withdraw_platform_fees(
+        self, ctx: Context, user_address: Address
+    ) -> None:
+        """Withdraw platform fees through the creator contract."""
+        self._only_creator_contract(ctx)
+        if user_address != self.platform:
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        if self.state != SaleState.COMPLETED_SUCCESS:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+        if self.platform_fees_withdrawn:
+            raise NCFail("Platform fees already withdrawn")
+
+        platform_fee = self._calculate_platform_fee(self.total_raised)
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+        if action.amount != platform_fee:
+            raise NCFail("Invalid withdrawal amount")
+
+        self.platform_fees_withdrawn = True
+        self.htr_balance = Amount(self.htr_balance - platform_fee)
+
+    @public(allow_withdrawal=True)
+    def routed_withdraw_participation_fees(
+        self, ctx: Context, user_address: Address
+    ) -> None:
+        """Withdraw participation fees through the creator contract."""
+        self._only_creator_contract(ctx)
+        if user_address != self.platform:
+            raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        if self.state != SaleState.COMPLETED_SUCCESS:
+            raise NCFail(CrowdsaleErrors.INVALID_STATE)
+        if self.participation_fees_withdrawn:
+            raise NCFail("Participation fees already withdrawn")
+
+        total_fees = self.total_participation_fees_collected
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+        if action.amount != total_fees:
+            raise NCFail(
+                f"Invalid withdrawal amount. Expected: {total_fees}, Got: {action.amount}"
+            )
+
+        self.participation_fees_withdrawn = True
+        self.htr_balance = Amount(self.htr_balance - total_fees)
 
     @public
     def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:

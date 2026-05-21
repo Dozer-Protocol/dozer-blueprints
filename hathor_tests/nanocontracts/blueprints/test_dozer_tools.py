@@ -46,7 +46,6 @@ from hathor.util import not_none
 from hathor.wallet.keypair import KeyPair
 from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
-
 DOZER_POOL_MANAGER_BLUEPRINT_ID = (
     "d6c09caa2f1f7ef6a6f416301c2b665e041fa819a792e53b8409c9c1aed2c89a"
 )
@@ -132,6 +131,12 @@ class DozerToolsTest(BlueprintTestCase):
         # DZR token parameters (placeholder)
         self.dzr_token_uid = TokenUid(VertexId(b"\x01" * 32))
         self.minimum_deposit = Amount(100)  # 1 HTR
+        self.create_project_fee_htr = Amount(1_000)
+        self.create_project_fee_dzr = Amount(500)
+
+        # Register DZR as a deposit-based token so it can be used to pay internal fees
+        from hathorlib.token_info import TokenVersion
+        self.create_token(self.dzr_token_uid, "Dozer", "DZR", TokenVersion.DEPOSIT)
 
         # Initialize DozerTools
         self._initialize_dozer_tools()
@@ -212,6 +217,16 @@ class DozerToolsTest(BlueprintTestCase):
             CROWDSALE_BLUEPRINT_ID,
         )
 
+        # Configure create_project method fee (fee-based token creation flow)
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_method_fees",
+            config_context,
+            "create_project",
+            self.create_project_fee_htr,
+            self.create_project_fee_dzr,
+        )
+
         self.dozer_tools_storage = self.runner.get_storage(self.dozer_tools_nc_id)
 
     def test_initialize_dozer_tools(self) -> None:
@@ -235,15 +250,13 @@ class DozerToolsTest(BlueprintTestCase):
         token_name = "TestToken"
         token_symbol = "TEST"
         total_supply = Amount(10000000)  # 10M tokens
-        required_htr = total_supply // 100  # 1% of total supply
+        required_htr = self.create_project_fee_htr
 
         # Create project
         tx = self._get_any_tx()
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
         context = self.create_context(
-            actions=[
-                NCDepositAction(token_uid=htr_uid, amount=required_htr)
-            ],  # 1% HTR deposit
+            actions=[NCDepositAction(token_uid=htr_uid, amount=required_htr)],
             vertex=tx,
             caller_id=self.dev_address,
             timestamp=self.get_current_timestamp(),
@@ -288,9 +301,15 @@ class DozerToolsTest(BlueprintTestCase):
         )
         self.assertEqual(vesting_balance.value, total_supply)
 
-        # Verify HTR balance is zero after token creation (HTR was consumed)
+        # Verify platform fee accounting captured the exact creation fee
+        platform_fees = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        self.assertEqual(platform_fees["htr_fees"], str(self.create_project_fee_htr))
+
+        # Verify HTR balance on DozerTools equals collected fee (owner-withdrawable later)
         htr_balance = self.runner.get_current_balance(self.dozer_tools_nc_id, htr_uid)
-        self.assertEqual(htr_balance.value, Amount(0))
+        self.assertEqual(htr_balance.value, self.create_project_fee_htr - 2)
 
         # Verify project was created
         project_info = self.runner.call_view_method(
@@ -321,7 +340,7 @@ class DozerToolsTest(BlueprintTestCase):
         # Create project with empty optional fields
         tx = self._get_any_tx()
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
-        required_htr = total_supply // 100  # 1% of total supply
+        required_htr = self.create_project_fee_htr
         context = self.create_context(
             actions=[NCDepositAction(token_uid=htr_uid, amount=required_htr)],
             vertex=tx,
@@ -358,13 +377,109 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertEqual(project_info["website"], "")
         self.assertEqual(project_info["category"], "")
 
+    def test_create_project_accepts_dzr_fee(self) -> None:
+        """create_project should accept configured exact DZR fee."""
+        token_name = "DZRToken"
+        token_symbol = "DZRX"
+        total_supply = Amount(2_000_000)
+
+        context = self.create_context(
+            actions=[
+                NCDepositAction(
+                    token_uid=self.dzr_token_uid, amount=self.create_project_fee_dzr
+                )
+            ],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        token_uid = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context,
+            token_name,
+            token_symbol,
+            total_supply,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        )
+
+        project_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_info", token_uid
+        )
+        self.assertEqual(project_info["creation_mode"], "fee_based")
+        self.assertEqual(project_info["creation_fee_token"], self.dzr_token_uid.hex())
+        self.assertEqual(
+            project_info["creation_fee_amount"], str(self.create_project_fee_dzr)
+        )
+
+    def test_create_project_rejects_wrong_fee_amount(self) -> None:
+        token_name = "WrongFee"
+        token_symbol = "WFE"
+        total_supply = Amount(1_000_000)
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+
+        context = self.create_context(
+            actions=[
+                NCDepositAction(
+                    token_uid=htr_uid, amount=Amount(self.create_project_fee_htr - 1)
+                )
+            ],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(InsufficientCredits):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "create_project",
+                context,
+                token_name,
+                token_symbol,
+                total_supply,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            )
+
+    def test_cancel_project_rejects_withdraw_actions(self) -> None:
+        token_uid = self._create_test_project("CancelNoRefund", "CNR")
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        context = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=htr_uid, amount=Amount(1_00))],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        from hathor.nanocontracts.exception import NCFail
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "cancel_project", context, token_uid
+            )
+
     def test_create_project_multiple_users_htr_isolation(self) -> None:
         """Test that users can't consume each other's HTR when creating projects."""
         # User 1 creates a project
         user1_token_name = "User1Token"
         user1_token_symbol = "U1T"
         user1_total_supply = Amount(100_000)
-        user1_required_htr = user1_total_supply // 100
+        user1_required_htr = self.create_project_fee_htr
 
         tx1 = self._get_any_tx()
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
@@ -420,7 +535,7 @@ class DozerToolsTest(BlueprintTestCase):
         user2_token_name = "User2Token"
         user2_token_symbol = "U2T"
         user2_total_supply = Amount(200_000)
-        user2_required_htr = user2_total_supply // 100
+        user2_required_htr = self.create_project_fee_htr
 
         tx2 = self._get_any_tx()
 
@@ -680,6 +795,125 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertEqual(fees["htr_fee"], str(htr_fee))
         self.assertEqual(fees["dzr_fee"], str(dzr_fee))
 
+    def test_charged_htr_fees_become_platform_withdrawable(self) -> None:
+        """Charged project credits accrue to exact owner-withdrawable fees."""
+        token_uid = self._create_test_project("FeeToken", "FEE")
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        tx = self._get_any_tx()
+
+        owner_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_method_fees",
+            owner_ctx,
+            "update_project_metadata",
+            Amount(10_00),
+            Amount(0),
+        )
+
+        deposit_ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=Amount(50_00))],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "deposit_credits", deposit_ctx, token_uid
+        )
+
+        update_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_project_metadata",
+            update_ctx,
+            token_uid,
+            "Updated",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        )
+
+        credits = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_credits", token_uid
+        )
+        fees = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        self.assertEqual(credits["htr_balance"], str(Amount(40_00)))
+        self.assertEqual(fees["htr_fees"], str(Amount(20_00)))
+
+        withdraw_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=htr_uid, amount=Amount(20_00))],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "withdraw_platform_htr_fees", withdraw_ctx
+        )
+        fees_after = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        self.assertEqual(fees_after["htr_fees"], "0")
+
+    def test_create_liquidity_pool_requires_exact_user_htr_deposit(self) -> None:
+        """DozerTools must not use held HTR when creating a pool."""
+        token_uid = self._create_test_project("PoolToken", "POOLX")
+        tx = self._get_any_tx()
+        configure_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            configure_ctx,
+            token_uid,
+            0,
+            0,
+            10,
+            0,
+            ["Team"],
+            [90],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        pool_ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=Amount(99_00))],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        with self.assertRaises(InvalidAllocation):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "create_liquidity_pool",
+                pool_ctx,
+                token_uid,
+                Amount(100_00),
+                Amount(3),
+            )
+
     def test_project_not_found_error(self) -> None:
         """Test ProjectNotFound error for non-existent projects."""
         fake_token_uid = TokenUid(VertexId(b"\x99" * 32))
@@ -724,7 +958,7 @@ class DozerToolsTest(BlueprintTestCase):
         tx = self._get_any_tx()
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
         total_supply = Amount(10000000)
-        required_htr = total_supply // 100  # 1% of total supply
+        required_htr = self.create_project_fee_htr
 
         context = self.create_context(
             actions=[NCDepositAction(token_uid=htr_uid, amount=required_htr)],
@@ -1602,7 +1836,8 @@ class DozerToolsTest(BlueprintTestCase):
         # total_raised is NET amount after participation fee (2%)
         participation_fee = 200
         expected_net_total = sum(
-            amount - (amount * participation_fee // 10000) for amount in deposit_amounts
+            amount - ((amount * participation_fee + 9999) // 10000)
+            for amount in deposit_amounts
         )
         self.assertEqual(sale_info.total_raised, expected_net_total)
         self.assertEqual(sale_info.participants, len(participants))
@@ -1631,7 +1866,9 @@ class DozerToolsTest(BlueprintTestCase):
         # Each participant claims tokens through DozerTools routing
         for user_addr, gross_deposit in participants:
             # Calculate NET amount (what user actually contributed after fees)
-            net_deposit = gross_deposit - (gross_deposit * participation_fee // 10000)
+            net_deposit = gross_deposit - (
+                (gross_deposit * participation_fee + 9999) // 10000
+            )
 
             # Check participant info before claiming
             participant_info = self.runner.call_view_method(
@@ -1672,7 +1909,7 @@ class DozerToolsTest(BlueprintTestCase):
         # Owner withdraws raised HTR (use routed method through dozer_tools)
         # total_raised in contract is NET amount (after participation fees)
         total_raised_net = expected_net_total
-        platform_fee_amount = (total_raised_net * platform_fee) // 10000
+        platform_fee_amount = (total_raised_net * platform_fee + 9999) // 10000
         withdrawable_htr = total_raised_net - platform_fee_amount
 
         owner_withdraw_ctx = self.create_context(
@@ -1803,7 +2040,7 @@ class DozerToolsTest(BlueprintTestCase):
         # With 1.5% fee: gross = min_deposit / (1 - 0.015) = 50_00 / 0.985 = ~50_76
         # Using integer math: gross = (net * 10000) // (10000 - participation_fee)
         participation_fee = 150
-        gross_min = (min_deposit * 10000) // (10000 - participation_fee)
+        gross_min = -(-min_deposit * 10000 // (10000 - participation_fee))
         participants = []
         deposit_amounts = [gross_min, gross_min]  # Total will still be below soft cap
 
@@ -1830,7 +2067,8 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertEqual(sale_info.state, 1)  # ACTIVE
         # total_raised is NET amount after participation fee
         expected_net_total = sum(
-            amount - (amount * participation_fee // 10000) for amount in deposit_amounts
+            amount - ((amount * participation_fee + 9999) // 10000)
+            for amount in deposit_amounts
         )
         self.assertEqual(sale_info.total_raised, expected_net_total)
         self.assertLess(sale_info.total_raised, soft_cap)
@@ -1852,8 +2090,9 @@ class DozerToolsTest(BlueprintTestCase):
 
         # Participants claim refunds through DozerTools
         for user_addr, gross_deposit in participants:
-            # Calculate NET amount (what user actually contributed after fees)
-            net_deposit = gross_deposit - (gross_deposit * participation_fee // 10000)
+            net_deposit = gross_deposit - (
+                (gross_deposit * participation_fee + 9999) // 10000
+            )
 
             # Check participant info before refund
             participant_info = self.runner.call_view_method(
@@ -1865,9 +2104,9 @@ class DozerToolsTest(BlueprintTestCase):
             self.assertEqual(participant_info.deposited, net_deposit)
             self.assertFalse(participant_info.has_claimed)
 
-            # Claim refund - users get back their NET amount (participation fee not refunded)
+            # Claim refund - failed sales refund gross deposits, including fees
             refund_ctx = self.create_context(
-                actions=[NCWithdrawalAction(token_uid=htr_uid, amount=net_deposit)],
+                actions=[NCWithdrawalAction(token_uid=htr_uid, amount=gross_deposit)],
                 vertex=self._get_any_tx(),
                 caller_id=Address(user_addr),
                 timestamp=end_time + 200,
@@ -1888,6 +2127,7 @@ class DozerToolsTest(BlueprintTestCase):
             )
             self.assertTrue(participant_info_after.has_claimed)
             self.assertEqual(participant_info_after.deposited, 0)
+            self.assertEqual(participant_info_after.gross_deposited, 0)
 
     def test_crowdsale_pause_unpause_operations(self) -> None:
         """Test crowdsale pause/unpause functionality."""
@@ -2553,7 +2793,7 @@ class DozerToolsTest(BlueprintTestCase):
         self.assertEqual(sale_info.state, 5)  # COMPLETED_SUCCESS
 
         # Calculate platform fee and withdrawable
-        platform_fee_amount = (total_raised * platform_fee) // 10000
+        platform_fee_amount = (total_raised * platform_fee + 9999) // 10000
         withdrawable_htr = total_raised - platform_fee_amount
 
         # Test routed_withdraw_raised_htr
@@ -2722,7 +2962,9 @@ class DozerToolsTest(BlueprintTestCase):
         sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
         self.assertEqual(sale_info.state, 1)  # ACTIVE
 
-    def test_special_allocation_beneficiaries_and_creator_contract_can_claim(self) -> None:
+    def test_special_allocation_beneficiaries_and_creator_contract_can_claim(
+        self,
+    ) -> None:
         """Test that special allocations have placeholder beneficiary but creator contract can claim them."""
         # Create project and configure vesting with all special allocations
         token_uid = self._create_test_project("BeneficiaryToken", "BENEF")
@@ -3023,9 +3265,7 @@ class DozerToolsTest(BlueprintTestCase):
         before_cliff_time = initial_time + (3 * 30 * 24 * 3600)  # 3 months
 
         claim_ctx = self.create_context(
-            actions=[
-                NCWithdrawalAction(token_uid=token_uid, amount=Amount(1000))
-            ],
+            actions=[NCWithdrawalAction(token_uid=token_uid, amount=Amount(1000))],
             vertex=self._get_any_tx(),
             caller_id=self.user_address,  # Correct beneficiary
             timestamp=before_cliff_time,
@@ -3046,9 +3286,7 @@ class DozerToolsTest(BlueprintTestCase):
         monthly_vesting = total_supply // vesting_months
 
         claim_ctx_after = self.create_context(
-            actions=[
-                NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)
-            ],
+            actions=[NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)],
             vertex=self._get_any_tx(),
             caller_id=self.user_address,
             timestamp=after_cliff_time,
@@ -3135,9 +3373,7 @@ class DozerToolsTest(BlueprintTestCase):
 
         # Developer claims their own allocation
         claim_ctx = self.create_context(
-            actions=[
-                NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)
-            ],
+            actions=[NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)],
             vertex=self._get_any_tx(),
             caller_id=self.dev_address,  # Developer claiming their own tokens
             timestamp=after_cliff_time,
@@ -3169,9 +3405,7 @@ class DozerToolsTest(BlueprintTestCase):
         two_month_vesting = (total_supply * 2) // vesting_months
 
         claim_ctx2 = self.create_context(
-            actions=[
-                NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)
-            ],
+            actions=[NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)],
             vertex=self._get_any_tx(),
             caller_id=self.dev_address,
             timestamp=two_months_after_cliff,

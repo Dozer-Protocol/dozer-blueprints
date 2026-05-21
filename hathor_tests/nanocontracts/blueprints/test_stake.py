@@ -122,7 +122,12 @@ class StakeTestCase(BlueprintTestCase):
             blueprint_id = self._register_blueprint_class(Stake)
             creator_contract_id = self.gen_random_contract_id()
             self.runner.create_contract(
-                contract_id, blueprint_id, ctx, self.earnings_per_day, self.token_uid, creator_contract_id
+                contract_id,
+                blueprint_id,
+                ctx,
+                self.earnings_per_day,
+                self.token_uid,
+                creator_contract_id,
             )
 
     def test_stake(self):
@@ -162,7 +167,11 @@ class StakeTestCase(BlueprintTestCase):
 
         # Try unstaking before timelock
         unstake_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(stake_amount)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx.caller_id),
             timestamp=initial_time + DAY_IN_SECONDS,  # Only 1 day passed
@@ -258,7 +267,11 @@ class StakeTestCase(BlueprintTestCase):
 
         # Test emergency withdrawal
         emergency_ctx = self.create_context(
-            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=Amount(stake_amount))],
+            actions=[
+                NCWithdrawalAction(
+                    token_uid=self.token_uid, amount=Amount(stake_amount)
+                )
+            ],
             vertex=self.tx,
             caller_id=Address(ctx.caller_id),
             timestamp=self.clock.seconds(),
@@ -288,7 +301,9 @@ class StakeTestCase(BlueprintTestCase):
         # Test owner deposit
         deposit_amount = 1_000_00
         deposit_ctx = self.create_context(
-            actions=[NCDepositAction(token_uid=self.token_uid, amount=Amount(deposit_amount))],
+            actions=[
+                NCDepositAction(token_uid=self.token_uid, amount=Amount(deposit_amount))
+            ],
             vertex=self.tx,
             caller_id=Address(self.owner_address),
             timestamp=self.clock.seconds(),
@@ -390,7 +405,9 @@ class StakeTestCase(BlueprintTestCase):
         # With new logic: deposits and rewards stay separate
         # Withdrawing from deposits only since withdrawal < deposits
         expected_remaining_deposits = stake_amount - partial_withdrawal  # 900 tokens
-        expected_total_staked = expected_remaining_deposits  # total_staked only counts deposits
+        expected_total_staked = (
+            expected_remaining_deposits  # total_staked only counts deposits
+        )
 
         # Perform partial unstake
         unstake_ctx = self.create_context(
@@ -583,23 +600,43 @@ class StakeTestCase(BlueprintTestCase):
         self.assertLess(ratio_3_to_1, 0.51)
 
         # Total distributed should approximately equal daily rewards
-        print(f"\nReward distribution accuracy: {total_rewards_distributed / self.earnings_per_day * 100:.2f}%")
+        print(
+            f"\nReward distribution accuracy: {total_rewards_distributed / self.earnings_per_day * 100:.2f}%"
+        )
         # Allow reasonable tolerance for precision (within 5%)
         self.assertGreater(total_rewards_distributed, self.earnings_per_day * 0.95)
         self.assertLess(total_rewards_distributed, self.earnings_per_day * 1.05)
 
         # Verify each user's proportion
-        user1_proportion = rewards_1 / total_rewards_distributed if total_rewards_distributed > 0 else 0
-        user2_proportion = rewards_2 / total_rewards_distributed if total_rewards_distributed > 0 else 0
-        user3_proportion = rewards_3 / total_rewards_distributed if total_rewards_distributed > 0 else 0
+        user1_proportion = (
+            rewards_1 / total_rewards_distributed
+            if total_rewards_distributed > 0
+            else 0
+        )
+        user2_proportion = (
+            rewards_2 / total_rewards_distributed
+            if total_rewards_distributed > 0
+            else 0
+        )
+        user3_proportion = (
+            rewards_3 / total_rewards_distributed
+            if total_rewards_distributed > 0
+            else 0
+        )
 
         expected_user1_proportion = user1_stake / total_staked
         expected_user2_proportion = user2_stake / total_staked
         expected_user3_proportion = user3_stake / total_staked
 
-        print(f"\nUser 1: {user1_proportion*100:.2f}% of rewards (expected {expected_user1_proportion*100:.2f}%)")
-        print(f"User 2: {user2_proportion*100:.2f}% of rewards (expected {expected_user2_proportion*100:.2f}%)")
-        print(f"User 3: {user3_proportion*100:.2f}% of rewards (expected {expected_user3_proportion*100:.2f}%)")
+        print(
+            f"\nUser 1: {user1_proportion*100:.2f}% of rewards (expected {expected_user1_proportion*100:.2f}%)"
+        )
+        print(
+            f"User 2: {user2_proportion*100:.2f}% of rewards (expected {expected_user2_proportion*100:.2f}%)"
+        )
+        print(
+            f"User 3: {user3_proportion*100:.2f}% of rewards (expected {expected_user3_proportion*100:.2f}%)"
+        )
 
         # Use places=4 for decimal precision (0.0001 tolerance)
         self.assertAlmostEqual(user1_proportion, expected_user1_proportion, places=4)
@@ -627,7 +664,9 @@ class StakeTestCase(BlueprintTestCase):
         user1_rewards_before = max_withdrawal_before_user2 - user1_stake
         expected_5_days_rewards = 5 * self.earnings_per_day
 
-        print(f"Day 5: User 1 has earned {user1_rewards_before} (expected ~{expected_5_days_rewards})")
+        print(
+            f"Day 5: User 1 has earned {user1_rewards_before} (expected ~{expected_5_days_rewards})"
+        )
         # Allow 1 token difference due to precision
         self.assertGreaterEqual(user1_rewards_before, expected_5_days_rewards - 1)
         self.assertLessEqual(user1_rewards_before, expected_5_days_rewards + 1)
@@ -664,7 +703,11 @@ class StakeTestCase(BlueprintTestCase):
         print(f"  - Shared period (days 5-10): {user2_total_rewards}")
 
         # During shared period, rewards should be approximately equal
-        shared_ratio = user1_shared_period_rewards / user2_total_rewards if user2_total_rewards > 0 else 0
+        shared_ratio = (
+            user1_shared_period_rewards / user2_total_rewards
+            if user2_total_rewards > 0
+            else 0
+        )
         print(f"\nShared period ratio User1/User2: {shared_ratio:.4f} (expected ~1.0)")
         # Allow generous tolerance due to precision and auto-compounding effects
         self.assertGreater(shared_ratio, 0.85)
@@ -673,8 +716,12 @@ class StakeTestCase(BlueprintTestCase):
         # User 1 should have approximately 3x the rewards of User 2
         # (5 days solo + 2.5 days shared = 7.5 days worth vs 2.5 days shared)
         expected_ratio = 3.0
-        actual_ratio = user1_total_rewards / user2_total_rewards if user2_total_rewards > 0 else 0
-        print(f"Overall ratio User1/User2: {actual_ratio:.2f} (expected ~{expected_ratio})")
+        actual_ratio = (
+            user1_total_rewards / user2_total_rewards if user2_total_rewards > 0 else 0
+        )
+        print(
+            f"Overall ratio User1/User2: {actual_ratio:.2f} (expected ~{expected_ratio})"
+        )
         # Allow tolerance for precision
         self.assertGreater(actual_ratio, expected_ratio * 0.95)
         self.assertLess(actual_ratio, expected_ratio * 1.05)

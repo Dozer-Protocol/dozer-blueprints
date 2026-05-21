@@ -10,22 +10,24 @@ from hathor import (
     NCAcquireAuthorityAction,
     NCAction,
     NCDepositAction,
+    NCFee,
     NCWithdrawalAction,
     Timestamp,
     TokenUid,
     VertexId,
     public,
     view,
-    NCActionType,
     export,
 )
-
 
 # Special allocation indices for vesting contract
 STAKING_ALLOCATION_INDEX = 0  # "Staking" - for staking contract
 PUBLIC_SALE_ALLOCATION_INDEX = 1  # "Public Sale" - for crowdsale contract
 DOZER_POOL_ALLOCATION_INDEX = 2  # "Dozer Pool" - for liquidity pool
 # Indices 3-9 available for regular time-locked vesting schedules
+FIRST_USER_ALLOCATION_INDEX = 3
+MAX_VESTING_ALLOCATIONS = 10
+MAX_REGULAR_ALLOCATIONS = MAX_VESTING_ALLOCATIONS - FIRST_USER_ALLOCATION_INDEX
 
 # HTR token UID
 HTR_UID = b"\x00"
@@ -157,6 +159,9 @@ class DozerTools(Blueprint):
     project_dev: dict[TokenUid, Address]  # token_uid -> dev_address
     project_created_at: dict[TokenUid, Timestamp]  # token_uid -> created_at
     project_total_supply: dict[TokenUid, Amount]  # token_uid -> total_supply
+    project_creation_mode: dict[TokenUid, str]  # token_uid -> creation mode
+    project_creation_fee_token: dict[TokenUid, str]  # token_uid -> fee token uid hex
+    project_creation_fee_amount: dict[TokenUid, Amount]  # token_uid -> fee amount
 
     # Project optional metadata
     project_description: dict[TokenUid, str]  # token_uid -> description
@@ -172,6 +177,8 @@ class DozerTools(Blueprint):
     # Credit system per project
     project_htr_balance: dict[TokenUid, Amount]  # token_uid -> HTR balance
     project_dzr_balance: dict[TokenUid, Amount]  # token_uid -> DZR balance
+    platform_htr_fees: Amount
+    platform_dzr_fees: Amount
     minimum_deposit: Amount  # Minimum deposit to enable contract usage
 
     # Fee structure for method calls
@@ -255,10 +262,97 @@ class DozerTools(Blueprint):
         # Try to use DZR first (cheaper)
         if dzr_fee > 0 and project_dzr_balance >= dzr_fee:
             self.project_dzr_balance[token_uid] = Amount(project_dzr_balance - dzr_fee)
+            self.platform_dzr_fees = Amount(self.platform_dzr_fees + dzr_fee)
         elif htr_fee > 0 and project_htr_balance >= htr_fee:
             self.project_htr_balance[token_uid] = Amount(project_htr_balance - htr_fee)
+            self.platform_htr_fees = Amount(self.platform_htr_fees + htr_fee)
         elif dzr_fee > 0 or htr_fee > 0:
             raise InsufficientCredits("Insufficient credits for this operation")
+
+    def _charge_create_project_fee(self, ctx: Context) -> tuple[str, Amount]:
+        """Charge create_project fee directly from tx deposit action.
+
+        Returns:
+            Tuple with fee token uid hex and amount charged.
+        """
+        if len(ctx.actions) != 1:
+            raise InsufficientCredits("Exactly one deposit action required")
+
+        if TokenUid(HTR_UID) in ctx.actions:
+            action = self._get_exact_deposit_action(ctx, TokenUid(HTR_UID))
+            required = self.method_fees_htr.get("create_project", Amount(0))
+            if required <= 0:
+                raise InsufficientCredits("HTR create_project fee is not configured")
+            if action.amount != required:
+                raise InsufficientCredits(
+                    f"HTR create_project fee must be exactly {required}"
+                )
+            self.platform_htr_fees = Amount(self.platform_htr_fees + required)
+            return TokenUid(HTR_UID).hex(), Amount(required)
+
+        if self.dzr_token_uid in ctx.actions:
+            action = self._get_exact_deposit_action(ctx, self.dzr_token_uid)
+            required = self.method_fees_dzr.get("create_project", Amount(0))
+            if required <= 0:
+                raise InsufficientCredits("DZR create_project fee is not configured")
+            if action.amount != required:
+                raise InsufficientCredits(
+                    f"DZR create_project fee must be exactly {required}"
+                )
+            self.platform_dzr_fees = Amount(self.platform_dzr_fees + required)
+            return self.dzr_token_uid.hex(), Amount(required)
+
+        raise InsufficientCredits("create_project fee must be paid in HTR or DZR")
+
+    def _get_exact_deposit_action(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> NCDepositAction:
+        if len(ctx.actions) != 1:
+            raise DozerToolsError("Exactly one deposit action required")
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCDepositAction):
+            raise DozerToolsError("Deposit action required")
+        if action.amount <= 0:
+            raise DozerToolsError("Deposit amount must be positive")
+        return action
+
+    def _get_exact_withdrawal_action(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> NCWithdrawalAction:
+        if len(ctx.actions) != 1:
+            raise DozerToolsError("Exactly one withdrawal action required")
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise DozerToolsError("Withdrawal action required")
+        if action.amount <= 0:
+            raise DozerToolsError("Withdrawal amount must be positive")
+        return action
+
+    def _is_registered_child_contract(self, contract_id: ContractId) -> bool:
+        for token_uid in self.all_projects:
+            if not self.project_exists.get(token_uid, False):
+                continue
+            if (
+                self.project_vesting_contract.get(token_uid, NULL_CONTRACT_ID)
+                == contract_id
+            ):
+                return True
+            if (
+                self.project_staking_contract.get(token_uid, NULL_CONTRACT_ID)
+                == contract_id
+            ):
+                return True
+            if (
+                self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
+                == contract_id
+            ):
+                return True
+            if (
+                self.project_crowdsale_contract.get(token_uid, NULL_CONTRACT_ID)
+                == contract_id
+            ):
+                return True
+        return False
 
     def _generate_salt(
         self, ctx: Context, token_uid: TokenUid, contract_type: str
@@ -320,6 +414,9 @@ class DozerTools(Blueprint):
         self.project_dev: dict[TokenUid, Address] = {}
         self.project_created_at: dict[TokenUid, Timestamp] = {}
         self.project_total_supply: dict[TokenUid, Amount] = {}
+        self.project_creation_mode: dict[TokenUid, str] = {}
+        self.project_creation_fee_token: dict[TokenUid, str] = {}
+        self.project_creation_fee_amount: dict[TokenUid, Amount] = {}
         self.project_description: dict[TokenUid, str] = {}
         self.project_website: dict[TokenUid, str] = {}
         self.project_logo_url: dict[TokenUid, str] = {}
@@ -333,6 +430,8 @@ class DozerTools(Blueprint):
         # Initialize project credit balances
         self.project_htr_balance: dict[TokenUid, Amount] = {}
         self.project_dzr_balance: dict[TokenUid, Amount] = {}
+        self.platform_htr_fees = Amount(0)
+        self.platform_dzr_fees = Amount(0)
 
         # Initialize all fees to 0 (free initially)
         self.method_fees_htr: dict[str, Amount] = {}
@@ -354,7 +453,7 @@ class DozerTools(Blueprint):
         self.project_vesting_configured: dict[TokenUid, bool] = {}
         self.project_melt_authority_acquired: dict[TokenUid, bool] = {}
 
-    @public(allow_deposit=True, allow_acquire_authority=True)
+    @public(allow_deposit=True)
     def create_project(
         self,
         ctx: Context,
@@ -395,23 +494,8 @@ class DozerTools(Blueprint):
         # Check if contract is paused (owner can still create projects when paused)
         self._validate_not_paused(ctx)
 
-        # validate if this user is depositing the HTR to create the token(because if we not check it it will consume the HTR from other users)
-        if len(ctx.actions) != 1:
-            raise InsufficientCredits("Exactly one HTR deposit action required")
-
-        htr_action = ctx.get_single_action(TokenUid(HTR_UID))
-        if htr_action.type != NCActionType.DEPOSIT:
-            raise InsufficientCredits("HTR deposit required for token creation")
-
-        # Cast to deposit action to access amount safely
-        if isinstance(htr_action, NCDepositAction):
-            required_htr = total_supply // 100  # 1% of total supply
-            if htr_action.amount != required_htr:
-                raise InsufficientCredits(
-                    "HTR deposit amount must be at least 1 percent of total supply"
-                )
-        else:
-            raise InsufficientCredits("HTR deposit required for token creation")
+        # Charge project creation fee directly from this transaction.
+        fee_token_uid_hex, fee_amount = self._charge_create_project_fee(ctx)
 
         # Check if symbol is currently in use (not permanently reserved)
         if self.symbol_exists(token_symbol):
@@ -419,22 +503,16 @@ class DozerTools(Blueprint):
                 f"Token symbol '{token_symbol}' is currently in use"
             )
 
-        # Generate unique salt using timestamp and caller_id (similar to _generate_salt for contracts)
-        # This allows symbol reuse after cancellation while ensuring unique token UIDs
-        salt = (
-            bytes(ctx.caller_id)
-            + bytes(token_symbol, "utf-8")
-            + bytes(str(ctx.block.timestamp), "utf-8")
-        )
-
-        # Create the token with salt
-        token_uid = self.syscall.create_deposit_token(
+        # Create token with fee-based mint path (no 1% HTR deposit model).
+        # Use the same token that was used to pay the creation fee to also pay the token creation fee.
+        fee_token_uid_bytes = bytes.fromhex(fee_token_uid_hex)
+        token_uid = self.syscall.create_fee_token(
             token_name=token_name,
             token_symbol=token_symbol,
             amount=total_supply,
             mint_authority=True,
             melt_authority=True,
-            salt=salt,
+            fee_payment_token=TokenUid(fee_token_uid_bytes),
         )
 
         # Validate token permissions for legacy tokens
@@ -453,6 +531,9 @@ class DozerTools(Blueprint):
         self.project_dev[token_uid] = Address(ctx.caller_id)
         self.project_created_at[token_uid] = Timestamp(ctx.block.timestamp)
         self.project_total_supply[token_uid] = total_supply
+        self.project_creation_mode[token_uid] = "fee_based"
+        self.project_creation_fee_token[token_uid] = fee_token_uid_hex
+        self.project_creation_fee_amount[token_uid] = fee_amount
 
         # Mark symbol as currently in use (will be freed if project is cancelled)
         self.used_symbols[token_symbol.upper().strip()] = True
@@ -483,10 +564,21 @@ class DozerTools(Blueprint):
             NCDepositAction(token_uid=token_uid, amount=total_supply)
         ]
 
+        # NCFee of 1 cent (FEE_PER_OUTPUT) is required by the protocol when depositing
+        # a fee-based token into another contract via an inter-contract call.
+        if fee_token_uid_bytes == HTR_UID:
+            vesting_fees = [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
+        else:
+            # DZR: 100 DZR cents = 1 HTR cent at 1% deposit rate
+            vesting_fees = [
+                NCFee(token_uid=TokenUid(fee_token_uid_bytes), amount=Amount(100))
+            ]
+
         self._ensure_vesting_blueprint_configured()
         vesting_id, _ = self.syscall.setup_new_contract(
             self.vesting_blueprint_id,
             *vesting_actions,
+            fees=vesting_fees,
             salt=vesting_salt,
         ).initialize(
             token_uid,  # Initialize vesting with the token
@@ -526,35 +618,16 @@ class DozerTools(Blueprint):
             token_uid: Project token UID
         """
         self._only_project_dev(ctx, token_uid)
-        self._charge_fee(ctx, token_uid, "deposit_credits")
-
-        # Expect exactly one deposit action
-        if len(ctx.actions) != 1:
-            raise InsufficientCredits("Exactly one deposit action allowed")
-
-        # Get the single action based on token type and cast to deposit action
         if TokenUid(HTR_UID) in ctx.actions:
-            deposit_action = ctx.get_single_action(TokenUid(HTR_UID))
-            if deposit_action.type != NCActionType.DEPOSIT:
-                raise InsufficientCredits("Only deposits allowed")
-            action_amount = Amount(
-                deposit_action.amount
-                if isinstance(deposit_action, NCDepositAction)
-                else 0
-            )
+            deposit_action = self._get_exact_deposit_action(ctx, TokenUid(HTR_UID))
+            action_amount = Amount(deposit_action.amount)
             current_balance = self.project_htr_balance.get(token_uid, Amount(0))
             self.project_htr_balance[token_uid] = Amount(
                 current_balance + action_amount
             )
         elif self.dzr_token_uid in ctx.actions:
-            deposit_action = ctx.get_single_action(self.dzr_token_uid)
-            if deposit_action.type != NCActionType.DEPOSIT:
-                raise InsufficientCredits("Only deposits allowed")
-            action_amount = Amount(
-                deposit_action.amount
-                if isinstance(deposit_action, NCDepositAction)
-                else 0
-            )
+            deposit_action = self._get_exact_deposit_action(ctx, self.dzr_token_uid)
+            action_amount = Amount(deposit_action.amount)
             current_balance = self.project_dzr_balance.get(token_uid, Amount(0))
             self.project_dzr_balance[token_uid] = Amount(
                 current_balance + action_amount
@@ -612,11 +685,12 @@ class DozerTools(Blueprint):
         withdraw_actions: list[NCAction] = [
             NCWithdrawalAction(token_uid=token_uid, amount=staking_amount)
         ]
+        token_fees = [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
 
         self.syscall.get_contract(
             vesting_contract,
             blueprint_id=None,
-        ).public(*withdraw_actions).claim_allocation(
+        ).public(*withdraw_actions, fees=token_fees).claim_allocation(
             STAKING_ALLOCATION_INDEX,
         )
 
@@ -630,6 +704,7 @@ class DozerTools(Blueprint):
         staking_id, _ = self.syscall.setup_new_contract(
             self.staking_blueprint_id,
             *staking_actions,
+            fees=token_fees,
             salt=salt,
         ).initialize(
             earnings_per_day,
@@ -699,6 +774,10 @@ class DozerTools(Blueprint):
         )
 
         self.project_dao_contract[token_uid] = dao_id
+        self.syscall.get_contract(
+            staking_contract,
+            blueprint_id=None,
+        ).public().authorize_governance_contract(dao_id)
         return dao_id
 
     @public
@@ -786,11 +865,12 @@ class DozerTools(Blueprint):
         withdraw_actions: list[NCAction] = [
             NCWithdrawalAction(token_uid=token_uid, amount=public_sale_amount)
         ]
+        token_fees = [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
 
         self.syscall.get_contract(
             vesting_contract,
             blueprint_id=None,
-        ).public(*withdraw_actions).claim_allocation(
+        ).public(*withdraw_actions, fees=token_fees).claim_allocation(
             PUBLIC_SALE_ALLOCATION_INDEX,
         )
 
@@ -804,6 +884,7 @@ class DozerTools(Blueprint):
         crowdsale_id, _ = self.syscall.setup_new_contract(
             self.crowdsale_blueprint_id,
             *crowdsale_actions,
+            fees=token_fees,
             salt=salt,
         ).initialize(
             token_uid,
@@ -853,6 +934,10 @@ class DozerTools(Blueprint):
         if dozer_pool_percentage == 0:
             raise InvalidAllocation("No dozer pool allocation configured")
 
+        htr_action = self._get_exact_deposit_action(ctx, TokenUid(HTR_UID))
+        if htr_action.amount != htr_amount:
+            raise InvalidAllocation("HTR deposit must equal declared pool amount")
+
         return self._create_liquidity_pool(ctx, token_uid, htr_amount, fee)
 
     def _create_liquidity_pool(
@@ -870,11 +955,12 @@ class DozerTools(Blueprint):
         withdraw_actions: list[NCAction] = [
             NCWithdrawalAction(token_uid=token_uid, amount=dozer_pool_amount)
         ]
+        token_fees = [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
 
         self.syscall.get_contract(
             vesting_contract,
             blueprint_id=None,
-        ).public(*withdraw_actions).claim_allocation(
+        ).public(*withdraw_actions, fees=token_fees).claim_allocation(
             DOZER_POOL_ALLOCATION_INDEX,
         )
 
@@ -890,7 +976,7 @@ class DozerTools(Blueprint):
                 self.dozer_pool_manager_id,
                 blueprint_id=None,
             )
-            .public(*pool_actions)
+            .public(*pool_actions, fees=token_fees)
             .create_pool(fee)
         )
 
@@ -936,9 +1022,9 @@ class DozerTools(Blueprint):
         # Mark melt authority as acquired for this project
         self.project_melt_authority_acquired[token_uid] = True
 
-    @public(allow_withdrawal=True)
+    @public
     def cancel_project(self, ctx: Context, token_uid: TokenUid) -> None:
-        """Cancel project and return deposited HTR (only if vesting not configured).
+        """Cancel project before vesting is configured.
 
         Args:
             ctx: Transaction context
@@ -947,36 +1033,22 @@ class DozerTools(Blueprint):
         This method can only be called:
         - By the project dev
         - When vesting is not yet configured
-        - Will melt all token supply and return HTR deposit
+        - Will melt all token supply
         - Symbol is freed and can be reused for new projects
         """
         self._only_project_dev(ctx, token_uid)
         self._charge_fee(ctx, token_uid, "cancel_project")
+        if len(ctx.actions) != 0:
+            raise InsufficientCredits(
+                "cancel_project does not support withdrawal actions"
+            )
 
         # Check that vesting is not configured yet
         if self.project_vesting_configured.get(token_uid, False):
             raise InvalidAllocation("Cannot cancel project after vesting is configured")
 
-        # Check if we have the withdrawal action for HTR
-        if len(ctx.actions) != 1:
-            raise InsufficientCredits("Exactly one HTR withdrawal action required")
-
-        htr_action = ctx.get_single_action(TokenUid(HTR_UID))
-        if htr_action.type != NCActionType.WITHDRAWAL:
-            raise InsufficientCredits("HTR withdrawal action required")
-
-        # Get the total supply to calculate HTR refund
+        # Get the total supply for full token cleanup
         total_supply = self.project_total_supply[token_uid]
-        htr_refund = total_supply // 100  # 1% of total supply
-
-        # Validate withdrawal amount
-        if isinstance(htr_action, NCWithdrawalAction):
-            if htr_action.amount != htr_refund:
-                raise InsufficientCredits(
-                    f"HTR withdrawal amount must be exactly {htr_refund} (1% of total supply)"
-                )
-        else:
-            raise InsufficientCredits("HTR withdrawal action required")
 
         # Melt all token supply (contract has melt authority)
         if self.syscall.can_melt(token_uid):
@@ -987,12 +1059,13 @@ class DozerTools(Blueprint):
             withdraw_all_actions: list[NCAction] = [
                 NCWithdrawalAction(token_uid=token_uid, amount=total_supply)
             ]
+            token_fees = [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
 
             # Call vesting contract to get all tokens back
             self.syscall.get_contract(
                 vesting_contract,
                 blueprint_id=None,
-            ).public(*withdraw_all_actions).withdraw_available()
+            ).public(*withdraw_all_actions, fees=token_fees).withdraw_available()
 
             # Now melt all tokens that are in this contract
             self.syscall.melt_tokens(token_uid, total_supply)
@@ -1018,6 +1091,12 @@ class DozerTools(Blueprint):
             del self.project_created_at[token_uid]
         if token_uid in self.project_total_supply:
             del self.project_total_supply[token_uid]
+        if token_uid in self.project_creation_mode:
+            del self.project_creation_mode[token_uid]
+        if token_uid in self.project_creation_fee_token:
+            del self.project_creation_fee_token[token_uid]
+        if token_uid in self.project_creation_fee_amount:
+            del self.project_creation_fee_amount[token_uid]
 
         # Optional metadata
         if token_uid in self.project_description:
@@ -1371,6 +1450,64 @@ class DozerTools(Blueprint):
         self._only_owner(ctx)
         self.legacy_token_permissions[token_uid] = authorized_address
 
+    @public(allow_withdrawal=True)
+    def withdraw_platform_htr_fees(self, ctx: Context) -> None:
+        """Withdraw accumulated HTR method fees."""
+        self._only_owner(ctx)
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+        if action.amount != self.platform_htr_fees:
+            raise InsufficientCredits("Invalid HTR fee withdrawal amount")
+        self.platform_htr_fees = Amount(0)
+
+    @public(allow_withdrawal=True)
+    def withdraw_platform_dzr_fees(self, ctx: Context) -> None:
+        """Withdraw accumulated DZR method fees."""
+        self._only_owner(ctx)
+        action = self._get_exact_withdrawal_action(ctx, self.dzr_token_uid)
+        if action.amount != self.platform_dzr_fees:
+            raise InsufficientCredits("Invalid DZR fee withdrawal amount")
+        self.platform_dzr_fees = Amount(0)
+
+    @public(allow_withdrawal=True)
+    def withdraw_credits(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Withdraw unused HTR or DZR credits from the project balance.
+
+        Allows the project dev to reclaim credits they deposited but have not
+        spent on operations. One token per call (HTR or DZR). Partial
+        withdrawals are allowed — the withdrawal action amount must not exceed
+        the current balance.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID whose credits to withdraw
+
+        Raises:
+            Unauthorized: If caller is not the project dev
+            ProjectNotFound: If project does not exist
+            DozerToolsError: If withdrawal action is invalid
+            InsufficientCredits: If withdrawal amount exceeds available balance
+        """
+        self._only_project_dev(ctx, token_uid)
+
+        if TokenUid(HTR_UID) in ctx.actions:
+            action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+            htr_balance = self.project_htr_balance.get(token_uid, Amount(0))
+            if Amount(action.amount) > htr_balance:
+                raise InsufficientCredits(
+                    f"Withdrawal amount exceeds HTR balance of {htr_balance}"
+                )
+            self.project_htr_balance[token_uid] = Amount(htr_balance - action.amount)
+        elif self.dzr_token_uid in ctx.actions:
+            action = self._get_exact_withdrawal_action(ctx, self.dzr_token_uid)
+            dzr_balance = self.project_dzr_balance.get(token_uid, Amount(0))
+            if Amount(action.amount) > dzr_balance:
+                raise InsufficientCredits(
+                    f"Withdrawal amount exceeds DZR balance of {dzr_balance}"
+                )
+            self.project_dzr_balance[token_uid] = Amount(dzr_balance - action.amount)
+        else:
+            raise DozerToolsError("Withdrawal must be for HTR or DZR")
+
     @public
     def change_owner(self, ctx: Context, new_owner: Address) -> None:
         """Change the contract owner.
@@ -1460,6 +1597,11 @@ class DozerTools(Blueprint):
             "github": self.project_github.get(token_uid, ""),
             "category": self.project_category.get(token_uid, ""),
             "whitepaper_url": self.project_whitepaper_url.get(token_uid, ""),
+            "creation_mode": self.project_creation_mode.get(token_uid, ""),
+            "creation_fee_token": self.project_creation_fee_token.get(token_uid, ""),
+            "creation_fee_amount": str(
+                self.project_creation_fee_amount.get(token_uid, Amount(0))
+            ),
             "melt_authority_acquired": str(
                 self.project_melt_authority_acquired.get(token_uid, False)
             ).lower(),
@@ -1526,6 +1668,14 @@ class DozerTools(Blueprint):
             "htr_balance": str(self.project_htr_balance.get(token_uid, Amount(0))),
             "dzr_balance": str(self.project_dzr_balance.get(token_uid, Amount(0))),
             "minimum_deposit": str(self.minimum_deposit),
+        }
+
+    @view
+    def get_platform_fee_balances(self) -> dict[str, str]:
+        """Get accumulated method fees withdrawable by the platform owner."""
+        return {
+            "htr_fees": str(self.platform_htr_fees),
+            "dzr_fees": str(self.platform_dzr_fees),
         }
 
     @view
@@ -1811,6 +1961,7 @@ class DozerTools(Blueprint):
         crowdsale_contract = self.project_crowdsale_contract.get(
             token_uid, NULL_CONTRACT_ID
         )
+        dao_contract = self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
         pool_key = self.project_pools.get(token_uid, "")
 
         distribution["staking_deployed"] = (
@@ -1819,12 +1970,17 @@ class DozerTools(Blueprint):
         distribution["crowdsale_deployed"] = (
             "true" if crowdsale_contract != NULL_CONTRACT_ID else "false"
         )
+        distribution["dao_deployed"] = (
+            "true" if dao_contract != NULL_CONTRACT_ID else "false"
+        )
         distribution["pool_deployed"] = "true" if pool_key != "" else "false"
 
         if staking_contract != NULL_CONTRACT_ID:
             distribution["staking_contract"] = staking_contract.hex()
         if crowdsale_contract != NULL_CONTRACT_ID:
             distribution["crowdsale_contract"] = crowdsale_contract.hex()
+        if dao_contract != NULL_CONTRACT_ID:
+            distribution["dao_contract"] = dao_contract.hex()
         if pool_key != "":
             distribution["pool_key"] = pool_key
 
@@ -1939,6 +2095,17 @@ class DozerTools(Blueprint):
             == len(allocation_vesting_months)
         ):
             raise InvalidAllocation("All allocation lists must have same length")
+        if len(allocation_names) > MAX_REGULAR_ALLOCATIONS:
+            raise InvalidAllocation("Too many regular allocations")
+        if (
+            staking_percentage < 0
+            or public_sale_percentage < 0
+            or dozer_pool_percentage < 0
+        ):
+            raise InvalidAllocation("Allocation percentages cannot be negative")
+        for percentage in allocation_percentages:
+            if percentage < 0:
+                raise InvalidAllocation("Allocation percentages cannot be negative")
 
         # Configure vesting and start it
         self._configure_vesting(
@@ -2074,16 +2241,17 @@ class DozerTools(Blueprint):
         # Check if contract is paused
         self._validate_not_paused(ctx)
 
-        # Get the withdrawal action to derive token_uid
+        if index in [
+            STAKING_ALLOCATION_INDEX,
+            PUBLIC_SALE_ALLOCATION_INDEX,
+            DOZER_POOL_ALLOCATION_INDEX,
+        ]:
+            raise InvalidAllocation("Factory-reserved allocation")
+
         if len(ctx.actions) != 1:
             raise DozerToolsError("Exactly one withdrawal action required")
-
-        # Get the action and derive token_uid from it
-        action = ctx.actions_list[0]
-        if not isinstance(action, NCWithdrawalAction):
-            raise DozerToolsError("Withdrawal action required")
-
-        token_uid = action.token_uid
+        token_uid = list(ctx.actions.keys())[0]
+        action = self._get_exact_withdrawal_action(ctx, token_uid)
 
         vesting_contract = self.project_vesting_contract.get(
             token_uid, NULL_CONTRACT_ID
@@ -2092,10 +2260,11 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Vesting contract does not exist")
 
         # Route to vesting contract with user address
+        token_fees = [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
         self.syscall.get_contract(
             vesting_contract,
             blueprint_id=None,
-        ).public(action).routed_claim_allocation(
+        ).public(action, fees=token_fees).routed_claim_allocation(
             Address(ctx.caller_id),
             index,
         )
@@ -2114,8 +2283,6 @@ class DozerTools(Blueprint):
         """
         # Check if contract is paused
         self._validate_not_paused(ctx)
-
-        self._only_project_dev(ctx, token_uid)
 
         vesting_contract = self.project_vesting_contract.get(
             token_uid, NULL_CONTRACT_ID
@@ -2151,15 +2318,14 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Staking contract does not exist")
 
         # Get the deposit action to forward (should be for the project token)
-        action = ctx.get_single_action(token_uid)
-        if not isinstance(action, NCDepositAction):
-            raise DozerToolsError("Deposit action required")
+        action = self._get_exact_deposit_action(ctx, token_uid)
 
         # Route to staking contract with user address
+        token_fees = [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
         self.syscall.get_contract(
             staking_contract,
             blueprint_id=None,
-        ).public(action).routed_stake(
+        ).public(action, fees=token_fees).routed_stake(
             Address(ctx.caller_id),
         )
 
@@ -2181,15 +2347,14 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Staking contract does not exist")
 
         # Get the withdrawal action to forward (should be for the project token)
-        action = ctx.get_single_action(token_uid)
-        if not isinstance(action, NCWithdrawalAction):
-            raise DozerToolsError("Withdrawal action required")
+        action = self._get_exact_withdrawal_action(ctx, token_uid)
 
         # Route to staking contract with user address
+        token_fees = [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
         self.syscall.get_contract(
             staking_contract,
             blueprint_id=None,
-        ).public(action).routed_unstake(
+        ).public(action, fees=token_fees).routed_unstake(
             Address(ctx.caller_id),
         )
 
@@ -2216,16 +2381,15 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Staking contract does not exist")
 
         # Get the deposit action to forward (should be for the project token)
-        action = ctx.get_single_action(token_uid)
-        if not isinstance(action, NCDepositAction):
-            raise DozerToolsError("Deposit action required")
+        action = self._get_exact_deposit_action(ctx, token_uid)
 
         # Call staking contract's owner_deposit directly
         # DozerTools is the owner, so this will succeed
+        token_fees = [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
         self.syscall.get_contract(
             staking_contract,
             blueprint_id=None,
-        ).public(action).owner_deposit()
+        ).public(action, fees=token_fees).owner_deposit()
 
     @public
     def staking_pause(self, ctx: Context, token_uid: TokenUid) -> None:
@@ -2368,9 +2532,7 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Crowdsale contract does not exist")
 
         # Get the deposit action to forward (should be HTR for crowdsale participation)
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCDepositAction):
-            raise DozerToolsError("HTR deposit action required")
+        action = self._get_exact_deposit_action(ctx, TokenUid(HTR_UID))
 
         # Route to crowdsale contract with user address
         self.syscall.get_contract(
@@ -2398,15 +2560,14 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Crowdsale contract does not exist")
 
         # Get the withdrawal action to forward (should be for the project token)
-        action = ctx.get_single_action(token_uid)
-        if not isinstance(action, NCWithdrawalAction):
-            raise DozerToolsError("Withdrawal action required")
+        action = self._get_exact_withdrawal_action(ctx, token_uid)
 
         # Route to crowdsale contract with user address
+        token_fees = [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
         self.syscall.get_contract(
             crowdsale_contract,
             blueprint_id=None,
-        ).public(action).routed_claim_tokens(
+        ).public(action, fees=token_fees).routed_claim_tokens(
             Address(ctx.caller_id),
         )
 
@@ -2428,9 +2589,7 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Crowdsale contract does not exist")
 
         # Get the withdrawal action to forward (should be HTR for refunds)
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCWithdrawalAction):
-            raise DozerToolsError("HTR withdrawal action required")
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
 
         # Route to crowdsale contract with user address
         self.syscall.get_contract(
@@ -2544,13 +2703,26 @@ class DozerTools(Blueprint):
         # Check if contract is paused
         self._validate_not_paused(ctx)
 
-        self._only_project_dev(ctx, token_uid)
-
         crowdsale_contract = self.project_crowdsale_contract.get(
             token_uid, NULL_CONTRACT_ID
         )
         if crowdsale_contract == NULL_CONTRACT_ID:
             raise ProjectNotFound("Crowdsale contract does not exist")
+
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+        project_dev = self.project_dev[token_uid]
+        if Address(ctx.caller_id) != project_dev:
+            sale_info = (
+                self.syscall.get_contract(
+                    crowdsale_contract,
+                    blueprint_id=None,
+                )
+                .view()
+                .get_sale_info()
+            )
+            if ctx.block.timestamp <= sale_info.end_time:
+                raise Unauthorized("Only project dev can finalize before sale end")
 
         # Route to crowdsale contract with user address
         self.syscall.get_contract(
@@ -2583,9 +2755,7 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Crowdsale contract does not exist")
 
         # Get the withdrawal action to forward (should be HTR)
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCWithdrawalAction):
-            raise DozerToolsError("HTR withdrawal action required")
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
 
         # Route to crowdsale contract with user address
         self.syscall.get_contract(
@@ -2620,13 +2790,12 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Crowdsale contract does not exist")
 
         # Get the withdrawal action to forward (should be for the project token)
-        action = ctx.get_single_action(token_uid)
-        if not isinstance(action, NCWithdrawalAction):
-            raise DozerToolsError("Token withdrawal action required")
+        action = self._get_exact_withdrawal_action(ctx, token_uid)
 
         # Route to crowdsale contract with user address
+        token_fees = [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
         self.syscall.get_contract(crowdsale_contract, blueprint_id=None).public(
-            action
+            action, fees=token_fees
         ).routed_withdraw_remaining_tokens(
             Address(ctx.caller_id),
         )
@@ -2656,16 +2825,16 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Crowdsale contract does not exist")
 
         # Get the withdrawal action (should be HTR for fees)
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCWithdrawalAction):
-            raise DozerToolsError("HTR withdrawal action required")
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
 
         # Route to crowdsale's withdraw_participation_fees
         # Platform address in crowdsale is DozerTools owner, so this will succeed
         self.syscall.get_contract(
             crowdsale_contract,
             blueprint_id=None,
-        ).public(action).withdraw_participation_fees()
+        ).public(action).routed_withdraw_participation_fees(
+            Address(ctx.caller_id),
+        )
 
     @public(allow_withdrawal=True)
     def crowdsale_withdraw_platform_fees(
@@ -2681,7 +2850,7 @@ class DozerTools(Blueprint):
         """
         # Check if contract is paused
         self._validate_not_paused(ctx)
-        
+
         self._only_owner(ctx)  # Only DozerTools owner
 
         crowdsale_contract = self.project_crowdsale_contract.get(
@@ -2691,19 +2860,21 @@ class DozerTools(Blueprint):
             raise ProjectNotFound("Crowdsale contract does not exist")
 
         # Get the withdrawal action (should be HTR for fees)
-        action = ctx.get_single_action(TokenUid(HTR_UID))
-        if not isinstance(action, NCWithdrawalAction):
-            raise DozerToolsError("HTR withdrawal action required")
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
 
         # Route to crowdsale's withdraw_platform_fees (existing method)
         # Platform address in crowdsale is DozerTools owner, so this will succeed
         self.syscall.get_contract(
             crowdsale_contract,
             blueprint_id=None,
-        ).public(action).withdraw_platform_fees()
+        ).public(action).routed_withdraw_platform_fees(
+            Address(ctx.caller_id),
+        )
 
     @public
-    def upgrade_contract(self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str) -> None:
+    def upgrade_contract(
+        self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str
+    ) -> None:
         """Upgrade the contract to a new blueprint version.
 
         Args:
@@ -2715,20 +2886,26 @@ class DozerTools(Blueprint):
             Unauthorized: If caller is not the owner
             InvalidVersion: If new version is not higher than current version
         """
-        # Only owner can upgrade
-        if ctx.caller_id != self.owner:
-            raise Unauthorized("Only owner can upgrade contract")
+        self._only_owner(ctx)
 
         # Validate version is newer
         if not self._is_version_higher(new_version, self.contract_version):
-            raise InvalidVersion(f"New version {new_version} must be higher than current {self.contract_version}")
+            raise InvalidVersion(
+                f"New version {new_version} must be higher than current {self.contract_version}"
+            )
         self.contract_version = new_version
-        
+
         # Perform the upgrade
         self.syscall.change_blueprint(new_blueprint_id)
 
     @public
-    def upgrade_specific_contract(self, ctx: Context, contract_id: ContractId, new_blueprint_id: BlueprintId, new_version: str) -> None:
+    def upgrade_specific_contract(
+        self,
+        ctx: Context,
+        contract_id: ContractId,
+        new_blueprint_id: BlueprintId,
+        new_version: str,
+    ) -> None:
         """Upgrade the contract to a new blueprint version.
 
         Args:
@@ -2742,17 +2919,22 @@ class DozerTools(Blueprint):
             InvalidVersion: If new version is not higher than current version
             InvalidContractId: If contract ID is invalid
         """
-        # Only owner can upgrade
-        if ctx.caller_id != self.owner:
-            raise Unauthorized("Only owner can upgrade contract")
-        
-        # Validate contract ID
-        contract=self.syscall.get_contract(contract_id, blueprint_id=None)
-        contract.get_public_method("upgrade_contract").call(new_blueprint_id, new_version)
+        self._only_owner(ctx)
+        if not self.paused:
+            raise ContractPaused("Pause DozerTools before upgrading child contracts")
+        if not self._is_registered_child_contract(contract_id):
+            raise ProjectNotFound("Contract is not registered under DozerTools")
 
+        # Validate contract ID
+        contract = self.syscall.get_contract(contract_id, blueprint_id=None)
+        contract.get_public_method("upgrade_contract").call(
+            new_blueprint_id, new_version
+        )
 
     @public
-    def migrate_specific_contract(self, ctx: Context, contract_id: ContractId, method_name: str) -> None:
+    def migrate_specific_contract(
+        self, ctx: Context, contract_id: ContractId, method_name: str
+    ) -> None:
         """Migrate the contract after an upgrade.
 
         Args:
@@ -2765,12 +2947,14 @@ class DozerTools(Blueprint):
             InvalidContractId: If contract ID is invalid
             NCMethodNotFound: If method is not found
         """
-        # Only owner can migrate
-        if ctx.caller_id != self.owner:
-            raise Unauthorized("Only owner can migrate contract")
+        self._only_owner(ctx)
+        if not self.paused:
+            raise ContractPaused("Pause DozerTools before migrating child contracts")
+        if not self._is_registered_child_contract(contract_id):
+            raise ProjectNotFound("Contract is not registered under DozerTools")
 
         # Validate contract ID
-        contract=self.syscall.get_contract(contract_id, blueprint_id=None)
+        contract = self.syscall.get_contract(contract_id, blueprint_id=None)
         contract.get_public_method(method_name).call()
 
     def _is_version_higher(self, new_version: str, current_version: str) -> bool:
