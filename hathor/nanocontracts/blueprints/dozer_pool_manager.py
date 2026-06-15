@@ -2661,6 +2661,20 @@ class DozerPoolManager(Blueprint):
             action_out.token_uid,
         )
 
+    def _validate_path_pools_signed(self, path: list[str]) -> None:
+        """Validate every pool in a multi-hop route exists and is signed.
+
+        Routing is restricted to signed pools, mirroring the off-chain pathfinders
+        (`_build_token_graph` / `_build_reverse_token_graph`). Since `sign_pool` is
+        gated to authorized signers, this prevents routing through attacker-created
+        pools and the malformed paths they enable.
+        """
+        for pool_key in path:
+            if pool_key not in self.all_pools:
+                raise PoolNotFound()
+            if pool_key not in self.pool_signers:
+                raise InvalidPath("Route contains an unsigned pool")
+
     @public(allow_withdrawal=True, allow_deposit=True)
     def swap_exact_tokens_for_tokens_through_path(
         self, ctx: Context, path_str: str, deadline: Timestamp
@@ -2698,6 +2712,9 @@ class DozerPoolManager(Blueprint):
         # Validate path length
         if len(path) == 0 or len(path) > 3:
             raise InvalidPath("Invalid path length")
+
+        # Restrict routing to signed pools (attackers cannot sign pools)
+        self._validate_path_pools_signed(path)
 
         # Find deposit and withdrawal actions
         deposit_action, withdrawal_action = self._get_deposit_and_withdrawal_actions(ctx)
@@ -2962,6 +2979,9 @@ class DozerPoolManager(Blueprint):
         if len(path) == 0 or len(path) > 3:
             raise InvalidPath("Invalid path length")
 
+        # Restrict routing to signed pools (attackers cannot sign pools)
+        self._validate_path_pools_signed(path)
+
         # Find deposit and withdrawal actions
         deposit_action, withdrawal_action = self._get_deposit_and_withdrawal_actions(ctx)
 
@@ -3083,6 +3103,13 @@ class DozerPoolManager(Blueprint):
             ):
                 raise InvalidPath("First pool does not contain intermediate token")
 
+            # Path continuity: the first hop must actually OUTPUT the intermediate token.
+            # _resolve_token_direction returns the other pool token, so this also rejects
+            # the case where token_in == intermediate_token (wrong-intermediate-token exploit).
+            _, _, first_hop_token_out = self._resolve_token_direction(first_pool, token_in)
+            if first_hop_token_out != intermediate_token:
+                raise InvalidPath("Path discontinuity: first hop output does not match intermediate token")
+
             # Calculate backwards from the output
             # First, calculate how much intermediate token we need
             second_reserve_in, second_reserve_out, _ = self._resolve_token_direction(second_pool, intermediate_token)
@@ -3202,6 +3229,13 @@ class DozerPoolManager(Blueprint):
                 and first_intermediate_token != first_pool.token_b
             ):
                 raise InvalidPath("First pool does not connect to second pool")
+
+            # Path continuity: the first hop must actually OUTPUT the first intermediate token.
+            # _resolve_token_direction returns the other pool token, so this also rejects
+            # the case where token_in == first_intermediate_token (wrong-intermediate-token exploit).
+            _, _, first_hop_token_out = self._resolve_token_direction(first_pool, token_in)
+            if first_hop_token_out != first_intermediate_token:
+                raise InvalidPath("Path discontinuity: first hop output does not match intermediate token")
 
             # Calculate backwards from the output
             # First, calculate how much second_intermediate_token we need
