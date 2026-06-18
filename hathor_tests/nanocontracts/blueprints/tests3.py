@@ -51,6 +51,12 @@ class TestDozerPoolManagerPathSwaps(BlueprintTestCase):
         timestamp=1)
         pool_key = self.runner.call_public_method(self.contract_id, 'create_pool', ctx, fee)
         assert isinstance(ctx.caller_id, Address)
+        # Routing is now restricted to signed pools; sign as the owner (an authorized
+        # signer) so these well-formed paths remain routable.
+        sign_ctx = self.create_context(caller_id=self.owner, timestamp=1)
+        self.runner.call_public_method(
+            self.contract_id, 'sign_pool', sign_ctx, token_a, token_b, fee
+        )
         return pool_key, ctx.caller_id
 
     def swap_exact_through_path(
