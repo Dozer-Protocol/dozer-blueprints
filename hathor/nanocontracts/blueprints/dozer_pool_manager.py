@@ -2662,18 +2662,29 @@ class DozerPoolManager(Blueprint):
         )
 
     def _validate_path_pools_signed(self, path: list[str]) -> None:
-        """Validate every pool in a multi-hop route exists and is signed.
+        """Validate every pool in a multi-hop route exists, is signed, and is unique.
 
         Routing is restricted to signed pools, mirroring the off-chain pathfinders
         (`_build_token_graph` / `_build_reverse_token_graph`). Since `sign_pool` is
         gated to authorized signers, this prevents routing through attacker-created
         pools and the malformed paths they enable.
+
+        Duplicate pools are also rejected: exact-output routes price every hop off a
+        single reserve snapshot, so reusing a pool runs a later swap with stale amounts.
+        When that makes the pool's K *increase* (the trader overpays), the
+        `_check_k_not_decreased` guard is satisfied and the swap succeeds, leaving the
+        pool off its constant-product curve. Funds stay safe, but the state is invalid;
+        a sane route never traverses the same pool twice, so we reject duplicates here.
         """
+        seen: list[str] = []
         for pool_key in path:
             if pool_key not in self.all_pools:
                 raise PoolNotFound()
             if pool_key not in self.pool_signers:
                 raise InvalidPath("Route contains an unsigned pool")
+            if pool_key in seen:
+                raise InvalidPath("Route contains a duplicate pool")
+            seen.append(pool_key)
 
     @public(allow_withdrawal=True, allow_deposit=True)
     def swap_exact_tokens_for_tokens_through_path(
