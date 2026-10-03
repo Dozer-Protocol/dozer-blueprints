@@ -1009,7 +1009,7 @@ class DozerPoolManager(Blueprint):
         Raises:
             PoolNotFound: If the pool does not exist
         """
-        if pool_key not in self.all_pools:
+        if pool_key not in self.pools:
             raise PoolNotFound()
 
         pool = self.pools[pool_key]
@@ -1115,13 +1115,13 @@ class DozerPoolManager(Blueprint):
 
         if result.swap_amount > 0:
             if token_out == token_a:
-                swap_reserve_in = Amount(pool.reserve_b - result.amount_b + result.swap_amount)
+                swap_reserve_in = Amount(pool.reserve_b - result.amount_b)
                 swap_reserve_out = Amount(pool.reserve_a - result.amount_a)
                 price_impact = self._calculate_single_swap_price_impact(
                     result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
                 )
             else:
-                swap_reserve_in = Amount(pool.reserve_a - result.amount_a + result.swap_amount)
+                swap_reserve_in = Amount(pool.reserve_a - result.amount_a)
                 swap_reserve_out = Amount(pool.reserve_b - result.amount_b)
                 price_impact = self._calculate_single_swap_price_impact(
                     result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
@@ -1176,13 +1176,13 @@ class DozerPoolManager(Blueprint):
 
         if result.swap_amount > 0:
             if token_out == token_a:
-                swap_reserve_in = Amount(pool.reserve_b - result.amount_b + result.swap_amount)
+                swap_reserve_in = Amount(pool.reserve_b - result.amount_b)
                 swap_reserve_out = Amount(pool.reserve_a - result.amount_a)
                 price_impact = self._calculate_single_swap_price_impact(
                     result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
                 )
             else:
-                swap_reserve_in = Amount(pool.reserve_a - result.amount_a + result.swap_amount)
+                swap_reserve_in = Amount(pool.reserve_a - result.amount_a)
                 swap_reserve_out = Amount(pool.reserve_b - result.amount_b)
                 price_impact = self._calculate_single_swap_price_impact(
                     result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
@@ -1218,7 +1218,7 @@ class DozerPoolManager(Blueprint):
         Raises:
             PoolNotFound: If the pool does not exist
         """
-        if pool_key not in self.all_pools:
+        if pool_key not in self.pools:
             raise PoolNotFound()
 
         pool = self.pools[pool_key]
@@ -2136,7 +2136,7 @@ class DozerPoolManager(Blueprint):
 
         if token_out == token_a:
             if amount_b > 0:
-                swap_reserve_in = Amount(new_reserve_b + amount_b)
+                swap_reserve_in = new_reserve_b
                 swap_reserve_out = Amount(new_reserve_a)
 
                 extra_a = self.get_amount_out(
@@ -2172,7 +2172,7 @@ class DozerPoolManager(Blueprint):
         else:
             assert token_out == token_b, f"Token {token_out} is not part of pool"
             if amount_a > 0:
-                swap_reserve_in = Amount(new_reserve_a + amount_a)
+                swap_reserve_in = new_reserve_a
                 swap_reserve_out = Amount(new_reserve_b)
 
                 extra_b = self.get_amount_out(
@@ -2403,11 +2403,11 @@ class DozerPoolManager(Blueprint):
 
         if result.swap_amount > 0:
             if token_out == token_a:
-                swap_reserve_in = Amount(reserve_b_after_removal + result.swap_amount)
+                swap_reserve_in = reserve_b_after_removal
                 swap_reserve_out = reserve_a_after_removal
                 token_in_for_swap = token_b
             else:
-                swap_reserve_in = Amount(reserve_a_after_removal + result.swap_amount)
+                swap_reserve_in = reserve_a_after_removal
                 swap_reserve_out = reserve_b_after_removal
                 token_in_for_swap = token_a
 
@@ -2685,7 +2685,7 @@ class DozerPoolManager(Blueprint):
         """
         seen: list[str] = []
         for pool_key in path:
-            if pool_key not in self.all_pools:
+            if pool_key not in self.pools:
                 raise PoolNotFound()
             if pool_key not in self.pool_signers:
                 raise InvalidPath("Route contains an unsigned pool")
@@ -2743,7 +2743,7 @@ class DozerPoolManager(Blueprint):
 
         # Get the first pool to determine input token
         first_pool_key = path[0]
-        if first_pool_key not in self.all_pools:
+        if first_pool_key not in self.pools:
             raise PoolNotFound()
 
         # Execute the swap through the path
@@ -2769,7 +2769,7 @@ class DozerPoolManager(Blueprint):
             current_token = next_token
             second_pool_key = path[1]
 
-            if second_pool_key not in self.all_pools:
+            if second_pool_key not in self.pools:
                 raise PoolNotFound()
 
             # Determine the output token of the second pool
@@ -2791,7 +2791,7 @@ class DozerPoolManager(Blueprint):
                 current_token = next_token
                 third_pool_key = path[2]
 
-                if third_pool_key not in self.all_pools:
+                if third_pool_key not in self.pools:
                     raise PoolNotFound()
 
                 # Determine the output token of the third pool
@@ -3014,7 +3014,7 @@ class DozerPoolManager(Blueprint):
         # For a single hop path
         if len(path) == 1:
             pool_key = path[0]
-            if pool_key not in self.all_pools:
+            if pool_key not in self.pools:
                 raise PoolNotFound()
 
             pool = self.pools[pool_key]
@@ -3080,7 +3080,7 @@ class DozerPoolManager(Blueprint):
 
         # Get the last pool
         last_pool_key = path[-1]
-        if last_pool_key not in self.all_pools:
+        if last_pool_key not in self.pools:
             raise PoolNotFound()
 
         # Verify the output token is in the last pool
@@ -3102,7 +3102,7 @@ class DozerPoolManager(Blueprint):
 
             # Get the first pool (token_in -> intermediate)
             first_pool_key = path[0]
-            if first_pool_key not in self.all_pools:
+            if first_pool_key not in self.pools:
                 raise PoolNotFound()
 
             first_pool = self.pools[first_pool_key]
@@ -3212,7 +3212,7 @@ class DozerPoolManager(Blueprint):
         if len(path) == 3:
             # Get the third pool (last in the path)
             third_pool_key = path[2]
-            if third_pool_key not in self.all_pools:
+            if third_pool_key not in self.pools:
                 raise PoolNotFound()
 
             # Get third pool and determine the output token and the second intermediate token
@@ -3221,7 +3221,7 @@ class DozerPoolManager(Blueprint):
 
             # Get the second pool (middle of the path)
             second_pool_key = path[1]
-            if second_pool_key not in self.all_pools:
+            if second_pool_key not in self.pools:
                 raise PoolNotFound()
 
             second_pool = self.pools[second_pool_key]
@@ -3230,7 +3230,7 @@ class DozerPoolManager(Blueprint):
 
             # Get the first pool (first in the path)
             first_pool_key = path[0]
-            if first_pool_key not in self.all_pools:
+            if first_pool_key not in self.pools:
                 raise PoolNotFound()
 
             first_pool = self.pools[first_pool_key]
@@ -4180,6 +4180,9 @@ class DozerPoolManager(Blueprint):
 
         old_owner = self.owner
         self.owner = new_owner
+        # Signer rights follow ownership
+        self.authorized_signers.discard(old_owner)
+        self.authorized_signers.add(new_owner)
 
         self.log.info('owner changed',
                       old_owner=str(old_owner),
@@ -4947,7 +4950,7 @@ class DozerPoolManager(Blueprint):
         
         # Trace through each pool to get the exchange rate
         for pool_key in pool_keys:
-            if pool_key not in self.all_pools:
+            if pool_key not in self.pools:
                 return Amount(0)
             
             pool = self.pools[pool_key]

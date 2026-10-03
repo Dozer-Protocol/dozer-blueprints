@@ -687,6 +687,48 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
             total_input_used += quote.excess_amount
         self.assertEqual(total_input_used, amount_in)
 
+    def test_remove_liquidity_single_token_quotes_swap_against_post_removal_reserves(self):
+        """The internal swap must be priced on the reserves left after the proportional removal."""
+        pool_key, _ = self._create_pool(
+            self.token_a, self.token_b, fee=3, reserve_a=100000_00, reserve_b=100000_00
+        )
+        _result, add_context = self._add_liquidity(self.token_a, self.token_b, 3, 1000_00)
+
+        contract = self.get_readonly_contract(self.nc_id)
+        assert isinstance(contract, DozerPoolManager)
+        pool = contract.pools[pool_key]
+        user_liquidity = self.runner.call_view_method(
+            self.nc_id, "liquidity_of", add_context.caller_id, pool_key
+        )
+
+        amount_a = pool.reserve_a * user_liquidity // pool.total_liquidity
+        amount_b = pool.reserve_b * user_liquidity // pool.total_liquidity
+        new_reserve_a = pool.reserve_a - amount_a
+        new_reserve_b = pool.reserve_b - amount_b
+        fee_mult = pool.fee_denominator - pool.fee_numerator
+        expected_extra_a = (new_reserve_a * amount_b * fee_mult) // (
+            new_reserve_b * pool.fee_denominator + amount_b * fee_mult
+        )
+
+        quote = self.runner.call_view_method(
+            self.nc_id, "quote_remove_liquidity_single_token_percentage",
+            add_context.caller_id, pool_key, self.token_a, 10000
+        )
+        self.assertEqual(quote.swap_output, expected_extra_a)
+        self.assertEqual(quote.amount_out, amount_a + expected_extra_a)
+
+        context = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=self.token_a, amount=quote.amount_out)],
+            vertex=self._get_any_tx(),
+            caller_id=add_context.caller_id,
+            timestamp=self.get_current_timestamp(),
+        )
+        amount_out = self.runner.call_public_method(
+            self.nc_id, "remove_liquidity_single_token", context, pool_key, 10000
+        )
+        self.assertEqual(amount_out, amount_a + expected_extra_a)
+        self._check_balance()
+
     def test_remove_liquidity_single_token(self):
         # Increased pool reserves 10x to allow 100% removal while staying under 5% price impact
         pool_key, _creator_address = self._create_pool(
@@ -1436,6 +1478,147 @@ class DozerPoolManagerBlueprintTestCase(BlueprintTestCase):
         # Verify pool is unsigned
         info = self.runner.call_view_method(self.nc_id, "pool_info", pool_key)
         self.assertFalse(info.is_signed)
+
+    def _ctx(self, caller, actions=None):
+        return self.create_context(
+            actions or [], self._get_any_tx(), Address(caller), timestamp=self.get_current_timestamp()
+        )
+
+    def _add_signer(self):
+        signer_address, _ = self._get_any_address()
+        self.runner.call_public_method(
+            self.nc_id, "add_authorized_signer", self._ctx(self.owner_address), Address(signer_address)
+        )
+        return signer_address
+
+    def _create_pool_as(self, caller, token_a, token_b, fee=3, reserve_a=1000_00, reserve_b=1000_00):
+        actions = [
+            NCDepositAction(token_uid=token_a, amount=reserve_a),
+            NCDepositAction(token_uid=token_b, amount=reserve_b),
+        ]
+        return self.runner.call_public_method(
+            self.nc_id, "create_pool", self._ctx(caller, actions), fee
+        )
+
+    def test_reserve_pool_creation_requires_authorized_signer(self):
+        outsider, _ = self._get_any_address()
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.nc_id, "reserve_pool_creation", self._ctx(outsider), self.token_a
+            )
+
+    def test_reserve_pool_creation_rejects_htr(self):
+        with self.assertRaises(InvalidTokens):
+            self.runner.call_public_method(
+                self.nc_id, "reserve_pool_creation", self._ctx(self.owner_address), TokenUid(HTR_UID)
+            )
+
+    def test_reserved_token_blocks_pool_creation_by_others(self):
+        signer = self._add_signer()
+        self.runner.call_public_method(
+            self.nc_id, "reserve_pool_creation", self._ctx(signer), self.token_a
+        )
+
+        # Front-runner cannot create any pool that includes the reserved token
+        outsider, _ = self._get_any_address()
+        with self.assertRaises(Unauthorized):
+            self._create_pool_as(outsider, self.token_a, self.token_b)
+        with self.assertRaises(Unauthorized):
+            self._create_pool_as(outsider, self.token_c, self.token_a, fee=5)
+
+        # Pools without the reserved token are unaffected
+        self._create_pool_as(outsider, self.token_b, self.token_c)
+
+        # The reserver can create the pool
+        pool_key = self._create_pool_as(signer, self.token_a, self.token_b)
+        self.assertIn(pool_key, self.runner.call_view_method(self.nc_id, "get_all_pools"))
+        self._check_balance()
+
+    def test_reservation_cannot_be_taken_by_another_signer(self):
+        signer_1 = self._add_signer()
+        signer_2 = self._add_signer()
+        self.runner.call_public_method(
+            self.nc_id, "reserve_pool_creation", self._ctx(signer_1), self.token_a
+        )
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.nc_id, "reserve_pool_creation", self._ctx(signer_2), self.token_a
+            )
+        # Re-reserving by the same signer is idempotent
+        self.runner.call_public_method(
+            self.nc_id, "reserve_pool_creation", self._ctx(signer_1), self.token_a
+        )
+
+    def test_release_pool_reservation_permissions(self):
+        signer = self._add_signer()
+        self.runner.call_public_method(
+            self.nc_id, "reserve_pool_creation", self._ctx(signer), self.token_a
+        )
+
+        outsider, _ = self._get_any_address()
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.nc_id, "release_pool_reservation", self._ctx(outsider), self.token_a
+            )
+
+        # Owner can release a reservation it does not hold
+        self.runner.call_public_method(
+            self.nc_id, "release_pool_reservation", self._ctx(self.owner_address), self.token_a
+        )
+        self._create_pool_as(outsider, self.token_a, self.token_b)
+
+        # Releasing a token that is not reserved is a no-op
+        self.runner.call_public_method(
+            self.nc_id, "release_pool_reservation", self._ctx(outsider), self.token_d
+        )
+
+    def test_reserver_can_release_own_reservation(self):
+        signer = self._add_signer()
+        self.runner.call_public_method(
+            self.nc_id, "reserve_pool_creation", self._ctx(signer), self.token_a
+        )
+        self.runner.call_public_method(
+            self.nc_id, "release_pool_reservation", self._ctx(signer), self.token_a
+        )
+        outsider, _ = self._get_any_address()
+        self._create_pool_as(outsider, self.token_a, self.token_b)
+
+    def test_initialize_reserved_pools_owner_only(self):
+        outsider, _ = self._get_any_address()
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.nc_id, "initialize_reserved_pools", self._ctx(outsider)
+            )
+        # On a contract that already has reserved_pools, re-running the migration
+        # must fail instead of wiping existing reservations.
+        signer = self._add_signer()
+        self.runner.call_public_method(
+            self.nc_id, "reserve_pool_creation", self._ctx(signer), self.token_a
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.nc_id, "initialize_reserved_pools", self._ctx(self.owner_address)
+            )
+        with self.assertRaises(Unauthorized):
+            self._create_pool_as(outsider, self.token_a, self.token_b)
+
+    def test_change_owner_transfers_signer_rights(self):
+        new_owner, _ = self._get_any_address()
+        old_owner = self.owner_address
+        self.runner.call_public_method(
+            self.nc_id, "change_owner", self._ctx(old_owner), Address(new_owner)
+        )
+
+        self.assertTrue(self.runner.call_view_method(self.nc_id, "is_authorized_signer", Address(new_owner)))
+        self.assertFalse(self.runner.call_view_method(self.nc_id, "is_authorized_signer", Address(old_owner)))
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.nc_id, "reserve_pool_creation", self._ctx(old_owner), self.token_a
+            )
+        self.runner.call_public_method(
+            self.nc_id, "reserve_pool_creation", self._ctx(new_owner), self.token_a
+        )
 
     def test_set_htr_usd_pool(self):
         """Test setting the HTR-USD pool"""

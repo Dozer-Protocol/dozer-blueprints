@@ -4,6 +4,7 @@ from hathor import Address, NCDepositAction, NCFail, NCWithdrawalAction, TokenUi
 from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 from hathor.nanocontracts.blueprints.dozer_pool_manager import (
     DozerPoolManager,
+    PoolNotFound,
     PoolState,
     SwapResult,
 )
@@ -403,3 +404,80 @@ class TestDozerPoolManagerPathSwaps(BlueprintTestCase):
         state3 = self.get_pool_state(pool_key3)
         assert state3.reserve_a == 3000000 + 3004
         assert state3.reserve_b == 4000000 - 4000
+
+    # --- Pool existence checks on path swaps and quote views -------------------------
+
+    def _create_chain_of_pools(self) -> tuple[str, str, str, Address]:
+        pool_ab, creator = self.create_pool(
+            token_a=self.token_a, token_b=self.token_b, fee=0, reserve_a=1000000, reserve_b=1000000
+        )
+        pool_bc, _ = self.create_pool(
+            token_a=self.token_b, token_b=self.token_c, fee=0, reserve_a=1000000, reserve_b=1000000
+        )
+        pool_cd, _ = self.create_pool(
+            token_a=self.token_c, token_b=self.token_d, fee=0, reserve_a=1000000, reserve_b=1000000
+        )
+        return pool_ab, pool_bc, pool_cd, creator
+
+    @staticmethod
+    def _missing(pool_key: str) -> str:
+        """Same token pair as an existing pool, but with a fee tier that was never created."""
+        token_a, token_b, _fee = pool_key.split("/")
+        return f"{token_a}/{token_b}/7"
+
+    def _assert_paths_reject_missing_pool(self, swap) -> None:
+        pool_ab, pool_bc, pool_cd, creator = self._create_chain_of_pools()
+        cases = [
+            (self._missing(pool_ab), self.token_b),
+            (f"{pool_ab},{self._missing(pool_bc)}", self.token_c),
+            (f"{pool_ab},{pool_bc},{self._missing(pool_cd)}", self.token_d),
+        ]
+        for path_str, token_out in cases:
+            with pytest.raises(PoolNotFound):
+                swap(
+                    path_str=path_str,
+                    token_in=self.token_a, token_out=token_out,
+                    amount_in=1000, amount_out=1, deadline=10,
+                    address=creator,
+                )
+
+    def test_swap_exact_through_path_rejects_missing_pool_at_any_hop(self) -> None:
+        self._assert_paths_reject_missing_pool(self.swap_exact_through_path)
+
+    def test_swap_for_exact_through_path_rejects_missing_pool_at_any_hop(self) -> None:
+        self._assert_paths_reject_missing_pool(self.swap_for_exact_through_path)
+
+    def test_front_quote_add_liquidity_rejects_missing_pool(self) -> None:
+        pool_ab, _creator = self.create_pool(
+            token_a=self.token_a, token_b=self.token_b, fee=0, reserve_a=1000000, reserve_b=1000000
+        )
+        for method in ("front_quote_add_liquidity_in", "front_quote_add_liquidity_out"):
+            # Existing pool works
+            self.runner.call_view_method(self.contract_id, method, 1000, self.token_a, pool_ab)
+            with pytest.raises(PoolNotFound):
+                self.runner.call_view_method(
+                    self.contract_id, method, 1000, self.token_a, self._missing(pool_ab)
+                )
+
+
+    # --- Deterministic path selection ------------------------------------------------
+
+    def test_path_finding_breaks_ties_by_token_uid(self) -> None:
+        """Two equally good routes A->B->D and A->C->D: always pick the one via the smaller token uid."""
+        for token_a, token_b in (
+            (self.token_a, self.token_b), (self.token_b, self.token_d),
+            (self.token_a, self.token_c), (self.token_c, self.token_d),
+        ):
+            self.create_pool(token_a=token_a, token_b=token_b, fee=0, reserve_a=1000000, reserve_b=1000000)
+
+        via, other = sorted([self.token_b, self.token_c])
+
+        info = self.runner.call_view_method(
+            self.contract_id, "find_best_swap_path", 1000, self.token_a, self.token_d, 3
+        )
+        assert via.hex() in info.path and other.hex() not in info.path
+
+        info_exact = self.runner.call_view_method(
+            self.contract_id, "find_best_swap_path_exact_output", 1000, self.token_a, self.token_d, 3
+        )
+        assert via.hex() in info_exact.path and other.hex() not in info_exact.path
