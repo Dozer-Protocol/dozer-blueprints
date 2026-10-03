@@ -459,3 +459,25 @@ class TestDozerPoolManagerPathSwaps(BlueprintTestCase):
                     self.contract_id, method, 1000, self.token_a, self._missing(pool_ab)
                 )
 
+
+    # --- Deterministic path selection ------------------------------------------------
+
+    def test_path_finding_breaks_ties_by_token_uid(self) -> None:
+        """Two equally good routes A->B->D and A->C->D: always pick the one via the smaller token uid."""
+        for token_a, token_b in (
+            (self.token_a, self.token_b), (self.token_b, self.token_d),
+            (self.token_a, self.token_c), (self.token_c, self.token_d),
+        ):
+            self.create_pool(token_a=token_a, token_b=token_b, fee=0, reserve_a=1000000, reserve_b=1000000)
+
+        via, other = sorted([self.token_b, self.token_c])
+
+        info = self.runner.call_view_method(
+            self.contract_id, "find_best_swap_path", 1000, self.token_a, self.token_d, 3
+        )
+        assert via.hex() in info.path and other.hex() not in info.path
+
+        info_exact = self.runner.call_view_method(
+            self.contract_id, "find_best_swap_path_exact_output", 1000, self.token_a, self.token_d, 3
+        )
+        assert via.hex() in info_exact.path and other.hex() not in info_exact.path

@@ -16,7 +16,7 @@ import os
 import unittest
 from typing import Optional
 
-from hathor.conf import settings
+from hathor.conf import HathorSettings
 from hathor.crypto.util import decode_address
 from hathor.nanocontracts.blueprints.dozer_tools import (
     DozerTools,
@@ -48,6 +48,8 @@ from hathor.transaction.base_transaction import BaseTransaction
 from hathor.util import not_none
 from hathor.wallet.keypair import KeyPair
 from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
+
+settings = HathorSettings()
 
 DOZER_POOL_MANAGER_BLUEPRINT_ID = (
     "d6c09caa2f1f7ef6a6f416301c2b665e041fa819a792e53b8409c9c1aed2c89a"
