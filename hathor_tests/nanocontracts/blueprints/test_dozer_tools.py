@@ -1,0 +1,4232 @@
+# Copyright 2025 Hathor Labs
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import os
+import unittest
+from typing import Optional
+
+from hathor.conf import HathorSettings
+from hathor.crypto.util import decode_address
+from hathor.nanocontracts.blueprints.dozer_tools import (
+    DozerTools,
+    ContractPaused,
+    DozerToolsError,
+    ProjectNotFound,
+    Unauthorized,
+    InsufficientCredits,
+    InvalidAllocation,
+)
+
+from hathor.nanocontracts.blueprints.dozer_pool_manager import DozerPoolManager
+from hathor.nanocontracts.blueprints.vesting import Vesting
+from hathor.nanocontracts.blueprints.stake import Stake
+from hathor.nanocontracts.blueprints.dao import DAO
+from hathor.nanocontracts.blueprints.crowdsale import Crowdsale
+from hathor.nanocontracts.types import (
+    Address,
+    Amount,
+    BlueprintId,
+    ContractId,
+    NCDepositAction,
+    NCWithdrawalAction,
+    Timestamp,
+    TokenUid,
+    VertexId,
+)
+from hathor.transaction.base_transaction import BaseTransaction
+from hathor.util import not_none
+from hathor.wallet.keypair import KeyPair
+from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
+
+settings = HathorSettings()
+# HTR deposit a user attaches to pay the protocol NCFee of routed user operations
+PROTOCOL_FEE = NCDepositAction(token_uid=TokenUid(settings.HATHOR_TOKEN_UID), amount=Amount(1))
+
+DOZER_POOL_MANAGER_BLUEPRINT_ID = (
+    "d6c09caa2f1f7ef6a6f416301c2b665e041fa819a792e53b8409c9c1aed2c89a"
+)
+
+VESTING_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef0"
+        )
+    )
+)
+STAKING_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef1"
+        )
+    )
+)
+DAO_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef2"
+        )
+    )
+)
+CROWDSALE_BLUEPRINT_ID = BlueprintId(
+    VertexId(
+        bytes.fromhex(
+            "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef3"
+        )
+    )
+)
+
+
+class DozerToolsTest(BlueprintTestCase):
+    """Test cases for DozerTools blueprint."""
+
+    def setUp(self) -> None:
+        super().setUp()
+
+        # Generate blueprint and contract IDs
+        self.dozer_tools_blueprint_id = self.gen_random_blueprint_id()
+        self.dozer_tools_nc_id = self.gen_random_contract_id()
+
+        # Register all blueprint classes
+        self._register_blueprint_class(DozerTools, self.dozer_tools_blueprint_id)
+        self._register_blueprint_class(Vesting, VESTING_BLUEPRINT_ID)
+        self._register_blueprint_class(Stake, STAKING_BLUEPRINT_ID)
+        self._register_blueprint_class(DAO, DAO_BLUEPRINT_ID)
+        self._register_blueprint_class(Crowdsale, CROWDSALE_BLUEPRINT_ID)
+        self._register_blueprint_class(
+            DozerPoolManager,
+            BlueprintId(VertexId(bytes.fromhex((DOZER_POOL_MANAGER_BLUEPRINT_ID)))),
+        )
+
+        # Create DozerPoolManager for testing
+        self.pool_manager_nc_id = self.gen_random_contract_id()
+        self.pool_manager_blueprint_id = BlueprintId(
+            VertexId(bytes.fromhex((DOZER_POOL_MANAGER_BLUEPRINT_ID)))
+        )
+
+        # Initialize DozerPoolManager
+        pool_manager_context = self.create_context(
+            actions=[],
+            vertex=self._get_any_tx(),
+            caller_id=Address(self._get_any_address()[0]),
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.create_contract(
+            self.pool_manager_nc_id,
+            self.pool_manager_blueprint_id,
+            pool_manager_context,
+        )
+
+        # Test addresses
+        self.owner_address_bytes, _ = self._get_any_address()
+        self.owner_address = Address(self.owner_address_bytes)
+        self.dev_address_bytes, _ = self._get_any_address()
+        self.dev_address = Address(self.dev_address_bytes)
+        self.user_address_bytes, _ = self._get_any_address()
+        self.user_address = Address(self.user_address_bytes)
+
+        # DZR token parameters (placeholder)
+        self.dzr_token_uid = TokenUid(VertexId(b"\x01" * 32))
+        self.minimum_deposit = Amount(100)  # 1 HTR
+        self.create_project_fee_htr = Amount(1_000)
+        self.create_project_fee_dzr = Amount(500)
+
+        # Register DZR as a deposit-based token so it can be used to pay internal fees
+        from hathorlib.token_info import TokenVersion
+
+        self.create_token(self.dzr_token_uid, "Dozer", "DZR", TokenVersion.DEPOSIT)
+
+        # Initialize DozerTools
+        self._initialize_dozer_tools()
+
+    def _get_any_tx(self) -> BaseTransaction:
+        genesis = self.manager.tx_storage.get_all_genesis()
+        tx = [t for t in genesis if t.is_transaction][0]
+        return tx
+
+    def _get_any_address(self):
+        password = os.urandom(12)
+        key = KeyPair.create(password)
+        address_b58 = key.address
+        address_bytes = decode_address(not_none(address_b58))
+        return address_bytes, key
+
+    def get_current_timestamp(self):
+        return int(self.clock.seconds())
+
+    def _initialize_dozer_tools(self):
+        """Initialize the DozerTools contract"""
+        tx = self._get_any_tx()
+        # Add HTR deposit for initialization fee (0.01 HTR = 1000000 satoshis)
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.create_contract(
+            self.dozer_tools_nc_id,
+            self.dozer_tools_blueprint_id,
+            context,
+            self.pool_manager_nc_id,
+            self.dzr_token_uid,
+            self.minimum_deposit,
+        )
+
+        # Configure blueprint IDs
+        config_context = self.create_context(
+            actions=[],
+            vertex=self._get_any_tx(),
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Set vesting blueprint
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_vesting_blueprint_id",
+            config_context,
+            VESTING_BLUEPRINT_ID,
+        )
+
+        # Set staking blueprint
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_staking_blueprint_id",
+            config_context,
+            STAKING_BLUEPRINT_ID,
+        )
+
+        # Set DAO blueprint
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_dao_blueprint_id",
+            config_context,
+            DAO_BLUEPRINT_ID,
+        )
+
+        # Set crowdsale blueprint
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_crowdsale_blueprint_id",
+            config_context,
+            CROWDSALE_BLUEPRINT_ID,
+        )
+
+        # Configure create_project method fee (fee-based token creation flow)
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_method_fees",
+            config_context,
+            "create_project",
+            self.create_project_fee_htr,
+            self.create_project_fee_dzr,
+        )
+
+        self.dozer_tools_storage = self.runner.get_storage(self.dozer_tools_nc_id)
+
+    def test_initialize_dozer_tools(self) -> None:
+        """Test DozerTools initialization."""
+        # Verify initialization
+        contract_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_contract_info"
+        )
+
+        self.assertEqual(contract_info["owner"], self.owner_address.hex())
+        self.assertEqual(
+            contract_info["dozer_pool_manager_id"], self.pool_manager_nc_id.hex()
+        )
+        self.assertEqual(contract_info["dzr_token_uid"], self.dzr_token_uid.hex())
+        self.assertEqual(contract_info["minimum_deposit"], str(self.minimum_deposit))
+        self.assertEqual(contract_info["total_projects"], "0")
+
+    def test_create_project(self) -> None:
+        """Test creating a new project with token."""
+        # Project parameters
+        token_name = "TestToken"
+        token_symbol = "TEST"
+        total_supply = Amount(10000000)  # 10M tokens
+        required_htr = self.create_project_fee_htr
+
+        # Create project
+        tx = self._get_any_tx()
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        context = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=required_htr)],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        token_uid = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context,
+            token_name,
+            token_symbol,
+            total_supply,
+            "A test token project",  # description
+            "https://test.com",  # website
+            "https://logo.com",  # logo_url
+            "@test",  # twitter
+            "https://t.me/test",  # telegram
+            "https://discord.gg/test",  # discord
+            "https://github.com/test",  # github
+            "DeFi",  # category
+            "https://whitepaper.com",  # whitepaper_url
+        )
+
+        # Verify the new token was created - tokens are now in vesting contract
+        dozer_tools_balance = self.runner.get_current_balance(
+            self.dozer_tools_nc_id, token_uid
+        )
+        self.assertEqual(
+            dozer_tools_balance.value, Amount(0)
+        )  # DozerTools has no tokens
+
+        # Get vesting contract and verify it has all tokens
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        vesting_contract_hex = contracts["vesting_contract"]
+        self.assertNotEqual(vesting_contract_hex, "")
+        vesting_contract_id = ContractId(VertexId(bytes.fromhex(vesting_contract_hex)))
+
+        vesting_balance = self.runner.get_current_balance(
+            vesting_contract_id, token_uid
+        )
+        self.assertEqual(vesting_balance.value, total_supply)
+
+        # Verify platform fee accounting captured the exact creation fee
+        platform_fees = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        # (2 HTR cents of protocol fees - token creation + vesting deposit - are
+        # paid out of the collected fee, keeping the contract solvent)
+        self.assertEqual(
+            platform_fees["htr_fees"], str(self.create_project_fee_htr - 2)
+        )
+        self._assert_solvent([token_uid])
+
+        # Verify HTR balance on DozerTools equals collected fee (owner-withdrawable later)
+        htr_balance = self.runner.get_current_balance(self.dozer_tools_nc_id, htr_uid)
+        self.assertEqual(htr_balance.value, self.create_project_fee_htr - 2)
+
+        # Verify project was created
+        project_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_info", token_uid
+        )
+
+        self.assertEqual(project_info["name"], token_name)
+        self.assertEqual(project_info["symbol"], token_symbol)
+        self.assertEqual(project_info["dev"], self.dev_address.hex())
+        self.assertEqual(project_info["description"], "A test token project")
+        self.assertEqual(project_info["website"], "https://test.com")
+        self.assertEqual(project_info["category"], "DeFi")
+
+        # Verify project appears in all projects
+        all_projects = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_all_projects"
+        )
+        self.assertIn(token_uid.hex(), all_projects)
+        self.assertEqual(all_projects[token_uid.hex()], token_name)
+
+    def test_create_project_with_minimal_metadata(self) -> None:
+        """Test creating a project with only required fields."""
+        # Project parameters
+        token_name = "MinimalToken"
+        token_symbol = "MIN"
+        total_supply = Amount(5000000)
+
+        # Create project with empty optional fields
+        tx = self._get_any_tx()
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        required_htr = self.create_project_fee_htr
+        context = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=required_htr)],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        token_uid = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context,
+            token_name,
+            token_symbol,
+            total_supply,
+            "",  # description - empty
+            "",  # website - empty
+            "",  # logo_url - empty
+            "",  # twitter - empty
+            "",  # telegram - empty
+            "",  # discord - empty
+            "",  # github - empty
+            "",  # category - empty
+            "",  # whitepaper_url - empty
+        )
+
+        # Verify project was created with empty optional fields
+        project_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_info", token_uid
+        )
+
+        self.assertEqual(project_info["name"], token_name)
+        self.assertEqual(project_info["symbol"], token_symbol)
+        self.assertEqual(project_info["description"], "")
+        self.assertEqual(project_info["website"], "")
+        self.assertEqual(project_info["category"], "")
+
+    def test_create_project_accepts_dzr_fee(self) -> None:
+        """create_project should accept configured exact DZR fee."""
+        token_name = "DZRToken"
+        token_symbol = "DZRX"
+        total_supply = Amount(2_000_000)
+
+        context = self.create_context(
+            actions=[
+                NCDepositAction(
+                    token_uid=self.dzr_token_uid, amount=self.create_project_fee_dzr
+                )
+            ],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        token_uid = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context,
+            token_name,
+            token_symbol,
+            total_supply,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        )
+
+        project_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_info", token_uid
+        )
+        self.assertEqual(project_info["creation_mode"], "fee_based")
+        self.assertEqual(project_info["creation_fee_token"], self.dzr_token_uid.hex())
+        self.assertEqual(
+            project_info["creation_fee_amount"], str(self.create_project_fee_dzr)
+        )
+
+    def test_create_project_rejects_wrong_fee_amount(self) -> None:
+        token_name = "WrongFee"
+        token_symbol = "WFE"
+        total_supply = Amount(1_000_000)
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+
+        context = self.create_context(
+            actions=[
+                NCDepositAction(
+                    token_uid=htr_uid, amount=Amount(self.create_project_fee_htr - 1)
+                )
+            ],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(InsufficientCredits):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "create_project",
+                context,
+                token_name,
+                token_symbol,
+                total_supply,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            )
+
+    def test_cancel_project_rejects_withdraw_actions(self) -> None:
+        token_uid = self._create_test_project("CancelNoRefund", "CNR")
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        context = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=htr_uid, amount=Amount(1_00))],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        from hathor.nanocontracts.exception import NCFail
+
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "cancel_project", context, token_uid
+            )
+
+    def test_create_project_multiple_users_htr_isolation(self) -> None:
+        """Test that users can't consume each other's HTR when creating projects."""
+        # User 1 creates a project
+        user1_token_name = "User1Token"
+        user1_token_symbol = "U1T"
+        user1_total_supply = Amount(100_000)
+        user1_required_htr = self.create_project_fee_htr
+
+        tx1 = self._get_any_tx()
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+
+        # User 1 deposits HTR and creates project
+        context1 = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=user1_required_htr)],
+            vertex=tx1,
+            caller_id=self.dev_address,  # User 1
+            timestamp=self.get_current_timestamp(),
+        )
+
+        user1_token_uid = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context1,
+            user1_token_name,
+            user1_token_symbol,
+            user1_total_supply,
+            "User 1 project",
+            "",  # website
+            "",  # logo_url
+            "",  # twitter
+            "",  # telegram
+            "",  # discord
+            "",  # github
+            "DeFi",  # category
+            "",  # whitepaper_url
+        )
+
+        # Verify User 1's token was created - tokens are in vesting contract
+        user1_dozer_balance = self.runner.get_current_balance(
+            self.dozer_tools_nc_id, user1_token_uid
+        )
+        self.assertEqual(
+            user1_dozer_balance.value, Amount(0)
+        )  # DozerTools has no tokens
+
+        # Get vesting contract and verify it has all tokens
+        user1_contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", user1_token_uid
+        )
+        user1_vesting_hex = user1_contracts["vesting_contract"]
+        self.assertNotEqual(user1_vesting_hex, "")
+        user1_vesting_id = ContractId(VertexId(bytes.fromhex(user1_vesting_hex)))
+
+        user1_vesting_balance = self.runner.get_current_balance(
+            user1_vesting_id, user1_token_uid
+        )
+        self.assertEqual(user1_vesting_balance.value, user1_total_supply)
+
+        # User 2 creates a project with different supply
+        user2_token_name = "User2Token"
+        user2_token_symbol = "U2T"
+        user2_total_supply = Amount(200_000)
+        user2_required_htr = self.create_project_fee_htr
+
+        tx2 = self._get_any_tx()
+
+        # User 2 deposits HTR and creates project
+        context2 = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=user2_required_htr)],
+            vertex=tx2,
+            caller_id=self.user_address,  # User 2 (different address)
+            timestamp=self.get_current_timestamp(),
+        )
+
+        user2_token_uid = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context2,
+            user2_token_name,
+            user2_token_symbol,
+            user2_total_supply,
+            "User 2 project",
+            "",  # website
+            "",  # logo_url
+            "",  # twitter
+            "",  # telegram
+            "",  # discord
+            "",  # github
+            "Gaming",  # category
+            "",  # whitepaper_url
+        )
+
+        # Verify User 2's token was created - tokens are in vesting contract
+        user2_dozer_balance = self.runner.get_current_balance(
+            self.dozer_tools_nc_id, user2_token_uid
+        )
+        self.assertEqual(
+            user2_dozer_balance.value, Amount(0)
+        )  # DozerTools has no tokens
+
+        # Get vesting contract and verify it has all tokens
+        user2_contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", user2_token_uid
+        )
+        user2_vesting_hex = user2_contracts["vesting_contract"]
+        self.assertNotEqual(user2_vesting_hex, "")
+        user2_vesting_id = ContractId(VertexId(bytes.fromhex(user2_vesting_hex)))
+
+        user2_vesting_balance = self.runner.get_current_balance(
+            user2_vesting_id, user2_token_uid
+        )
+        self.assertEqual(user2_vesting_balance.value, user2_total_supply)
+
+        # Verify both projects exist and have correct owners
+        user1_project_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_info", user1_token_uid
+        )
+        user2_project_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_info", user2_token_uid
+        )
+
+        self.assertEqual(user1_project_info["dev"], self.dev_address.hex())
+        self.assertEqual(user1_project_info["category"], "DeFi")
+        self.assertEqual(user2_project_info["dev"], self.user_address.hex())
+        self.assertEqual(user2_project_info["category"], "Gaming")
+
+        # Verify total projects count
+        contract_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_contract_info"
+        )
+        # Should be 2
+        self.assertEqual(contract_info["total_projects"], "2")
+
+        # Test that User 2 cannot create project without proper HTR deposit
+        tx3 = self._get_any_tx()
+        insufficient_context = self.create_context(
+            actions=[
+                NCDepositAction(token_uid=htr_uid, amount=Amount(2))
+            ],  # Insufficient HTR
+            vertex=tx3,
+            caller_id=self.user_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(InsufficientCredits):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "create_project",
+                insufficient_context,
+                "Fail",
+                "FAIL",
+                Amount(1000),
+                "Should fail",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            )
+
+    def test_deposit_credits(self) -> None:
+        """Test depositing HTR and DZR credits to project."""
+        # First create a project
+        token_uid = self._create_test_project(protocol_fee_credits=0)
+
+        # Deposit HTR credits
+        tx = self._get_any_tx()
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        htr_deposit_amount = Amount(5000000)  # 0.05 HTR
+
+        context = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=htr_deposit_amount)],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "deposit_credits", context, token_uid
+        )
+
+        # Verify credits were deposited
+        credits = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_credits", token_uid
+        )
+        self.assertEqual(credits["htr_balance"], str(htr_deposit_amount))
+        self.assertEqual(credits["dzr_balance"], "0")
+
+    def test_search_projects_by_category(self) -> None:
+        """Test searching projects by category."""
+        # Create projects with different categories
+        token_uid1 = self._create_test_project("DeFi Token", "DEFI", "DeFi")
+        token_uid2 = self._create_test_project("Game Token", "GAME", "Gaming")
+        token_uid3 = self._create_test_project("Another DeFi", "DEFI2", "DeFi")
+
+        # Search for DeFi projects
+        defi_projects = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "search_projects_by_category", "DeFi"
+        )
+
+        self.assertEqual(len(defi_projects), 2)
+        self.assertIn(token_uid1.hex(), defi_projects)
+        self.assertIn(token_uid3.hex(), defi_projects)
+        self.assertNotIn(token_uid2.hex(), defi_projects)
+
+        # Search for Gaming projects
+        gaming_projects = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "search_projects_by_category", "Gaming"
+        )
+
+        self.assertEqual(len(gaming_projects), 1)
+        self.assertIn(token_uid2.hex(), gaming_projects)
+
+    def test_get_projects_by_dev(self) -> None:
+        """Test getting projects by developer address."""
+        # Create projects with different developers
+        token_uid1 = self._create_test_project(
+            "Dev1 Token", "DEV1", "DeFi", self.dev_address
+        )
+        token_uid2 = self._create_test_project(
+            "User Token", "USER", "Gaming", self.user_address
+        )
+
+        # Get projects by dev_address
+        dev_projects = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_projects_by_dev", self.dev_address
+        )
+
+        self.assertEqual(len(dev_projects), 1)
+        self.assertIn(token_uid1.hex(), dev_projects)
+        self.assertNotIn(token_uid2.hex(), dev_projects)
+
+    def test_unauthorized_access(self) -> None:
+        """Test that only project dev can manage project."""
+        token_uid = self._create_test_project()
+
+        # Try to deposit credits from wrong address
+        tx = self._get_any_tx()
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+
+        context = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=1000000)],
+            vertex=tx,
+            caller_id=self.user_address,  # Wrong address
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "deposit_credits", context, token_uid
+            )
+
+    def test_blacklist_token(self) -> None:
+        """Test admin blacklist functionality."""
+        token_uid = self._create_test_project()
+
+        # Verify token is not blacklisted initially
+        is_blacklisted = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "is_token_blacklisted", token_uid
+        )
+        self.assertFalse(is_blacklisted)
+
+        # Blacklist token (as owner)
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "blacklist_token", context, token_uid
+        )
+
+        # Verify token is now blacklisted
+        is_blacklisted = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "is_token_blacklisted", token_uid
+        )
+        self.assertTrue(is_blacklisted)
+
+        # Verify blacklisted token doesn't appear in all_projects
+        all_projects = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_all_projects"
+        )
+        self.assertNotIn(token_uid.hex(), all_projects)
+
+    def test_method_fees(self) -> None:
+        """Test method fee management."""
+        # Set fees for a method (as owner)
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        method_name = "create_liquidity_pool"
+        htr_fee = Amount(10_00)  # 10 HTR
+        dzr_fee = Amount(5_00)  # 5 DZR
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_method_fees",
+            context,
+            method_name,
+            htr_fee,
+            dzr_fee,
+        )
+
+        # Verify fees were set
+        fees = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_method_fees", method_name
+        )
+        self.assertEqual(fees["method_name"], method_name)
+        self.assertEqual(fees["htr_fee"], str(htr_fee))
+        self.assertEqual(fees["dzr_fee"], str(dzr_fee))
+
+    def test_charged_htr_fees_become_platform_withdrawable(self) -> None:
+        """Charged project credits accrue to exact owner-withdrawable fees."""
+        token_uid = self._create_test_project("FeeToken", "FEE", protocol_fee_credits=0)
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        tx = self._get_any_tx()
+
+        owner_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_method_fees",
+            owner_ctx,
+            "update_project_metadata",
+            Amount(10_00),
+            Amount(0),
+        )
+
+        deposit_ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=Amount(50_00))],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "deposit_credits", deposit_ctx, token_uid
+        )
+
+        update_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_project_metadata",
+            update_ctx,
+            token_uid,
+            "Updated",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        )
+
+        credits = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_credits", token_uid
+        )
+        fees = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        self.assertEqual(credits["htr_balance"], str(Amount(40_00)))
+        # create fee (10_00) + charged method fee (10_00) minus 2 cents of protocol fees
+        self.assertEqual(fees["htr_fees"], str(Amount(20_00 - 2)))
+        self._assert_solvent([token_uid])
+
+        withdraw_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=htr_uid, amount=Amount(20_00 - 2))],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "withdraw_platform_htr_fees", withdraw_ctx
+        )
+        fees_after = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        self.assertEqual(fees_after["htr_fees"], "0")
+
+    def test_create_liquidity_pool_requires_exact_user_htr_deposit(self) -> None:
+        """DozerTools must not use held HTR when creating a pool."""
+        token_uid = self._create_test_project("PoolToken", "POOLX")
+        tx = self._get_any_tx()
+        configure_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            configure_ctx,
+            token_uid,
+            0,
+            0,
+            10,
+            0,
+            ["Team"],
+            [90],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        pool_ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=Amount(99_00))],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+        with self.assertRaises(InvalidAllocation):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "create_liquidity_pool",
+                pool_ctx,
+                token_uid,
+                Amount(100_00),
+                Amount(3),
+            )
+
+    def test_project_not_found_error(self) -> None:
+        """Test ProjectNotFound error for non-existent projects."""
+        fake_token_uid = TokenUid(VertexId(b"\x99" * 32))
+
+        with self.assertRaises(ProjectNotFound):
+            self.runner.call_view_method(
+                self.dozer_tools_nc_id, "get_project_info", fake_token_uid
+            )
+
+    def test_change_owner(self) -> None:
+        """Test changing contract ownership."""
+        # Change owner
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "change_owner", context, self.user_address
+        )
+
+        # Verify owner changed
+        contract_info = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_contract_info"
+        )
+        self.assertEqual(contract_info["owner"], self.user_address.hex())
+
+    def _create_test_project(
+        self,
+        name: str = "TestToken",
+        symbol: str = "TEST",
+        category: str = "DeFi",
+        dev_address: Optional[Address] = None,
+        protocol_fee_credits: int = 100,
+    ) -> TokenUid:
+        """Helper method to create a test project (with HTR credits for protocol fees)."""
+        if dev_address is None:
+            dev_address = self.dev_address
+
+        tx = self._get_any_tx()
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        total_supply = Amount(10000000)
+        required_htr = self.create_project_fee_htr
+
+        context = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=required_htr)],
+            vertex=tx,
+            caller_id=dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        token_uid = self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_project",
+            context,
+            name,
+            symbol,
+            total_supply,  # only total_supply now
+            f"Description for {name}",  # description
+            f"https://{symbol.lower()}.com",  # website
+            "",  # logo_url - empty
+            "",  # twitter - empty
+            "",  # telegram - empty
+            "",  # discord - empty
+            "",  # github - empty
+            category,  # category
+            "",  # whitepaper_url - empty
+        )
+        if protocol_fee_credits > 0:
+            # Owner operations pay protocol fees from project credits
+            self._deposit_credits(token_uid, htr_uid, protocol_fee_credits, caller=dev_address)
+        return token_uid
+
+    def test_configure_project_vesting(self) -> None:
+        """Test configuring project vesting with special allocations."""
+        # Create a test project
+        token_uid = self._create_test_project("VestingToken", "VEST")
+
+        # Configure vesting with special allocations
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Configure vesting: 20% staking, 10% public sale, 5% dozer pool, 65% regular vesting
+        allocation_names = ["Team", "Advisors"]
+        allocation_percentages = [40, 25]  # 40% team, 25% advisors
+        allocation_beneficiaries = [self.dev_address, self.user_address]
+        allocation_cliff_months = [12, 6]  # 12 months cliff for team, 6 for advisors
+        allocation_vesting_months = [
+            36,
+            24,
+        ]  # 36 months vesting for team, 24 for advisors
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20,  # staking_percentage
+            10,  # public_sale_percentage
+            5,  # dozer_pool_percentage
+            500,  # earnings_per_day
+            allocation_names,
+            allocation_percentages,
+            allocation_beneficiaries,
+            allocation_cliff_months,
+            allocation_vesting_months,
+        )
+
+        # Verify vesting was configured and staking contract auto-created
+        vesting_overview = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_vesting_overview", token_uid
+        )
+
+        self.assertEqual(vesting_overview["vesting_configured"], "true")
+        self.assertEqual(vesting_overview["staking_status"], "active")  # Auto-created
+        self.assertEqual(vesting_overview["staking_percentage"], "20")
+        self.assertIn(
+            "staking_contract", vesting_overview
+        )  # Contract ID should be present
+        self.assertEqual(
+            vesting_overview["public_sale_status"], "allocated_not_deployed"
+        )
+        self.assertEqual(vesting_overview["public_sale_percentage"], "10")
+        self.assertEqual(
+            vesting_overview["dozer_pool_status"], "allocated_not_deployed"
+        )
+        self.assertEqual(vesting_overview["dozer_pool_percentage"], "5")
+
+        # Verify token distribution
+        distribution = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_token_distribution", token_uid
+        )
+
+        self.assertEqual(distribution["staking_allocation_percentage"], "20")
+        self.assertEqual(distribution["public_sale_allocation_percentage"], "10")
+        self.assertEqual(distribution["dozer_pool_allocation_percentage"], "5")
+        self.assertEqual(distribution["regular_vesting_percentage"], "65")
+        self.assertEqual(distribution["staking_deployed"], "true")  # Auto-created
+        self.assertEqual(distribution["crowdsale_deployed"], "false")
+        self.assertEqual(distribution["pool_deployed"], "false")
+        self.assertIn("staking_contract", distribution)  # Contract ID should be present
+
+    def test_create_staking_with_vesting_integration(self) -> None:
+        """Test creating staking contract that withdraws from vesting."""
+        # Create project and configure vesting
+        token_uid = self._create_test_project("StakingToken", "STAKE")
+
+        # Configure vesting with staking allocation
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            30,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            1000,  # earnings_per_day
+            ["Team"],  # allocation_names
+            [70],  # allocation_percentages (70% for team)
+            [self.dev_address],  # allocation_beneficiaries
+            [12],  # allocation_cliff_months
+            [36],  # allocation_vesting_months
+        )
+
+        # Verify staking contract was automatically created during vesting configuration
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+
+        self.assertNotEqual(contracts["staking_contract"], "")
+
+        # Verify updated vesting overview shows staking as active
+        vesting_overview = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_vesting_overview", token_uid
+        )
+
+        self.assertEqual(vesting_overview["staking_status"], "active")
+        self.assertEqual(
+            vesting_overview["staking_contract"], contracts["staking_contract"]
+        )
+
+        # Test direct user staking to the created staking contract
+        # Convert hex string back to ContractId
+        from hathor.nanocontracts.types import ContractId, VertexId
+
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # Create a new user for staking
+        user_address, _ = self._get_any_address()
+        stake_amount = 1000_00  # 1000 tokens
+
+        # User stakes tokens directly to the staking contract
+        initial_time = self.get_current_timestamp()
+        stake_context = self.create_context(
+            actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=initial_time,
+        )
+
+        self.runner.call_public_method(staking_contract_id, "stake", stake_context)
+
+        # Verify user staked successfully
+        user_info = self.runner.call_view_method(
+            staking_contract_id, "get_user_info", Address(user_address)
+        )
+        self.assertEqual(user_info.deposits, stake_amount)
+
+        # Advance time by 1 day and calculate expected rewards
+        one_day_later = initial_time + (24 * 60 * 60)  # 1 day in seconds
+        earnings_per_day = 1000  # From the configure_project_vesting call above
+
+        # Calculate expected rewards (using same formula as in stake.py)
+        # earnings_per_second = (earnings_per_day * PRECISION) // DAY_IN_SECONDS
+        # reward = (earnings_per_second * time_passed * stake_amount) // (PRECISION * stake_amount)
+        PRECISION = 10**20
+        DAY_IN_SECONDS = 24 * 60 * 60
+        earnings_per_second = (earnings_per_day * PRECISION) // DAY_IN_SECONDS
+        expected_reward = (earnings_per_second * DAY_IN_SECONDS * stake_amount) // (
+            PRECISION * stake_amount
+        )
+
+        # Check max withdrawal includes stake + rewards
+        max_withdrawal = self.runner.call_view_method(
+            staking_contract_id,
+            "get_max_withdrawal",
+            Address(user_address),
+            one_day_later,
+        )
+
+        expected_total = stake_amount + expected_reward
+        self.assertEqual(max_withdrawal, expected_total)
+
+        # Advance time by 2 days and verify rewards doubled
+        two_days_later = initial_time + (2 * 24 * 60 * 60)  # 2 days
+        expected_two_day_reward = (
+            earnings_per_second * 2 * DAY_IN_SECONDS * stake_amount
+        ) // (PRECISION * stake_amount)
+
+        max_withdrawal_two_days = self.runner.call_view_method(
+            staking_contract_id,
+            "get_max_withdrawal",
+            Address(user_address),
+            two_days_later,
+        )
+
+        expected_total_two_days = stake_amount + expected_two_day_reward
+        self.assertEqual(max_withdrawal_two_days, expected_total_two_days)
+
+        # Test beneficiary checking vesting contract directly for withdrawable tokens
+        vesting_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["vesting_contract"]))
+        )
+
+        # Team allocation should be at index 3 (after special allocations 0, 1, 2)
+        team_allocation_index = 3
+
+        # Advance time past the cliff period (12 months cliff for team allocation)
+        cliff_months = 12
+        vesting_months = 36
+        month_in_seconds = 30 * 24 * 3600  # 30 days in seconds
+
+        # Check vesting info right after cliff period
+        after_cliff_time = initial_time + (cliff_months * month_in_seconds)
+
+        vesting_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            team_allocation_index,
+            after_cliff_time,
+        )
+
+        # At cliff end, no tokens should be vested yet (cliff period just ended)
+        self.assertEqual(vesting_info.vested, 0)
+        self.assertEqual(vesting_info.claimable, 0)
+        self.assertEqual(vesting_info.beneficiary, self.dev_address.hex())
+        self.assertEqual(vesting_info.name, "Team")
+
+        # Check vesting info 1 month after cliff (should have some vested tokens)
+        one_month_after_cliff = after_cliff_time + month_in_seconds
+
+        vesting_info_after = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            team_allocation_index,
+            one_month_after_cliff,
+        )
+
+        # Calculate expected vested amount (1 month out of 36 months vesting)
+        total_team_allocation = vesting_info_after.amount  # 70% of total supply
+        expected_monthly_vesting = total_team_allocation // vesting_months
+
+        self.assertEqual(vesting_info_after.vested, expected_monthly_vesting)
+        self.assertEqual(vesting_info_after.claimable, expected_monthly_vesting)
+        self.assertEqual(vesting_info_after.withdrawn, 0)
+
+        # Check vesting info 6 months after cliff
+        six_months_after_cliff = after_cliff_time + (6 * month_in_seconds)
+
+        vesting_info_six_months = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            team_allocation_index,
+            six_months_after_cliff,
+        )
+
+        expected_six_months_vesting = (total_team_allocation * 6) // vesting_months
+
+        self.assertEqual(vesting_info_six_months.vested, expected_six_months_vesting)
+        self.assertEqual(vesting_info_six_months.claimable, expected_six_months_vesting)
+
+    def test_invalid_allocation_percentages(self) -> None:
+        """Test validation of allocation percentages."""
+        token_uid = self._create_test_project("InvalidToken", "INV")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Try to configure vesting with total > 100%
+        with self.assertRaises(InvalidAllocation):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "configure_project_vesting",
+                context,
+                token_uid,
+                50,  # staking_percentage
+                30,  # public_sale_percentage
+                20,  # dozer_pool_percentage
+                1000,  # earnings_per_day
+                ["Team"],
+                [10],  # This makes total 110%
+                [self.dev_address],
+                [12],
+                [36],
+            )
+
+    def test_staking_stake_routing(self) -> None:
+        """Test staking through DozerTools.staking_stake() routing method."""
+        # Create project and configure vesting with staking allocation
+        token_uid = self._create_test_project("RoutingToken", "ROUTE")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Configure vesting with 30% staking allocation
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            30,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            500,  # earnings_per_day
+            ["Team"],  # allocation_names
+            [70],  # allocation_percentages (70% for team)
+            [self.dev_address],  # allocation_beneficiaries
+            [12],  # allocation_cliff_months
+            [36],  # allocation_vesting_months
+        )
+
+        # Get staking contract that was auto-created
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # User stakes tokens through DozerTools routing
+        user_address, _ = self._get_any_address()
+        stake_amount = 1000_00  # 1000 tokens
+
+        stake_context = self.create_context(
+            actions=[PROTOCOL_FEE, NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Stake through DozerTools routing method
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "staking_stake", stake_context, token_uid
+        )
+
+        # Verify user staked successfully by checking staking contract directly
+        user_info = self.runner.call_view_method(
+            staking_contract_id, "get_user_info", Address(user_address)
+        )
+        self.assertEqual(user_info.deposits, stake_amount)
+
+    def test_staking_unstake_routing_with_view_methods(self) -> None:
+        """Test complete staking workflow through DozerTools with view methods."""
+        # Create project and configure staking
+        token_uid = self._create_test_project("UnstakeToken", "UNST")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        earnings_per_day = 1000
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            25,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            earnings_per_day,
+            ["Team"],
+            [75],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Get staking contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # User stakes through DozerTools
+        user_address, _ = self._get_any_address()
+        stake_amount = 5000_00
+        initial_time = self.get_current_timestamp()
+
+        stake_context = self.create_context(
+            actions=[PROTOCOL_FEE, NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=initial_time,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "staking_stake", stake_context, token_uid
+        )
+
+        # Advance time by 31 days (past timelock)
+        time_after_timelock = initial_time + (31 * 24 * 60 * 60)
+
+        # Use view method to get max withdrawal
+        max_withdrawal = self.runner.call_view_method(
+            staking_contract_id,
+            "get_max_withdrawal",
+            Address(user_address),
+            time_after_timelock,
+        )
+
+        # Verify max_withdrawal includes stake + rewards
+        self.assertGreater(max_withdrawal, stake_amount)
+
+        # Unstake through DozerTools routing using exact amount from view method
+        unstake_context = self.create_context(
+            actions=[
+                PROTOCOL_FEE,
+                NCWithdrawalAction(token_uid=token_uid, amount=Amount(max_withdrawal))
+            ],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=time_after_timelock,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "staking_unstake", unstake_context, token_uid
+        )
+
+        # Verify user has withdrawn everything
+        user_info = self.runner.call_view_method(
+            staking_contract_id, "get_user_info", Address(user_address)
+        )
+        self.assertEqual(user_info.deposits, 0)
+
+    def test_routed_methods_authorization(self) -> None:
+        """Test that only DozerTools can call routed_stake/routed_unstake."""
+        # Create project and configure staking
+        token_uid = self._create_test_project("AuthToken", "AUTH")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            500,
+            ["Team"],
+            [80],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Get staking contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # Try to call routed_stake directly (should fail - only DozerTools can call it)
+        user_address, _ = self._get_any_address()
+
+        direct_stake_context = self.create_context(
+            actions=[NCDepositAction(token_uid=token_uid, amount=Amount(1000_00))],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Direct call to routed_stake should fail
+        from hathor.nanocontracts.exception import NCFail
+
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                staking_contract_id,
+                "routed_stake",
+                direct_stake_context,
+                Address(user_address),
+            )
+
+    def test_end_to_end_dozer_tools_staking_workflow(self) -> None:
+        """Test complete end-to-end staking workflow with multiple operations."""
+        # Create project
+        token_uid = self._create_test_project("E2EToken", "E2E")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        earnings_per_day = 2000
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            40,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            earnings_per_day,
+            ["Team"],
+            [60],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Get staking contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # Multiple users stake through DozerTools
+        users = []
+        stake_amounts = [2000_00, 3000_00, 1500_00]
+        initial_time = self.get_current_timestamp()
+
+        for i, stake_amount in enumerate(stake_amounts):
+            user_addr, _ = self._get_any_address()
+            users.append(user_addr)
+
+            stake_ctx = self.create_context(
+                actions=[
+                    PROTOCOL_FEE,
+                    NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))
+                ],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=initial_time,
+            )
+
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "staking_stake", stake_ctx, token_uid
+            )
+
+        # Advance time by 35 days
+        time_after = initial_time + (35 * 24 * 60 * 60)
+
+        # Each user checks their max withdrawal and unstakes
+        for i, user_addr in enumerate(users):
+            # Get user info
+            user_info = self.runner.call_view_method(
+                staking_contract_id, "get_user_info", Address(user_addr)
+            )
+            self.assertEqual(user_info.deposits, stake_amounts[i])
+
+            # Get max withdrawal
+            max_withdrawal = self.runner.call_view_method(
+                staking_contract_id,
+                "get_max_withdrawal",
+                Address(user_addr),
+                time_after,
+            )
+
+            # Should have rewards accumulated
+            self.assertGreater(max_withdrawal, stake_amounts[i])
+
+            # Unstake half through DozerTools
+            half_withdrawal = max_withdrawal // 2
+            unstake_ctx = self.create_context(
+                actions=[
+                    PROTOCOL_FEE,
+                    NCWithdrawalAction(
+                        token_uid=token_uid, amount=Amount(half_withdrawal)
+                    )
+                ],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=time_after,
+            )
+
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "staking_unstake", unstake_ctx, token_uid
+            )
+
+            # Verify partial unstake
+            user_info_after = self.runner.call_view_method(
+                staking_contract_id, "get_user_info", Address(user_addr)
+            )
+            self.assertLess(user_info_after.deposits, stake_amounts[i])
+            self.assertGreater(user_info_after.deposits, 0)
+
+    def test_staking_routing_with_nonexistent_contract(self) -> None:
+        """Test routing methods fail gracefully when staking contract doesn't exist."""
+        # Create project but don't configure vesting (no staking contract)
+        token_uid = self._create_test_project("NoStakeToken", "NOST")
+
+        user_address, _ = self._get_any_address()
+
+        # Try to stake through routing (should fail - no staking contract)
+        stake_context = self.create_context(
+            actions=[PROTOCOL_FEE, NCDepositAction(token_uid=token_uid, amount=Amount(1000_00))],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=self.get_current_timestamp(),
+        )
+
+        with self.assertRaises(ProjectNotFound):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "staking_stake", stake_context, token_uid
+            )
+
+    def test_staking_view_methods_consistency_through_routing(self) -> None:
+        """Test that view methods return consistent values when using DozerTools routing."""
+        # Create project with staking
+        token_uid = self._create_test_project("ViewToken", "VIEW")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        earnings_per_day = 1500
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            35,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            earnings_per_day,
+            ["Team"],
+            [65],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Get staking contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+
+        # User stakes through DozerTools
+        user_address, _ = self._get_any_address()
+        stake_amount = 10000_00
+        initial_time = self.get_current_timestamp()
+
+        stake_context = self.create_context(
+            actions=[PROTOCOL_FEE, NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_address),
+            timestamp=initial_time,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "staking_stake", stake_context, token_uid
+        )
+
+        # Check view methods at multiple time points
+        time_points = [
+            initial_time + (1 * 24 * 60 * 60),  # 1 day
+            initial_time + (7 * 24 * 60 * 60),  # 7 days
+            initial_time + (30 * 24 * 60 * 60),  # 30 days (at timelock)
+            initial_time + (31 * 24 * 60 * 60),  # 31 days (past timelock)
+            initial_time + (60 * 24 * 60 * 60),  # 60 days
+        ]
+
+        for time_point in time_points:
+            # Get max withdrawal
+            max_withdrawal = self.runner.call_view_method(
+                staking_contract_id,
+                "get_max_withdrawal",
+                Address(user_address),
+                time_point,
+            )
+
+            # Get user info
+            user_info = self.runner.call_view_method(
+                staking_contract_id, "get_user_info", Address(user_address)
+            )
+
+            # Get staking stats
+            stats = self.runner.call_view_method(
+                staking_contract_id, "get_staking_stats"
+            )
+
+            # Verify consistency
+            self.assertEqual(user_info.deposits, stake_amount)
+            self.assertGreaterEqual(
+                max_withdrawal, stake_amount
+            )  # Always at least the deposit
+
+            # Verify stats reflect this user's stake
+            self.assertEqual(stats.total_staked, stake_amount)
+
+    def test_crowdsale_successful_lifecycle(self) -> None:
+        """Test complete successful crowdsale lifecycle through DozerTools routing."""
+        # Create project and configure vesting with public sale allocation
+        token_uid = self._create_test_project("CrowdsaleToken", "CROWD")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Configure vesting with 15% public sale allocation
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20,  # staking_percentage
+            15,  # public_sale_percentage
+            5,  # dozer_pool_percentage
+            1000,  # earnings_per_day
+            ["Team"],
+            [60],  # 60% for team
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Create crowdsale contract
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        initial_time = self.get_current_timestamp()
+
+        create_crowdsale_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        rate = 100  # 100 tokens per HTR
+        soft_cap = 90_00  # 90 HTR
+        hard_cap = 100_00  # 100 HTR
+        min_deposit = 10_00  # 10 HTR
+        start_time = initial_time + 100
+        end_time = start_time + 86400  # 24 hours
+
+        # Configure default fees in DozerTools (optional, defaults to 0)
+        platform_fee = 500  # 5% - store for later calculations
+        participation_fee = 200  # 2% - store for later calculations
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            platform_fee,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_participation_fee",
+            fee_config_ctx,
+            participation_fee,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            create_crowdsale_ctx,
+            token_uid,
+            rate,
+            soft_cap,
+            hard_cap,
+            min_deposit,
+            start_time,
+            end_time,
+        )
+
+        # Get crowdsale contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+
+        # Verify crowdsale info
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.rate, rate)
+        self.assertEqual(sale_info.soft_cap, soft_cap)
+        self.assertEqual(sale_info.hard_cap, hard_cap)
+        self.assertEqual(sale_info.state, 0)  # PENDING
+
+        # Activate the sale (use routed method through dozer_tools)
+        activate_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time - 1,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_early_activate", activate_ctx, token_uid
+        )
+
+        # Verify sale is now ACTIVE
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 1)  # ACTIVE
+
+        # Multiple users participate through DozerTools routing
+        participants = []
+        deposit_amounts = [
+            50_00,
+            30_00,
+            15_00,
+        ]  # Total: 95 HTR (exceeds soft cap of 90 HTR)
+
+        for deposit_amount in deposit_amounts:
+            user_addr, _ = self._get_any_address()
+            participants.append((user_addr, deposit_amount))
+
+            participate_ctx = self.create_context(
+                actions=[NCDepositAction(token_uid=htr_uid, amount=deposit_amount)],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=start_time + 100,
+            )
+
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "crowdsale_participate",
+                participate_ctx,
+                token_uid,
+            )
+
+        # Verify sale reached SOFT_CAP_REACHED state (soft cap exceeded)
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 3)  # SOFT_CAP_REACHED
+        # total_raised is NET amount after participation fee (2%)
+        participation_fee = 200
+        expected_net_total = sum(
+            amount - ((amount * participation_fee + 9999) // 10000)
+            for amount in deposit_amounts
+        )
+        self.assertEqual(sale_info.total_raised, expected_net_total)
+        self.assertEqual(sale_info.participants, len(participants))
+
+        # Finalize the sale to transition to COMPLETED_SUCCESS
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=end_time + 50,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_finalize", finalize_ctx, token_uid
+        )
+
+        # Verify sale is now COMPLETED_SUCCESS
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 5)  # COMPLETED_SUCCESS
+
+        # Check sale progress - now should be successful
+        progress = self.runner.call_view_method(
+            crowdsale_contract_id, "get_sale_progress"
+        )
+        self.assertTrue(progress.is_successful)
+
+        # Each participant claims tokens through DozerTools routing
+        for user_addr, gross_deposit in participants:
+            # Calculate NET amount (what user actually contributed after fees)
+            net_deposit = gross_deposit - (
+                (gross_deposit * participation_fee + 9999) // 10000
+            )
+
+            # Check participant info before claiming
+            participant_info = self.runner.call_view_method(
+                crowdsale_contract_id,
+                "get_participant_info",
+                Address(user_addr),
+            )
+            # deposited and tokens_due are based on NET amount
+            self.assertEqual(participant_info.deposited, net_deposit)
+            self.assertEqual(participant_info.tokens_due, net_deposit * rate)
+            self.assertFalse(participant_info.has_claimed)
+
+            # Claim tokens (based on NET deposit)
+            tokens_due = net_deposit * rate
+            claim_ctx = self.create_context(
+                actions=[PROTOCOL_FEE, NCWithdrawalAction(token_uid=token_uid, amount=tokens_due)],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=end_time + 100,
+            )
+
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "crowdsale_claim_tokens",
+                claim_ctx,
+                token_uid,
+            )
+
+            # Verify claim status
+            participant_info_after = self.runner.call_view_method(
+                crowdsale_contract_id,
+                "get_participant_info",
+                Address(user_addr),
+            )
+            self.assertTrue(participant_info_after.has_claimed)
+            self.assertEqual(participant_info_after.tokens_due, 0)
+            self._assert_solvent([token_uid])
+
+        # Owner withdraws raised HTR (use routed method through dozer_tools)
+        # total_raised in contract is NET amount (after participation fees)
+        total_raised_net = expected_net_total
+        platform_fee_amount = (total_raised_net * platform_fee + 9999) // 10000
+        withdrawable_htr = total_raised_net - platform_fee_amount
+
+        owner_withdraw_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=htr_uid, amount=withdrawable_htr)],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=end_time + 200,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_withdraw_raised_htr",
+            owner_withdraw_ctx,
+            token_uid,
+        )
+
+        # Verify withdrawal info
+        withdrawal_info = self.runner.call_view_method(
+            crowdsale_contract_id, "get_withdrawal_info"
+        )
+        self.assertEqual(withdrawal_info.total_raised, total_raised_net)
+        self.assertEqual(withdrawal_info.platform_fees, platform_fee_amount)
+        self.assertTrue(withdrawal_info.is_withdrawn)
+
+    def test_crowdsale_failed_sale_with_refunds(self) -> None:
+        """Test failed crowdsale with refund claims through DozerTools."""
+        # Create project and configure vesting
+        token_uid = self._create_test_project("FailedSaleToken", "FAIL")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20,  # staking_percentage (keep staking like successful test)
+            20,  # public_sale_percentage
+            5,  # dozer_pool_percentage
+            1000,  # earnings_per_day
+            ["Team"],
+            [55],  # 55% for team (20% + 20% + 5% = 45%, so 55% remaining)
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Create crowdsale
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        initial_time = self.get_current_timestamp()
+
+        create_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        # Available tokens: 10,000,000 * 20% = 2,000,000 tokens
+        # hard_cap * rate must be <= 2,000,000
+        rate = 100  # 100 tokens per HTR
+        soft_cap = 150_00  # 150 HTR
+        hard_cap = 200_00  # 200 HTR (200 * 100 = 20,000 tokens = 2,000,000 units)
+        min_deposit = 50_00
+        start_time = initial_time + 100
+        end_time = start_time + 3600
+
+        # Configure fees
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            300,  # 3%
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_participation_fee",
+            fee_config_ctx,
+            150,  # 1.5%
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            create_ctx,
+            token_uid,
+            rate,
+            soft_cap,
+            hard_cap,
+            min_deposit,
+            start_time,
+            end_time,
+        )
+
+        # Get crowdsale contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+
+        # Activate sale (use routed method through dozer_tools)
+        activate_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time - 1,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_early_activate", activate_ctx, token_uid
+        )
+
+        # Users participate but don't reach soft cap
+        # Need to deposit enough so NET amount >= min_deposit (50_00)
+        # With 1.5% fee: gross = min_deposit / (1 - 0.015) = 50_00 / 0.985 = ~50_76
+        # Using integer math: gross = (net * 10000) // (10000 - participation_fee)
+        participation_fee = 150
+        gross_min = -(-min_deposit * 10000 // (10000 - participation_fee))
+        participants = []
+        deposit_amounts = [gross_min, gross_min]  # Total will still be below soft cap
+
+        for deposit_amount in deposit_amounts:
+            user_addr, _ = self._get_any_address()
+            participants.append((user_addr, deposit_amount))
+
+            participate_ctx = self.create_context(
+                actions=[NCDepositAction(token_uid=htr_uid, amount=deposit_amount)],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=start_time + 100,
+            )
+
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "crowdsale_participate",
+                participate_ctx,
+                token_uid,
+            )
+
+        # Verify sale is still ACTIVE (not reached soft cap)
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 1)  # ACTIVE
+        # total_raised is NET amount after participation fee
+        expected_net_total = sum(
+            amount - ((amount * participation_fee + 9999) // 10000)
+            for amount in deposit_amounts
+        )
+        self.assertEqual(sale_info.total_raised, expected_net_total)
+        self.assertLess(sale_info.total_raised, soft_cap)
+
+        # Owner finalizes sale (failed) - use routed method through dozer_tools
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=end_time + 100,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_finalize", finalize_ctx, token_uid
+        )
+
+        # Verify sale is FAILED
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 4)  # FAILED
+
+        # Participants claim refunds through DozerTools
+        for user_addr, gross_deposit in participants:
+            net_deposit = gross_deposit - (
+                (gross_deposit * participation_fee + 9999) // 10000
+            )
+
+            # Check participant info before refund
+            participant_info = self.runner.call_view_method(
+                crowdsale_contract_id,
+                "get_participant_info",
+                Address(user_addr),
+            )
+            # deposited stores NET amount
+            self.assertEqual(participant_info.deposited, net_deposit)
+            self.assertFalse(participant_info.has_claimed)
+
+            # Claim refund - failed sales refund gross deposits, including fees
+            refund_ctx = self.create_context(
+                actions=[NCWithdrawalAction(token_uid=htr_uid, amount=gross_deposit)],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=end_time + 200,
+            )
+
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "crowdsale_claim_refund",
+                refund_ctx,
+                token_uid,
+            )
+
+            # Verify refund claimed
+            participant_info_after = self.runner.call_view_method(
+                crowdsale_contract_id,
+                "get_participant_info",
+                Address(user_addr),
+            )
+            self.assertTrue(participant_info_after.has_claimed)
+            self.assertEqual(participant_info_after.deposited, 0)
+            self.assertEqual(participant_info_after.gross_deposited, 0)
+
+    def test_crowdsale_ended_sale_finalizes_on_first_claim(self) -> None:
+        """No finalize tx: the first refund claim closes the ended sale, and the dev
+        then recovers the whole token deposit from the failed sale."""
+        token_uid = self._create_test_project("AutoFinalToken", "AUTO")
+        tx = self._get_any_tx()
+        now = self.get_current_timestamp()
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=now),
+            token_uid, 20, 20, 5, 1000, ["Team"], [55], [self.dev_address], [12], [36],
+        )
+
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        min_deposit = 50_00
+        start_time = now + 100
+        end_time = start_time + 3600
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=now),
+            token_uid, 100, 150_00, 200_00, min_deposit, start_time, end_time,
+        )
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_early_activate",
+            self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=start_time - 1),
+            token_uid,
+        )
+
+        user_addr, _ = self._get_any_address()
+        gross = min_deposit * 2
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_participate",
+            self.create_context(
+                actions=[NCDepositAction(token_uid=htr_uid, amount=gross)],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=start_time + 100,
+            ),
+            token_uid,
+        )
+        self.assertEqual(
+            self.runner.call_view_method(crowdsale_contract_id, "get_sale_info").state, 1
+        )
+
+        # First claim after the end finalizes the sale as failed and refunds the gross deposit
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_claim_refund",
+            self.create_context(
+                actions=[NCWithdrawalAction(token_uid=htr_uid, amount=gross)],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=end_time + 1,
+            ),
+            token_uid,
+        )
+        self.assertEqual(
+            self.runner.call_view_method(crowdsale_contract_id, "get_sale_info").state, 4
+        )
+
+        # The dev recovers every token deposited into the failed sale
+        unsold = self.runner.call_view_method(crowdsale_contract_id, "get_unsold_token_info")
+        self.assertEqual(unsold["can_withdraw_unsold"], "true")
+        self.assertEqual(unsold["unsold_tokens"], unsold["initial_token_deposit"])
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_withdraw_remaining_tokens",
+            self.create_context(
+                actions=[
+                    NCWithdrawalAction(
+                        token_uid=token_uid, amount=int(unsold["initial_token_deposit"])
+                    )
+                ],
+                vertex=self._get_any_tx(),
+                caller_id=self.dev_address,
+                timestamp=end_time + 2,
+            ),
+            token_uid,
+        )
+        storage = self.runner.get_storage(crowdsale_contract_id)
+        self.assertEqual(storage.get_balance(token_uid).value, 0)
+        self.assertEqual(storage.get_balance(htr_uid).value, 0)
+
+    def test_crowdsale_pause_unpause_operations(self) -> None:
+        """Test crowdsale pause/unpause functionality."""
+        # Create project and crowdsale
+        token_uid = self._create_test_project("PauseToken", "PAUSE")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            15,
+            25,
+            5,
+            800,
+            ["Team"],
+            [55],
+            [self.dev_address],
+            [6],
+            [24],
+        )
+
+        # Create crowdsale
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        initial_time = self.get_current_timestamp()
+        start_time = initial_time + 100
+        end_time = start_time + 7200
+
+        create_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        # Available tokens: 10,000,000 * 25% = 2,500,000 tokens
+        # hard_cap * rate must be <= 2,500,000
+        # Configure fees before creating crowdsale
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            400,  # 4%
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            create_ctx,
+            token_uid,
+            100,  # rate
+            180_00,  # soft_cap (180 HTR)
+            250_00,  # hard_cap (250 HTR * 100 = 25,000 tokens = 2,500,000 units)
+            20_00,  # min_deposit
+            start_time,
+            end_time,
+        )
+
+        # Get crowdsale contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+
+        # Activate sale (use routed method through dozer_tools)
+        activate_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time - 1,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_early_activate", activate_ctx, token_uid
+        )
+
+        # Verify ACTIVE state
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 1)  # ACTIVE
+
+        # User participates (below soft cap to allow pause)
+        user_addr, _ = self._get_any_address()
+        participate_ctx = self.create_context(
+            actions=[
+                NCDepositAction(token_uid=htr_uid, amount=100_00)
+            ],  # Below soft_cap of 180
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_addr),
+            timestamp=start_time + 50,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_participate",
+            participate_ctx,
+            token_uid,
+        )
+
+        # Owner pauses the sale
+        pause_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time + 100,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_pause", pause_ctx, token_uid
+        )
+
+        # Verify PAUSED state
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 2)  # PAUSED
+
+        # Try to participate while paused (should fail)
+        from hathor.nanocontracts.exception import NCFail
+
+        user_addr2, _ = self._get_any_address()
+        participate_paused_ctx = self.create_context(
+            actions=[
+                NCDepositAction(token_uid=htr_uid, amount=150_00)
+            ],  # 100 + 150 = 250 (reaches hard_cap)
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_addr2),
+            timestamp=start_time + 150,
+        )
+
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "crowdsale_participate",
+                participate_paused_ctx,
+                token_uid,
+            )
+
+        # Owner unpauses the sale
+        unpause_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time + 200,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_unpause", unpause_ctx, token_uid
+        )
+
+        # Verify ACTIVE state again
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 1)  # ACTIVE
+
+        # Now participation should work again
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_participate",
+            participate_paused_ctx,
+            token_uid,
+        )
+
+        # Verify second user participated
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.total_raised, 250_00)  # Hard cap reached
+        self.assertEqual(sale_info.participants, 2)
+
+    def test_crowdsale_edge_cases(self) -> None:
+        """Test crowdsale edge cases: minimum deposit, hard cap limit, multiple deposits."""
+        # Create project and crowdsale
+        token_uid = self._create_test_project("EdgeToken", "EDGE")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            10,
+            30,
+            5,
+            1200,
+            ["Team"],
+            [55],
+            [self.dev_address],
+            [9],
+            [30],
+        )
+
+        # Create crowdsale with specific constraints
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        initial_time = self.get_current_timestamp()
+        start_time = initial_time + 100
+        end_time = start_time + 3600
+
+        create_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        # Available tokens: 10,000,000 * 30% = 3,000,000 tokens
+        # hard_cap * rate must be <= 3,000,000
+        min_deposit = 100_00  # 100 HTR minimum
+        soft_cap = 250_00  # 250 HTR
+        hard_cap = 300_00  # 300 HTR
+
+        # Configure fees before creating crowdsale
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            250,  # 2.5%
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            create_ctx,
+            token_uid,
+            100,  # rate (300 HTR * 100 = 30,000 tokens = 3,000,000 units)
+            soft_cap,
+            hard_cap,
+            min_deposit,
+            start_time,
+            end_time,
+        )
+
+        # Get crowdsale contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+
+        # Activate sale (use routed method through dozer_tools)
+        activate_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time - 1,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_early_activate", activate_ctx, token_uid
+        )
+
+        # Test 1: Try to participate with amount below minimum (should fail)
+        from hathor.nanocontracts.exception import NCFail
+
+        user_addr1, _ = self._get_any_address()
+        below_min_ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=50_00)],  # Below 100 HTR
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_addr1),
+            timestamp=start_time + 10,
+        )
+
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "crowdsale_participate",
+                below_min_ctx,
+                token_uid,
+            )
+
+        # Test 2: Same user makes multiple deposits
+        user_addr2, _ = self._get_any_address()
+        first_deposit = 100_00  # meets minimum deposit
+        second_deposit = 100_00  # total 200 HTR (soft cap reached)
+
+        first_deposit_ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=first_deposit)],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_addr2),
+            timestamp=start_time + 20,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_participate",
+            first_deposit_ctx,
+            token_uid,
+        )
+
+        # Verify first deposit
+        participant_info = self.runner.call_view_method(
+            crowdsale_contract_id,
+            "get_participant_info",
+            Address(user_addr2),
+        )
+        self.assertEqual(participant_info.deposited, first_deposit)
+
+        # Second deposit from same user
+        second_deposit_ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=second_deposit)],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_addr2),
+            timestamp=start_time + 30,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_participate",
+            second_deposit_ctx,
+            token_uid,
+        )
+
+        # Verify cumulative deposit
+        participant_info = self.runner.call_view_method(
+            crowdsale_contract_id,
+            "get_participant_info",
+            Address(user_addr2),
+        )
+        self.assertEqual(participant_info.deposited, first_deposit + second_deposit)
+
+        # Verify only counted as 1 participant
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.participants, 1)
+
+        # Test 3: Try to exceed hard cap (should fail)
+        user_addr3, _ = self._get_any_address()
+        remaining = hard_cap - (first_deposit + second_deposit)
+        exceed_hardcap_amount = remaining + 100_00  # Exceeds hard cap
+
+        exceed_ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=exceed_hardcap_amount)],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_addr3),
+            timestamp=start_time + 40,
+        )
+
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "crowdsale_participate",
+                exceed_ctx,
+                token_uid,
+            )
+
+        # Test 4: Deposit exactly to reach hard cap
+        exact_remaining_ctx = self.create_context(
+            actions=[NCDepositAction(token_uid=htr_uid, amount=remaining)],
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_addr3),
+            timestamp=start_time + 50,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_participate",
+            exact_remaining_ctx,
+            token_uid,
+        )
+
+        # Verify hard cap reached and sale is COMPLETED_SUCCESS (auto-finalized)
+        # Auto-finalization happens when hard_cap is reached (>= hard_cap)
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.total_raised, hard_cap)
+        self.assertEqual(sale_info.state, 5)  # COMPLETED_SUCCESS
+
+    def test_crowdsale_routed_admin_methods(self) -> None:
+        """Test all crowdsale admin methods through DozerTools routing."""
+        # Create project and crowdsale
+        token_uid = self._create_test_project("AdminToken", "ADMIN")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            10,
+            20,
+            5,
+            1000,
+            ["Team"],
+            [65],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Create crowdsale
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        initial_time = self.get_current_timestamp()
+        start_time = initial_time + 100
+        end_time = start_time + 7200
+
+        create_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        # Available tokens: 10,000,000 * 20% = 2,000,000 tokens
+        # hard_cap * rate must be <= 2,000,000
+        rate = 100
+        soft_cap = 150_00  # 150 HTR
+        hard_cap = 200_00  # 200 HTR * 100 = 20,000 tokens = 2,000,000 units
+        min_deposit = 25_00
+        platform_fee = 400
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            create_ctx,
+            token_uid,
+            rate,
+            soft_cap,
+            hard_cap,
+            min_deposit,
+            start_time,
+            end_time,
+        )
+
+        # Get crowdsale contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+
+        # Test routed_early_activate
+        activate_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time - 1,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_early_activate", activate_ctx, token_uid
+        )
+
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 1)  # ACTIVE
+
+        # User participates (below soft cap to allow pause)
+        user_addr, _ = self._get_any_address()
+        participate_ctx = self.create_context(
+            actions=[
+                NCDepositAction(token_uid=htr_uid, amount=100_00)
+            ],  # Below soft_cap of 150
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_addr),
+            timestamp=start_time + 50,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_participate",
+            participate_ctx,
+            token_uid,
+        )
+
+        # Test routed_pause
+        pause_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time + 100,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_pause", pause_ctx, token_uid
+        )
+
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 2)  # PAUSED
+
+        # Test routed_unpause
+        unpause_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time + 150,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_unpause", unpause_ctx, token_uid
+        )
+
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 1)  # ACTIVE
+
+        # Test routed_finalize (below soft cap, so will be FAILED)
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time + 200,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_finalize", finalize_ctx, token_uid
+        )
+
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 4)  # FAILED (soft cap not reached)
+
+    def test_crowdsale_routed_withdrawal_methods(self) -> None:
+        """Test crowdsale withdrawal methods through DozerTools routing."""
+        # Create project and crowdsale
+        token_uid = self._create_test_project("WithdrawToken", "WDRW")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            15,
+            25,
+            5,
+            800,
+            ["Team"],
+            [55],
+            [self.dev_address],
+            [6],
+            [24],
+        )
+
+        # Create crowdsale
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        initial_time = self.get_current_timestamp()
+        start_time = initial_time + 100
+        end_time = start_time + 3600
+
+        create_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        # Available tokens: 10,000,000 * 25% = 2,500,000 tokens
+        # hard_cap * rate must be <= 2,500,000
+        rate = 100
+        soft_cap = 180_00  # 180 HTR
+        hard_cap = 250_00  # 250 HTR * 100 = 25,000 tokens = 2,500,000 units
+        min_deposit = 50_00
+
+        # Configure fees
+        platform_fee = 300  # 3% - store for later calculations
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            platform_fee,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            create_ctx,
+            token_uid,
+            rate,
+            soft_cap,
+            hard_cap,
+            min_deposit,
+            start_time,
+            end_time,
+        )
+
+        # Get crowdsale contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+
+        # Activate and reach soft cap
+        activate_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time - 1,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_early_activate", activate_ctx, token_uid
+        )
+
+        # User participates with enough to reach soft cap
+        user_addr, _ = self._get_any_address()
+        participate_ctx = self.create_context(
+            actions=[
+                NCDepositAction(token_uid=htr_uid, amount=200_00)
+            ],  # Exceeds soft cap of 180
+            vertex=self._get_any_tx(),
+            caller_id=Address(user_addr),
+            timestamp=start_time + 50,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_participate",
+            participate_ctx,
+            token_uid,
+        )
+
+        # Verify SOFT_CAP_REACHED state (soft cap exceeded)
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 3)  # SOFT_CAP_REACHED
+        total_raised = sale_info.total_raised
+
+        # Finalize the sale to transition to COMPLETED_SUCCESS
+        finalize_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=end_time + 50,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_finalize", finalize_ctx, token_uid
+        )
+
+        # Verify sale is now COMPLETED_SUCCESS
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 5)  # COMPLETED_SUCCESS
+
+        # Calculate platform fee and withdrawable
+        platform_fee_amount = (total_raised * platform_fee + 9999) // 10000
+        withdrawable_htr = total_raised - platform_fee_amount
+
+        # Test routed_withdraw_raised_htr
+        withdraw_htr_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=htr_uid, amount=withdrawable_htr)],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=end_time + 100,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_withdraw_raised_htr",
+            withdraw_htr_ctx,
+            token_uid,
+        )
+
+        # Verify withdrawal
+        withdrawal_info = self.runner.call_view_method(
+            crowdsale_contract_id, "get_withdrawal_info"
+        )
+        self.assertTrue(withdrawal_info.is_withdrawn)
+        self.assertEqual(withdrawal_info.platform_fees, platform_fee_amount)
+
+        # Get remaining tokens and test routed_withdraw_remaining_tokens
+        contract_state = self.get_readonly_contract(crowdsale_contract_id)
+        from hathor.nanocontracts.blueprints.crowdsale import Crowdsale
+
+        assert isinstance(contract_state, Crowdsale)
+        # Calculate unsold tokens: tokens that were never allocated to participants
+        unsold_tokens = contract_state.initial_token_deposit - contract_state.total_sold
+        expected_sale_balance = contract_state.sale_token_balance - unsold_tokens
+
+        withdraw_tokens_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=token_uid, amount=unsold_tokens)],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=end_time + 200,
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_withdraw_remaining_tokens",
+            withdraw_tokens_ctx,
+            token_uid,
+        )
+
+        # Verify remaining tokens withdrawn
+        contract_state_after = self.get_readonly_contract(crowdsale_contract_id)
+        assert isinstance(contract_state_after, Crowdsale)
+        # After withdrawal, sale_token_balance should only contain tokens allocated to participants
+        self.assertEqual(contract_state_after.sale_token_balance, expected_sale_balance)
+
+    def test_crowdsale_unauthorized_routed_calls(self) -> None:
+        """Test that unauthorized users cannot call owner-only routed methods."""
+        # Create project and crowdsale
+        token_uid = self._create_test_project("UnauthorizedToken", "UNAUT")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            10,
+            15,
+            5,
+            500,
+            ["Team"],
+            [70],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Create crowdsale
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        initial_time = self.get_current_timestamp()
+        start_time = initial_time + 100
+        end_time = start_time + 3600
+
+        create_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        # Available tokens: 10,000,000 * 15% = 1,500,000 tokens
+        # hard_cap * rate must be <= 1,500,000
+        # Configure fees before creating crowdsale
+        fee_config_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.owner_address,
+            timestamp=initial_time,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "set_default_crowdsale_platform_fee",
+            fee_config_ctx,
+            400,  # 4%
+        )
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            create_ctx,
+            token_uid,
+            100,  # rate
+            100_00,  # soft_cap (100 HTR)
+            150_00,  # hard_cap (150 HTR * 100 = 15,000 tokens = 1,500,000 units)
+            50_00,  # min_deposit
+            start_time,
+            end_time,
+        )
+
+        # Get crowdsale contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+
+        # Activate sale (as owner - should work)
+        activate_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=start_time - 1,
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "crowdsale_early_activate", activate_ctx, token_uid
+        )
+
+        # Try to pause as unauthorized user (should fail)
+        from hathor.nanocontracts.exception import NCFail
+
+        unauthorized_addr, _ = self._get_any_address()
+        unauthorized_pause_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=Address(unauthorized_addr),
+            timestamp=start_time + 50,
+        )
+
+        with self.assertRaises(NCFail) as cm:
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "crowdsale_pause",
+                unauthorized_pause_ctx,
+                token_uid,
+            )
+        # Should fail at DozerTools level (not project dev)
+        self.assertIn("Only project dev", str(cm.exception))
+
+        # Verify sale is still ACTIVE (pause didn't work)
+        sale_info = self.runner.call_view_method(crowdsale_contract_id, "get_sale_info")
+        self.assertEqual(sale_info.state, 1)  # ACTIVE
+
+    def test_special_allocation_beneficiaries_and_creator_contract_can_claim(
+        self,
+    ) -> None:
+        """Test that special allocations have placeholder beneficiary but creator contract can claim them."""
+        # Create project and configure vesting with all special allocations
+        token_uid = self._create_test_project("BeneficiaryToken", "BENEF")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Configure vesting with all three special allocations
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            20,  # staking_percentage
+            15,  # public_sale_percentage
+            10,  # dozer_pool_percentage
+            500,  # earnings_per_day
+            ["Team", "Advisors"],
+            [35, 20],  # Total: 20 + 15 + 10 + 35 + 20 = 100%
+            [self.dev_address, self.user_address],
+            [12, 6],
+            [36, 24],
+        )
+
+        # Get vesting contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        vesting_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["vesting_contract"]))
+        )
+
+        # Verify staking allocation (index 0) has dev_address as placeholder beneficiary
+        staking_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            0,  # STAKING_ALLOCATION_INDEX
+            self.get_current_timestamp(),
+        )
+        self.assertEqual(
+            staking_info.beneficiary,
+            self.dev_address.hex(),
+            "Staking allocation has dev_address as placeholder",
+        )
+
+        # Verify public sale allocation (index 1) has dev_address as placeholder
+        public_sale_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            1,  # PUBLIC_SALE_ALLOCATION_INDEX
+            self.get_current_timestamp(),
+        )
+        self.assertEqual(
+            public_sale_info.beneficiary,
+            self.dev_address.hex(),
+            "Public sale allocation has dev_address as placeholder",
+        )
+
+        # Verify dozer pool allocation (index 2) has dev_address as placeholder
+        dozer_pool_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            2,  # DOZER_POOL_ALLOCATION_INDEX
+            self.get_current_timestamp(),
+        )
+        self.assertEqual(
+            dozer_pool_info.beneficiary,
+            self.dev_address.hex(),
+            "Dozer pool allocation has dev_address as placeholder",
+        )
+
+        # Verify regular allocations (index 3+) have correct user beneficiaries
+        team_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            3,  # First regular allocation
+            self.get_current_timestamp(),
+        )
+        self.assertEqual(
+            team_info.beneficiary,
+            self.dev_address.hex(),
+            "Team allocation should have dev_address as beneficiary",
+        )
+
+        advisors_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            4,  # Second regular allocation
+            self.get_current_timestamp(),
+        )
+        self.assertEqual(
+            advisors_info.beneficiary,
+            self.user_address.hex(),
+            "Advisors allocation should have user_address as beneficiary",
+        )
+
+        # Verify that staking contract was created (proves creator_contract could claim)
+        self.assertNotEqual(
+            contracts["staking_contract"],
+            "",
+            "Staking contract should be created, proving creator_contract can claim special allocations",
+        )
+
+    def test_dozer_tools_can_claim_staking_allocation_during_setup(self) -> None:
+        """Test that DozerTools can successfully claim staking allocation when creating staking contract.
+
+        This test verifies the fix for the issue where DozerTools would fail with
+        InvalidBeneficiary error when trying to claim special allocations during setup.
+        """
+        # Create project and configure vesting with staking allocation
+        token_uid = self._create_test_project("StakingClaimToken", "SCLM")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # This should succeed now - DozerTools claims staking allocation internally
+        # to create the staking contract
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            25,  # staking_percentage - this triggers staking contract creation
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            1000,  # earnings_per_day
+            ["Team"],
+            [75],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Verify staking contract was created (proves claim succeeded)
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        self.assertNotEqual(
+            contracts["staking_contract"],
+            "",
+            "Staking contract should be created after successful claim",
+        )
+
+        # Verify staking contract has the tokens (proves claim transferred tokens)
+        staking_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["staking_contract"]))
+        )
+        total_supply = Amount(10000000)  # Default from _create_test_project
+        expected_staking_amount = (total_supply * 25) // 100
+
+        staking_balance = self.runner.get_current_balance(
+            staking_contract_id, token_uid
+        )
+        self.assertEqual(
+            staking_balance.value,
+            expected_staking_amount,
+            "Staking contract should have 25% of total supply",
+        )
+
+    def test_dozer_tools_can_claim_public_sale_allocation_for_crowdsale(self) -> None:
+        """Test that DozerTools can successfully claim public sale allocation when creating crowdsale."""
+        # Create project and configure vesting with public sale allocation
+        token_uid = self._create_test_project("CrowdsaleClaimToken", "CCLM")
+
+        tx = self._get_any_tx()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=self.get_current_timestamp(),
+        )
+
+        # Configure vesting with public sale allocation
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            0,  # staking_percentage
+            30,  # public_sale_percentage - will be claimed for crowdsale
+            0,  # dozer_pool_percentage
+            0,  # earnings_per_day
+            ["Team"],
+            [70],
+            [self.dev_address],
+            [12],
+            [36],
+        )
+
+        # Create crowdsale - this should claim public sale allocation from vesting
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        initial_time = self.get_current_timestamp()
+        start_time = initial_time + 100
+        end_time = start_time + 3600
+
+        create_ctx = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        # This should succeed - DozerTools claims public sale allocation internally
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            create_ctx,
+            token_uid,
+            100,  # rate
+            100_00,  # soft_cap
+            150_00,  # hard_cap
+            10_00,  # min_deposit
+            start_time,
+            end_time,
+        )
+
+        # Verify crowdsale contract was created (proves claim succeeded)
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        self.assertNotEqual(
+            contracts["crowdsale_contract"],
+            "",
+            "Crowdsale contract should be created after successful claim",
+        )
+
+        # Verify crowdsale contract has the tokens
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+        total_supply = Amount(10000000)
+        expected_sale_amount = (total_supply * 30) // 100
+
+        crowdsale_balance = self.runner.get_current_balance(
+            crowdsale_contract_id, token_uid
+        )
+        self.assertEqual(
+            crowdsale_balance.value,
+            expected_sale_amount,
+            "Crowdsale contract should have 30% of total supply",
+        )
+
+    def test_regular_beneficiaries_cannot_claim_before_cliff(self) -> None:
+        """Test that regular allocation beneficiaries can only claim after cliff period."""
+        # Create project and configure vesting
+        token_uid = self._create_test_project("CliffToken", "CLIFF")
+
+        tx = self._get_any_tx()
+        initial_time = self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,
+            timestamp=initial_time,
+        )
+
+        cliff_months = 6
+        vesting_months = 12
+
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            0,  # staking_percentage
+            0,  # public_sale_percentage
+            0,  # dozer_pool_percentage
+            0,  # earnings_per_day
+            ["Developer"],
+            [100],  # All tokens to developer
+            [self.user_address],  # user_address is the beneficiary
+            [cliff_months],
+            [vesting_months],
+        )
+
+        # Get vesting contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        vesting_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["vesting_contract"]))
+        )
+
+        # Try to claim before cliff period ends (should fail)
+        from hathor.nanocontracts.blueprints.vesting import InsufficientVestedAmount
+
+        total_supply = Amount(10000000)
+        before_cliff_time = initial_time + (3 * 30 * 24 * 3600)  # 3 months
+
+        claim_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=token_uid, amount=Amount(1000))],
+            vertex=self._get_any_tx(),
+            caller_id=self.user_address,  # Correct beneficiary
+            timestamp=before_cliff_time,
+        )
+
+        with self.assertRaises(InsufficientVestedAmount):
+            self.runner.call_public_method(
+                vesting_contract_id,
+                "claim_allocation",
+                claim_ctx,
+                3,  # Developer allocation is at index 3
+            )
+
+        # After cliff period, beneficiary should be able to claim vested tokens
+        after_cliff_time = initial_time + ((cliff_months + 1) * 30 * 24 * 3600)
+
+        # Calculate vested amount (1 month of vesting after cliff)
+        monthly_vesting = total_supply // vesting_months
+
+        claim_ctx_after = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)],
+            vertex=self._get_any_tx(),
+            caller_id=self.user_address,
+            timestamp=after_cliff_time,
+        )
+
+        # This should succeed
+        self.runner.call_public_method(
+            vesting_contract_id,
+            "claim_allocation",
+            claim_ctx_after,
+            3,  # Developer allocation
+        )
+
+        # Verify tokens were claimed
+        vesting_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            3,
+            after_cliff_time,
+        )
+        self.assertEqual(vesting_info.withdrawn, monthly_vesting)
+
+    def test_developer_as_beneficiary_can_claim_allocation(self) -> None:
+        """Test that the project developer (creator) can claim their own allocation as beneficiary."""
+        # Create project where dev_address is both creator and beneficiary
+        token_uid = self._create_test_project("DevToken", "DEVTK")
+
+        tx = self._get_any_tx()
+        initial_time = self.get_current_timestamp()
+        context = self.create_context(
+            actions=[],
+            vertex=tx,
+            caller_id=self.dev_address,  # Developer creates the vesting
+            timestamp=initial_time,
+        )
+
+        cliff_months = 3
+        vesting_months = 12
+
+        # Configure vesting where dev_address is the beneficiary of their own tokens
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            context,
+            token_uid,
+            0,  # No staking
+            0,  # No public sale
+            0,  # No dozer pool
+            0,  # No earnings_per_day
+            ["Developer Team"],  # Developer's allocation
+            [100],  # 100% to developer
+            [self.dev_address],  # Developer is the beneficiary
+            [cliff_months],
+            [vesting_months],
+        )
+
+        # Get vesting contract
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        vesting_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["vesting_contract"]))
+        )
+
+        # Verify developer is the beneficiary
+        vesting_info = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            3,  # First regular allocation (Developer Team)
+            initial_time,
+        )
+        self.assertEqual(
+            vesting_info.beneficiary,
+            self.dev_address.hex(),
+            "Developer should be the beneficiary",
+        )
+
+        # Wait until after cliff period
+        after_cliff_time = initial_time + ((cliff_months + 1) * 30 * 24 * 3600)
+
+        # Calculate vested amount (1 month of vesting after cliff)
+        total_supply = Amount(10000000)
+        monthly_vesting = total_supply // vesting_months
+
+        # Developer claims their own allocation
+        claim_ctx = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,  # Developer claiming their own tokens
+            timestamp=after_cliff_time,
+        )
+
+        # This should succeed - developer can claim their own allocation
+        self.runner.call_public_method(
+            vesting_contract_id,
+            "claim_allocation",
+            claim_ctx,
+            3,  # Developer Team allocation
+        )
+
+        # Verify tokens were claimed successfully
+        vesting_info_after = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            3,
+            after_cliff_time,
+        )
+        self.assertEqual(
+            vesting_info_after.withdrawn,
+            monthly_vesting,
+            "Developer should have successfully claimed their tokens",
+        )
+
+        # Verify developer can claim more after additional vesting time
+        two_months_after_cliff = initial_time + ((cliff_months + 2) * 30 * 24 * 3600)
+        two_month_vesting = (total_supply * 2) // vesting_months
+
+        claim_ctx2 = self.create_context(
+            actions=[NCWithdrawalAction(token_uid=token_uid, amount=monthly_vesting)],
+            vertex=self._get_any_tx(),
+            caller_id=self.dev_address,
+            timestamp=two_months_after_cliff,
+        )
+
+        self.runner.call_public_method(
+            vesting_contract_id,
+            "claim_allocation",
+            claim_ctx2,
+            3,
+        )
+
+        # Verify total withdrawn is now 2 months worth
+        vesting_info_final = self.runner.call_view_method(
+            vesting_contract_id,
+            "get_vesting_info",
+            3,
+            two_months_after_cliff,
+        )
+        self.assertEqual(
+            vesting_info_final.withdrawn,
+            monthly_vesting + monthly_vesting,
+            "Developer should have claimed 2 months of vesting",
+        )
+
+    # ------------------------------------------------------------------
+    # Authentication / authorization regression tests
+    # ------------------------------------------------------------------
+
+    def _auth_ctx(self, caller_id, actions=None):
+        return self.create_context(
+            actions=actions or [],
+            vertex=self._get_any_tx(),
+            caller_id=caller_id,
+            timestamp=self.get_current_timestamp(),
+        )
+
+    def test_only_owner_methods_reject_non_owner(self):
+        """Owner-only admin methods must reject a non-owner Address caller."""
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        stranger = Address(self._get_any_address()[0])
+        some_token = self.gen_random_token_uid()
+
+        # (method_name, args, actions)
+        cases = [
+            ("set_vesting_blueprint_id", (VESTING_BLUEPRINT_ID,), []),
+            ("update_method_fees", ("create_project", Amount(1), Amount(1)), []),
+            ("blacklist_token", (some_token,), []),
+            ("unblacklist_token", (some_token,), []),
+            ("set_legacy_token_permission", (some_token, stranger), []),
+            ("set_dzr_token_uid", (self.dzr_token_uid,), []),
+            ("change_owner", (stranger,), []),
+            ("pause", (), []),
+            (
+                "withdraw_platform_htr_fees",
+                (),
+                [NCWithdrawalAction(token_uid=htr_uid, amount=Amount(1))],
+            ),
+        ]
+        for method, args, actions in cases:
+            with self.assertRaises(Unauthorized):
+                self.runner.call_public_method(
+                    self.dozer_tools_nc_id,
+                    method,
+                    self._auth_ctx(stranger, actions),
+                    *args,
+                )
+
+    def test_owner_methods_reject_contract_caller(self):
+        """A rogue contract (ContractId caller) cannot escalate into owner-only methods."""
+        rogue_contract = self.gen_random_contract_id()
+        stranger = Address(self._get_any_address()[0])
+        for method, args in [
+            ("change_owner", (stranger,)),
+            ("blacklist_token", (self.gen_random_token_uid(),)),
+            ("pause", ()),
+        ]:
+            with self.assertRaises(Unauthorized):
+                self.runner.call_public_method(
+                    self.dozer_tools_nc_id,
+                    method,
+                    self._auth_ctx(rogue_contract),
+                    *args,
+                )
+
+    def test_only_project_dev_methods_reject_non_dev(self):
+        """Project-dev-only methods must reject a caller that is not the project dev."""
+        token_uid = self._create_test_project("AuthZToken", "AUTHZ")
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        stranger = Address(self._get_any_address()[0])
+
+        cases = [
+            (
+                "deposit_credits",
+                (token_uid,),
+                [NCDepositAction(token_uid=htr_uid, amount=Amount(1000))],
+            ),
+            (
+                "withdraw_credits",
+                (token_uid,),
+                [NCWithdrawalAction(token_uid=htr_uid, amount=Amount(1))],
+            ),
+            ("transfer_dev_authority", (token_uid, stranger), []),
+            ("cancel_project", (token_uid,), []),
+        ]
+        for method, args, actions in cases:
+            with self.assertRaises(Unauthorized):
+                self.runner.call_public_method(
+                    self.dozer_tools_nc_id,
+                    method,
+                    self._auth_ctx(stranger, actions),
+                    *args,
+                )
+
+    def test_transfer_dev_authority_revokes_old_dev(self):
+        """After transferring dev authority, the old dev loses access and the new dev gains it."""
+        token_uid = self._create_test_project("HandoffToken", "HAND")
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        new_dev = Address(self._get_any_address()[0])
+
+        # Current dev transfers authority to new_dev.
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "transfer_dev_authority",
+            self._auth_ctx(self.dev_address),
+            token_uid,
+            new_dev,
+        )
+
+        # Old dev can no longer deposit credits.
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "deposit_credits",
+                self._auth_ctx(
+                    self.dev_address,
+                    [NCDepositAction(token_uid=htr_uid, amount=Amount(1000))],
+                ),
+                token_uid,
+            )
+
+        # New dev can.
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "deposit_credits",
+            self._auth_ctx(
+                new_dev, [NCDepositAction(token_uid=htr_uid, amount=Amount(1000))]
+            ),
+            token_uid,
+        )
+
+    def test_change_owner_revokes_old_owner(self):
+        """After change_owner, the old owner loses admin rights and the new owner gains them."""
+        new_owner = Address(self._get_any_address()[0])
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "change_owner",
+            self._auth_ctx(self.owner_address),
+            new_owner,
+        )
+
+        # Old owner can no longer pause.
+        with self.assertRaises(Unauthorized):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id, "pause", self._auth_ctx(self.owner_address)
+            )
+
+        # New owner can.
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id, "pause", self._auth_ctx(new_owner)
+        )
+
+    def test_initialize_is_single_call(self):
+        """initialize is a framework constructor and cannot be re-invoked."""
+        from hathor.nanocontracts.exception import (
+            NCFail,
+            NCInvalidInitializeMethodCall,
+            NCAlreadyInitializedContractError,
+        )
+
+        with self.assertRaises(
+            (NCInvalidInitializeMethodCall, NCAlreadyInitializedContractError, NCFail)
+        ):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "initialize",
+                self._auth_ctx(self.owner_address),
+                self.pool_manager_nc_id,
+                self.dzr_token_uid,
+                self.minimum_deposit,
+            )
+
+    # ------------------------------------------------------------------
+    # Solvency / protocol-fee / pause / cancel-refund regression tests
+    # ------------------------------------------------------------------
+
+    def _balance_of(self, token_uid) -> int:
+        return int(
+            self.runner.get_current_balance(self.dozer_tools_nc_id, token_uid).value
+        )
+
+    def _assert_solvent(self, token_uids) -> None:
+        """Contract balance of HTR/DZR must equal platform fees + project credits."""
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        fees = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        htr_liab = int(fees["htr_fees"])
+        dzr_liab = int(fees["dzr_fees"])
+        for token_uid in token_uids:
+            credits = self.runner.call_view_method(
+                self.dozer_tools_nc_id, "get_project_credits", token_uid
+            )
+            htr_liab += int(credits["htr_balance"])
+            dzr_liab += int(credits["dzr_balance"])
+        self.assertEqual(self._balance_of(htr_uid), htr_liab, "HTR insolvent")
+        self.assertEqual(self._balance_of(self.dzr_token_uid), dzr_liab, "DZR insolvent")
+
+    def _call(self, caller, actions, method, *args):
+        return self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            method,
+            self._auth_ctx(caller, actions),
+            *args,
+        )
+
+    def _deposit_credits(self, token_uid, token, amount, caller=None) -> None:
+        self._call(
+            caller or self.dev_address,
+            [NCDepositAction(token_uid=token, amount=Amount(amount))],
+            "deposit_credits",
+            token_uid,
+        )
+
+    def _create_dzr_project(self, name: str, symbol: str) -> TokenUid:
+        return self._call(
+            self.dev_address,
+            [
+                NCDepositAction(
+                    token_uid=self.dzr_token_uid, amount=self.create_project_fee_dzr
+                )
+            ],
+            "create_project",
+            name,
+            symbol,
+            Amount(1_000_000),
+            "", "", "", "", "", "", "", "", "",
+        )
+
+    def _configure_vesting_simple(
+        self, token_uid, staking=30, public_sale=0, pool=0, team=70, cliff=3, months=12
+    ) -> None:
+        self._call(
+            self.dev_address,
+            [],
+            "configure_project_vesting",
+            token_uid,
+            staking,
+            public_sale,
+            pool,
+            500,
+            ["Team"],
+            [team],
+            [self.dev_address],
+            [cliff],
+            [months],
+        )
+
+    def test_protocol_fees_keep_contract_solvent_htr(self) -> None:
+        """Protocol NCFees must come out of platform fees, never unaccounted HTR."""
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        token_uid = self._create_test_project("SolvToken", "SOLV")
+        self._assert_solvent([token_uid])
+
+        # Project credits are liabilities too; also exercise the per-call fee.
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_method_fees",
+            self._auth_ctx(self.owner_address),
+            "update_project_metadata",
+            Amount(100),
+            Amount(0),
+        )
+        self._deposit_credits(token_uid, htr_uid, 5_000)
+        self._assert_solvent([token_uid])
+
+        # Auto-created staking contract (withdraw from vesting + setup new contract).
+        initial_time = self.get_current_timestamp()
+        self._configure_vesting_simple(token_uid)
+        self._assert_solvent([token_uid])
+
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        staking_id = ContractId(VertexId(bytes.fromhex(contracts["staking_contract"])))
+
+        # Routed stake.
+        user = Address(self._get_any_address()[0])
+        stake_amount = 1000_00
+        self._call(
+            user,
+            [PROTOCOL_FEE, NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            "staking_stake",
+            token_uid,
+        )
+        self._assert_solvent([token_uid])
+
+        # Routed owner deposit.
+        self._call(
+            self.dev_address,
+            [NCDepositAction(token_uid=token_uid, amount=Amount(10_00))],
+            "staking_owner_deposit",
+            token_uid,
+        )
+        self._assert_solvent([token_uid])
+
+        # Routed unstake after the timelock.
+        later = initial_time + 31 * 24 * 3600
+        max_withdrawal = self.runner.call_view_method(
+            staking_id, "get_max_withdrawal", user, later
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "staking_unstake",
+            self.create_context(
+                actions=[
+                    PROTOCOL_FEE,
+                    NCWithdrawalAction(token_uid=token_uid, amount=Amount(max_withdrawal))
+                ],
+                vertex=self._get_any_tx(),
+                caller_id=user,
+                timestamp=later,
+            ),
+            token_uid,
+        )
+        self._assert_solvent([token_uid])
+
+        # Routed vesting claim (dev is beneficiary of the "Team" allocation).
+        claim_time = initial_time + 4 * 30 * 24 * 3600
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "vesting_claim_allocation",
+            self.create_context(
+                actions=[PROTOCOL_FEE, NCWithdrawalAction(token_uid=token_uid, amount=Amount(100_000))],
+                vertex=self._get_any_tx(),
+                caller_id=self.dev_address,
+                timestamp=claim_time,
+            ),
+            3,
+        )
+        self._assert_solvent([token_uid])
+
+        # Charged method fee still keeps accounting exact.
+        self._call(
+            self.dev_address, [], "update_project_metadata", token_uid,
+            "x", "", "", "", "", "", "", "", "",
+        )
+        self._assert_solvent([token_uid])
+
+    def test_protocol_fees_keep_contract_solvent_dzr(self) -> None:
+        """DZR-denominated protocol fees are taken from platform_dzr_fees."""
+        token_uid = self._create_dzr_project("SolvDzr", "SDZR")
+        self._assert_solvent([token_uid])
+        fees = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        # Creation fee (100) + vesting deposit fee (100) are covered by the fee.
+        self.assertEqual(int(fees["dzr_fees"]), int(self.create_project_fee_dzr) - 200)
+
+    def test_owner_operations_pay_protocol_fees_from_project_credits(self) -> None:
+        """Protocol NCFees of owner operations come out of the project's credits."""
+        token_uid = self._create_dzr_project("NoCredits", "NCRD")
+        # No credits: auto-creating the staking contract cannot pay its protocol fees.
+        with self.assertRaises(InsufficientCredits):
+            self._configure_vesting_simple(token_uid)
+
+        fees_before = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        # DZR credits work too (100 DZR cents per fee): withdraw from vesting + set up staking.
+        self._deposit_credits(token_uid, self.dzr_token_uid, 200)
+        self._configure_vesting_simple(token_uid)
+        credits = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_credits", token_uid
+        )
+        self.assertEqual(int(credits["dzr_balance"]), 0)
+        # The platform's balances are untouched.
+        self.assertEqual(
+            self.runner.call_view_method(
+                self.dozer_tools_nc_id, "get_platform_fee_balances"
+            ),
+            fees_before,
+        )
+        self._assert_solvent([token_uid])
+
+    def test_user_operations_pay_protocol_fee_with_htr_deposit(self) -> None:
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        token_uid = self._create_test_project("UserFee", "UFEE")
+        self._configure_vesting_simple(token_uid)
+        claim_time = self.get_current_timestamp() + 4 * 30 * 24 * 3600
+        claim = NCWithdrawalAction(token_uid=token_uid, amount=Amount(100_000))
+
+        def claim_with(actions):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "vesting_claim_allocation",
+                self.create_context(
+                    actions=actions,
+                    vertex=self._get_any_tx(),
+                    caller_id=self.dev_address,
+                    timestamp=claim_time,
+                ),
+                3,
+            )
+
+        from hathor.nanocontracts.exception import NCFail
+
+        bad = [
+            [claim],  # no fee
+            [claim, NCDepositAction(token_uid=htr_uid, amount=Amount(2))],  # wrong amount
+            [claim, NCWithdrawalAction(token_uid=htr_uid, amount=Amount(1))],  # not a deposit
+        ]
+        for actions in bad:
+            with self.assertRaises(NCFail):
+                claim_with(actions)
+
+        credits_before = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_credits", token_uid
+        )
+        fees_before = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        claim_with([PROTOCOL_FEE, claim])
+        # Neither the project nor the platform paid for the user's operation.
+        self.assertEqual(
+            self.runner.call_view_method(
+                self.dozer_tools_nc_id, "get_project_credits", token_uid
+            ),
+            credits_before,
+        )
+        self.assertEqual(
+            self.runner.call_view_method(
+                self.dozer_tools_nc_id, "get_platform_fee_balances"
+            ),
+            fees_before,
+        )
+        self._assert_solvent([token_uid])
+
+    def test_create_project_fails_when_reserve_cannot_cover_protocol_fees(self) -> None:
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_method_fees",
+            self._auth_ctx(self.owner_address),
+            "create_project",
+            Amount(1),
+            Amount(0),
+        )
+        with self.assertRaises(InsufficientCredits):
+            self._call(
+                self.dev_address,
+                [NCDepositAction(token_uid=htr_uid, amount=Amount(1))],
+                "create_project",
+                "Tiny",
+                "TINY",
+                Amount(1_000_000),
+                "", "", "", "", "", "", "", "", "",
+            )
+
+    def test_fund_platform_fee_reserve_actions(self) -> None:
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        # HTR
+        self._call(
+            self.user_address,
+            [NCDepositAction(token_uid=htr_uid, amount=Amount(7))],
+            "fund_platform_fee_reserve",
+        )
+        # DZR
+        self._call(
+            self.user_address,
+            [NCDepositAction(token_uid=self.dzr_token_uid, amount=Amount(300))],
+            "fund_platform_fee_reserve",
+        )
+        fees = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        self.assertEqual(fees["htr_fees"], "7")
+        self.assertEqual(fees["dzr_fees"], "300")
+        self._assert_solvent([])
+
+        # No action / withdrawal / two actions are rejected.
+        from hathor.nanocontracts.exception import NCFail
+
+        for actions in (
+            [],
+            [NCWithdrawalAction(token_uid=htr_uid, amount=Amount(1))],
+            [
+                NCDepositAction(token_uid=htr_uid, amount=Amount(1)),
+                NCDepositAction(token_uid=self.dzr_token_uid, amount=Amount(1)),
+            ],
+        ):
+            with self.assertRaises(NCFail):
+                self._call(self.user_address, actions, "fund_platform_fee_reserve")
+
+    def test_set_dzr_token_uid_blocked_while_dzr_held(self) -> None:
+        """Changing the DZR token must not remap existing DZR credits or fees."""
+        token_uid = self._create_test_project("DzrSwap", "DSWP")
+        new_dzr = self.gen_random_token_uid()
+        owner = self.owner_address
+
+        self._deposit_credits(token_uid, self.dzr_token_uid, 300)
+        with self.assertRaises(DozerToolsError):
+            self._call(owner, [], "set_dzr_token_uid", new_dzr)
+
+        # Draining the credits is not enough while platform_dzr_fees is non-zero.
+        self._call(
+            self.dev_address,
+            [NCWithdrawalAction(token_uid=self.dzr_token_uid, amount=Amount(300))],
+            "withdraw_credits",
+            token_uid,
+        )
+        self._call(
+            self.user_address,
+            [NCDepositAction(token_uid=self.dzr_token_uid, amount=Amount(50))],
+            "fund_platform_fee_reserve",
+        )
+        with self.assertRaises(DozerToolsError):
+            self._call(owner, [], "set_dzr_token_uid", new_dzr)
+
+        # Once fees are withdrawn and nothing is held, the change is allowed.
+        self._call(
+            owner,
+            [NCWithdrawalAction(token_uid=self.dzr_token_uid, amount=Amount(50))],
+            "withdraw_platform_dzr_fees",
+        )
+        self._call(owner, [], "set_dzr_token_uid", new_dzr)
+        info = self.runner.call_view_method(self.dozer_tools_nc_id, "get_contract_info")
+        self.assertEqual(info["dzr_token_uid"], new_dzr.hex())
+
+    def test_set_dzr_token_uid_allowed_on_fresh_contract(self) -> None:
+        new_dzr = self.gen_random_token_uid()
+        self._call(self.owner_address, [], "set_dzr_token_uid", new_dzr)
+        info = self.runner.call_view_method(self.dozer_tools_nc_id, "get_contract_info")
+        self.assertEqual(info["dzr_token_uid"], new_dzr.hex())
+
+    def _set_cancel_fee(self, htr_fee: int) -> None:
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "update_method_fees",
+            self._auth_ctx(self.owner_address),
+            "cancel_project",
+            Amount(htr_fee),
+            Amount(0),
+        )
+
+    def test_cancel_project_requires_exact_credit_refund(self) -> None:
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        token_uid = self._create_test_project("CancelRefund", "CREF", protocol_fee_credits=0)
+        self._set_cancel_fee(500)
+        self._deposit_credits(token_uid, htr_uid, 5_000)
+        self._deposit_credits(token_uid, self.dzr_token_uid, 300)
+        self._assert_solvent([token_uid])
+
+        # 5_000 credits - 500 cancel fee - 2 protocol fees (supply withdrawal + melt)
+        htr_refund = NCWithdrawalAction(token_uid=htr_uid, amount=Amount(4_498))
+        dzr_refund = NCWithdrawalAction(token_uid=self.dzr_token_uid, amount=Amount(300))
+
+        bad_cases = [
+            [],  # no refund
+            [htr_refund],  # DZR missing
+            [dzr_refund],  # HTR missing
+            [
+                NCWithdrawalAction(token_uid=htr_uid, amount=Amount(4_497)),
+                dzr_refund,
+            ],  # HTR short
+            [
+                NCWithdrawalAction(token_uid=htr_uid, amount=Amount(4_499)),
+                dzr_refund,
+            ],  # HTR over
+            [
+                htr_refund,
+                NCWithdrawalAction(token_uid=self.dzr_token_uid, amount=Amount(299)),
+            ],  # DZR short
+            [
+                htr_refund,
+                dzr_refund,
+                NCWithdrawalAction(token_uid=token_uid, amount=Amount(1)),
+            ],  # extra action
+            [
+                htr_refund,
+                dzr_refund,
+                NCDepositAction(token_uid=token_uid, amount=Amount(1)),
+            ],  # extra deposit
+        ]
+        from hathor.nanocontracts.exception import NCFail
+
+        for actions in bad_cases:
+            with self.assertRaises(NCFail):
+                self._call(self.dev_address, actions, "cancel_project", token_uid)
+
+        # Exact refund succeeds and leaves the contract solvent.
+        self._call(
+            self.dev_address, [htr_refund, dzr_refund], "cancel_project", token_uid
+        )
+        self.assertFalse(
+            self.runner.call_view_method(
+                self.dozer_tools_nc_id, "can_cancel_project", token_uid
+            )
+        )
+        self._assert_solvent([])
+        fees = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        self.assertEqual(int(fees["dzr_fees"]), 0)
+
+    def test_cancel_project_refunds_single_token_credits(self) -> None:
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        token_uid = self._create_test_project("CancelHtrOnly", "CHTR", protocol_fee_credits=0)
+        self._deposit_credits(token_uid, htr_uid, 2_000)
+        refund = 2_000 - 2  # minus the protocol fees for withdrawing and melting the supply
+        # Zero DZR credits: DZR refund action must not be accepted.
+        with self.assertRaises(InsufficientCredits):
+            self._call(
+                self.dev_address,
+                [
+                    NCWithdrawalAction(token_uid=htr_uid, amount=Amount(refund)),
+                    NCWithdrawalAction(token_uid=self.dzr_token_uid, amount=Amount(1)),
+                ],
+                "cancel_project",
+                token_uid,
+            )
+        self._call(
+            self.dev_address,
+            [NCWithdrawalAction(token_uid=htr_uid, amount=Amount(refund))],
+            "cancel_project",
+            token_uid,
+        )
+        self._assert_solvent([])
+
+    def test_pause_blocks_dev_and_user_operations(self) -> None:
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        token_uid = self._create_test_project("PausedTok", "PAUS")
+        self._deposit_credits(token_uid, htr_uid, 5_000)
+        self._configure_vesting_simple(token_uid, staking=30, public_sale=10, team=60)
+        cancel_token = self._create_test_project(
+            "PausedCancel", "PCAN", protocol_fee_credits=2  # exactly the cancel protocol fees
+        )
+        new_dev = Address(self._get_any_address()[0])
+
+        self._call(self.owner_address, [], "pause")
+
+        crowdsale_args = (token_uid, Amount(100), Amount(90_00), Amount(100_00),
+                          Amount(10_00), Timestamp(1), Timestamp(2))
+        paused_cases = [
+            ("create_staking_contract", (token_uid, 500), []),
+            ("create_dao_contract", (token_uid, "n", "d", 7, 10, Amount(1)), []),
+            ("create_crowdsale", crowdsale_args, []),
+            (
+                "create_liquidity_pool",
+                (token_uid, Amount(1), Amount(3)),
+                [NCDepositAction(token_uid=htr_uid, amount=Amount(1))],
+            ),
+            ("update_project_metadata", (token_uid, "x", "", "", "", "", "", "", "", ""), []),
+            ("transfer_dev_authority", (token_uid, new_dev), []),
+            (
+                "deposit_credits",
+                (token_uid,),
+                [NCDepositAction(token_uid=htr_uid, amount=Amount(10))],
+            ),
+            (
+                "withdraw_credits",
+                (token_uid,),
+                [NCWithdrawalAction(token_uid=htr_uid, amount=Amount(10))],
+            ),
+            ("cancel_project", (cancel_token,), []),
+        ]
+        for method, args, actions in paused_cases:
+            with self.assertRaises(ContractPaused, msg=method):
+                self._call(self.dev_address, actions, method, *args)
+
+        # Owner-only admin/config keeps working during an incident.
+        self._call(self.owner_address, [], "update_method_fees", "x", Amount(1), Amount(0))
+        self._call(
+            self.user_address,
+            [NCDepositAction(token_uid=htr_uid, amount=Amount(10))],
+            "fund_platform_fee_reserve",
+        )
+
+        self._call(self.owner_address, [], "unpause")
+        now = self.get_current_timestamp()
+        self._call(
+            self.dev_address, [], "create_crowdsale", token_uid, Amount(100),
+            Amount(90_00), Amount(100_00), Amount(10_00),
+            Timestamp(now + 100), Timestamp(now + 1000),
+        )
+        self._call(
+            self.dev_address,
+            [NCWithdrawalAction(token_uid=htr_uid, amount=Amount(10))],
+            "withdraw_credits",
+            token_uid,
+        )
+        self._call(self.dev_address, [], "cancel_project", cancel_token)
+        self._call(self.dev_address, [], "transfer_dev_authority", token_uid, new_dev)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,3137 @@
+from hathor import (
+    Blueprint,
+    BlueprintId,
+    Context,
+    NCFail,
+    Address,
+    Amount,
+    BlueprintId,
+    ContractId,
+    NCAcquireAuthorityAction,
+    NCAction,
+    NCDepositAction,
+    NCFee,
+    NCWithdrawalAction,
+    Timestamp,
+    TokenUid,
+    VertexId,
+    public,
+    view,
+    export,
+)
+
+# Special allocation indices for vesting contract
+STAKING_ALLOCATION_INDEX = 0  # "Staking" - for staking contract
+PUBLIC_SALE_ALLOCATION_INDEX = 1  # "Public Sale" - for crowdsale contract
+DOZER_POOL_ALLOCATION_INDEX = 2  # "Dozer Pool" - for liquidity pool
+# Indices 3-9 available for regular time-locked vesting schedules
+FIRST_USER_ALLOCATION_INDEX = 3
+MAX_VESTING_ALLOCATIONS = 10
+MAX_REGULAR_ALLOCATIONS = MAX_VESTING_ALLOCATIONS - FIRST_USER_ALLOCATION_INDEX
+
+# HTR token UID
+HTR_UID = b"\x00"
+
+# Null contract ID for initialization
+NULL_CONTRACT_ID = ContractId(VertexId(b"\x00" * 32))
+
+# Placeholder DZR token UID (to be updated later)
+DZR_UID = TokenUid(VertexId(b"\x01" * 32))
+
+# Crowdsale fee limits
+# Protocol NCFee for moving a fee-based token between contracts: 1 HTR cent (or 100 cents of a
+# deposit-based token such as DZR, at the 1% deposit rate).
+PROTOCOL_FEE_HTR = 1
+PROTOCOL_FEE_DZR = 100
+
+MAX_PLATFORM_FEE = 1000  # 10% in basis points
+MAX_PARTICIPATION_FEE = 300  # 3% in basis points
+
+
+class DozerToolsError(NCFail):
+    """Base error for DozerTools operations."""
+
+    pass
+
+
+class ProjectNotFound(DozerToolsError):
+    """Raised when trying to access a project that doesn't exist."""
+
+    pass
+
+
+class ProjectAlreadyExists(DozerToolsError):
+    """Raised when trying to create a project that already exists."""
+
+    pass
+
+
+class Unauthorized(DozerToolsError):
+    """Raised when unauthorized address tries to perform an action."""
+
+    pass
+
+
+class InsufficientCredits(DozerToolsError):
+    """Raised when project has insufficient credits for operation."""
+
+    pass
+
+
+class TokenBlacklisted(DozerToolsError):
+    """Raised when trying to use a blacklisted token."""
+
+    pass
+
+
+class ContractPaused(DozerToolsError):
+    """Raised when contract is paused."""
+
+    pass
+
+
+class ContractAlreadyExists(DozerToolsError):
+    """Raised when trying to create a contract that already exists."""
+
+    pass
+
+
+class VestingNotConfigured(DozerToolsError):
+    """Raised when trying to access vesting that is not configured."""
+
+    pass
+
+
+class FeatureNotAvailable(DozerToolsError):
+    """Raised when trying to use a feature that is not configured/available."""
+
+    pass
+
+
+class InvalidAllocation(DozerToolsError):
+    """Raised when allocation percentages are invalid."""
+
+    pass
+
+
+@export
+class DozerTools(Blueprint):
+    """Singleton contract for managing token projects with credit-based fee system.
+
+    This contract manages multiple token projects in a centralized way, allowing
+    project creators to create tokens and manage their entire ecosystem through
+    a single interface with a credit-based fee system.
+    """
+
+    # Version control
+    contract_version: str
+
+    # Global administration
+    owner: Address
+    dozer_pool_manager_id: ContractId
+    dzr_token_uid: TokenUid
+    paused: bool  # For emergency pause
+
+    # Configurable blueprint IDs
+    vesting_blueprint_id: BlueprintId
+    staking_blueprint_id: BlueprintId
+    dao_blueprint_id: BlueprintId
+    crowdsale_blueprint_id: BlueprintId
+
+    # Default crowdsale fee configuration
+    default_crowdsale_platform_fee: (
+        Amount  # Default platform fee in basis points (0-1000)
+    )
+    default_crowdsale_participation_fee: (
+        Amount  # Default participation fee in basis points (0-300)
+    )
+
+    # Legacy token permissions (admin-controlled)
+    legacy_token_permissions: dict[TokenUid, Address]  # token -> authorized_creator
+    blacklisted_tokens: dict[TokenUid, bool]  # token -> blacklisted
+
+    # Project registry (using TokenUid as key)
+    project_exists: dict[TokenUid, bool]  # token_uid -> exists
+    all_projects: list[TokenUid]  # Ordered list of all project tokens
+    total_projects_count: int  # Total number of projects created
+
+    # Symbol blocking - once used, symbols are permanently reserved
+    used_symbols: dict[str, bool]  # symbol -> used (prevents reuse)
+
+    # Project basic information
+    project_name: dict[TokenUid, str]  # token_uid -> name
+    project_symbol: dict[TokenUid, str]  # token_uid -> symbol
+    project_dev: dict[TokenUid, Address]  # token_uid -> dev_address
+    project_created_at: dict[TokenUid, Timestamp]  # token_uid -> created_at
+    project_total_supply: dict[TokenUid, Amount]  # token_uid -> total_supply
+    project_creation_mode: dict[TokenUid, str]  # token_uid -> creation mode
+    project_creation_fee_token: dict[TokenUid, str]  # token_uid -> fee token uid hex
+    project_creation_fee_amount: dict[TokenUid, Amount]  # token_uid -> fee amount
+
+    # Project optional metadata
+    project_description: dict[TokenUid, str]  # token_uid -> description
+    project_website: dict[TokenUid, str]  # token_uid -> website
+    project_logo_url: dict[TokenUid, str]  # token_uid -> logo_url
+    project_twitter: dict[TokenUid, str]  # token_uid -> twitter
+    project_telegram: dict[TokenUid, str]  # token_uid -> telegram
+    project_discord: dict[TokenUid, str]  # token_uid -> discord
+    project_github: dict[TokenUid, str]  # token_uid -> github
+    project_category: dict[TokenUid, str]  # token_uid -> category
+    project_whitepaper_url: dict[TokenUid, str]  # token_uid -> whitepaper_url
+
+    # Credit system per project
+    project_htr_balance: dict[TokenUid, Amount]  # token_uid -> HTR balance
+    project_dzr_balance: dict[TokenUid, Amount]  # token_uid -> DZR balance
+    platform_htr_fees: Amount
+    platform_dzr_fees: Amount
+    minimum_deposit: Amount  # Minimum deposit to enable contract usage
+
+    # Fee structure for method calls
+    method_fees_htr: dict[str, Amount]  # method_name -> HTR cost
+    method_fees_dzr: dict[str, Amount]  # method_name -> DZR cost
+
+    # Contract ecosystem per project
+    project_vesting_contract: dict[
+        TokenUid, ContractId
+    ]  # token_uid -> vesting_contract
+    project_staking_contract: dict[
+        TokenUid, ContractId
+    ]  # token_uid -> staking_contract
+    project_dao_contract: dict[TokenUid, ContractId]  # token_uid -> dao_contract
+    project_crowdsale_contract: dict[
+        TokenUid, ContractId
+    ]  # token_uid -> crowdsale_contract
+
+    # TODO: Change project_pools to support multiple pools (list[str]) later
+    project_pools: dict[TokenUid, str]  # token_uid -> pool_key (single pool for now)
+
+    # Special allocation percentages (0 means not configured)
+    project_staking_percentage: dict[TokenUid, int]  # token_uid -> staking %
+    project_public_sale_percentage: dict[TokenUid, int]  # token_uid -> public sale %
+    project_dozer_pool_percentage: dict[TokenUid, int]  # token_uid -> dozer pool %
+
+    # Vesting configuration status
+    project_vesting_configured: dict[TokenUid, bool]  # token_uid -> is_configured
+
+    # Melt authority tracking
+    project_melt_authority_acquired: dict[
+        TokenUid, bool
+    ]  # token_uid -> melt_authority_acquired
+
+    def _only_owner(self, ctx: Context) -> None:
+        """Ensure only the contract owner can call this method."""
+        if Address(ctx.caller_id) != self.owner:
+            raise Unauthorized("Only contract owner can call this method")
+
+    def _validate_not_paused(self, ctx: Context) -> None:
+        """Ensure contract is not paused for non-owner operations."""
+        if self.paused and Address(ctx.caller_id) != self.owner:
+            raise ContractPaused("Contract is paused")
+
+    def _only_project_dev(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Ensure only the project dev can call this method."""
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+
+        project_dev = self.project_dev.get(token_uid, Address(b"\x00" * 25))
+        if Address(ctx.caller_id) != project_dev:
+            raise Unauthorized("Only project dev can call this method")
+
+    def _validate_token_not_blacklisted(self, token_uid: TokenUid) -> None:
+        """Ensure token is not blacklisted."""
+        if self.blacklisted_tokens.get(token_uid, False):
+            raise TokenBlacklisted("Token is blacklisted")
+
+    def _validate_legacy_token_permission(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> None:
+        """Validate permission for legacy tokens."""
+        if token_uid in self.legacy_token_permissions:
+            authorized_address = self.legacy_token_permissions[token_uid]
+            if Address(ctx.caller_id) != authorized_address:
+                raise Unauthorized(
+                    "Not authorized to create project for this legacy token"
+                )
+
+    def _charge_fee(self, _ctx: Context, token_uid: TokenUid, method_name: str) -> None:
+        """Charge fee from project balance (DZR preferred over HTR)."""
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+
+        dzr_fee = self.method_fees_dzr.get(method_name, Amount(0))
+        htr_fee = self.method_fees_htr.get(method_name, Amount(0))
+
+        project_dzr_balance = self.project_dzr_balance.get(token_uid, Amount(0))
+        project_htr_balance = self.project_htr_balance.get(token_uid, Amount(0))
+
+        # Try to use DZR first (cheaper)
+        if dzr_fee > 0 and project_dzr_balance >= dzr_fee:
+            self.project_dzr_balance[token_uid] = Amount(project_dzr_balance - dzr_fee)
+            self.platform_dzr_fees = Amount(self.platform_dzr_fees + dzr_fee)
+        elif htr_fee > 0 and project_htr_balance >= htr_fee:
+            self.project_htr_balance[token_uid] = Amount(project_htr_balance - htr_fee)
+            self.platform_htr_fees = Amount(self.platform_htr_fees + htr_fee)
+        elif dzr_fee > 0 or htr_fee > 0:
+            raise InsufficientCredits("Insufficient credits for this operation")
+
+    def _charge_create_project_fee(self, ctx: Context) -> tuple[str, Amount]:
+        """Charge create_project fee directly from tx deposit action.
+
+        Returns:
+            Tuple with fee token uid hex and amount charged.
+        """
+        if len(ctx.actions) != 1:
+            raise InsufficientCredits("Exactly one deposit action required")
+
+        if TokenUid(HTR_UID) in ctx.actions:
+            action = self._get_exact_deposit_action(ctx, TokenUid(HTR_UID))
+            required = self.method_fees_htr.get("create_project", Amount(0))
+            if required <= 0:
+                raise InsufficientCredits("HTR create_project fee is not configured")
+            if action.amount != required:
+                raise InsufficientCredits(
+                    f"HTR create_project fee must be exactly {required}"
+                )
+            self.platform_htr_fees = Amount(self.platform_htr_fees + required)
+            return TokenUid(HTR_UID).hex(), Amount(required)
+
+        if self.dzr_token_uid in ctx.actions:
+            action = self._get_exact_deposit_action(ctx, self.dzr_token_uid)
+            required = self.method_fees_dzr.get("create_project", Amount(0))
+            if required <= 0:
+                raise InsufficientCredits("DZR create_project fee is not configured")
+            if action.amount != required:
+                raise InsufficientCredits(
+                    f"DZR create_project fee must be exactly {required}"
+                )
+            self.platform_dzr_fees = Amount(self.platform_dzr_fees + required)
+            return self.dzr_token_uid.hex(), Amount(required)
+
+        raise InsufficientCredits("create_project fee must be paid in HTR or DZR")
+
+    def _take_protocol_fee(self, fee_token: TokenUid) -> list[NCFee]:
+        """Pay one protocol NCFee out of the platform fee reserve (never project credits)."""
+        if fee_token == TokenUid(HTR_UID):
+            if self.platform_htr_fees < 1:
+                raise InsufficientCredits(
+                    "Platform fee reserve cannot cover protocol fee"
+                )
+            self.platform_htr_fees = Amount(self.platform_htr_fees - 1)
+            return [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(1))]
+        # DZR cents: 100 DZR cents = 1 HTR cent at the 1% deposit rate
+        if self.platform_dzr_fees < 100:
+            raise InsufficientCredits("Platform fee reserve cannot cover protocol fee")
+        self.platform_dzr_fees = Amount(self.platform_dzr_fees - 100)
+        return [NCFee(token_uid=fee_token, amount=Amount(100))]
+
+    def _project_protocol_fee(self, token_uid: TokenUid) -> list[NCFee]:
+        """Protocol NCFee for an owner operation, paid from the project's credits (HTR first)."""
+        htr_left = self.project_htr_balance.get(token_uid, Amount(0))
+        if htr_left >= PROTOCOL_FEE_HTR:
+            self.project_htr_balance[token_uid] = Amount(htr_left - PROTOCOL_FEE_HTR)
+            return [NCFee(token_uid=TokenUid(HTR_UID), amount=Amount(PROTOCOL_FEE_HTR))]
+        dzr_left = self.project_dzr_balance.get(token_uid, Amount(0))
+        if dzr_left >= PROTOCOL_FEE_DZR:
+            self.project_dzr_balance[token_uid] = Amount(dzr_left - PROTOCOL_FEE_DZR)
+            return [NCFee(token_uid=self.dzr_token_uid, amount=Amount(PROTOCOL_FEE_DZR))]
+        raise InsufficientCredits("Project credits cannot cover the protocol fee")
+
+    def _project_htr_fee(self, token_uid: TokenUid) -> None:
+        """Charge the 1 HTR cent melt fee of a fee-based token to the project's HTR credits."""
+        htr_left = self.project_htr_balance.get(token_uid, Amount(0))
+        if htr_left < PROTOCOL_FEE_HTR:
+            raise InsufficientCredits("Project HTR credits cannot cover the melt fee")
+        self.project_htr_balance[token_uid] = Amount(htr_left - PROTOCOL_FEE_HTR)
+
+    def _user_action_with_fee(
+        self, ctx: Context, token_uid: TokenUid, is_deposit: bool
+    ) -> tuple[NCAction, list[NCFee]]:
+        """Token action of a user operation plus the HTR deposit paying its protocol NCFee.
+
+        The user pays the fee with an HTR deposit of exactly PROTOCOL_FEE_HTR, which this
+        contract hands on as the NCFee, so project credits and the platform never pay for it.
+        """
+        htr = TokenUid(HTR_UID)
+        if len(ctx.actions) != 2 or htr not in ctx.actions or token_uid not in ctx.actions:
+            raise DozerToolsError("Expected the token action plus an HTR protocol fee deposit")
+        fee_action = ctx.get_single_action(htr)
+        if not isinstance(fee_action, NCDepositAction) or fee_action.amount != PROTOCOL_FEE_HTR:
+            raise DozerToolsError("Protocol fee must be an HTR deposit of exactly 1")
+        action = ctx.get_single_action(token_uid)
+        if is_deposit:
+            if not isinstance(action, NCDepositAction):
+                raise DozerToolsError("Deposit action required")
+        elif not isinstance(action, NCWithdrawalAction):
+            raise DozerToolsError("Withdrawal action required")
+        if action.amount <= 0:
+            raise DozerToolsError("Amount must be positive")
+        return action, [NCFee(token_uid=htr, amount=Amount(PROTOCOL_FEE_HTR))]
+
+    def _get_exact_deposit_action(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> NCDepositAction:
+        if len(ctx.actions) != 1:
+            raise DozerToolsError("Exactly one deposit action required")
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCDepositAction):
+            raise DozerToolsError("Deposit action required")
+        if action.amount <= 0:
+            raise DozerToolsError("Deposit amount must be positive")
+        return action
+
+    def _get_exact_withdrawal_action(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> NCWithdrawalAction:
+        if len(ctx.actions) != 1:
+            raise DozerToolsError("Exactly one withdrawal action required")
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise DozerToolsError("Withdrawal action required")
+        if action.amount <= 0:
+            raise DozerToolsError("Withdrawal amount must be positive")
+        return action
+
+    def _require_refund(self, ctx: Context, token_uid: TokenUid, amount: Amount) -> None:
+        """Require a withdrawal action of exactly `amount` for `token_uid`."""
+        if token_uid not in ctx.actions:
+            raise InsufficientCredits("Missing credit refund withdrawal")
+        action = ctx.get_single_action(token_uid)
+        if not isinstance(action, NCWithdrawalAction) or action.amount != amount:
+            raise InsufficientCredits("Credit refund must match remaining balance")
+
+    def _is_registered_child_contract(self, contract_id: ContractId) -> bool:
+        for token_uid in self.all_projects:
+            if not self.project_exists.get(token_uid, False):
+                continue
+            if (
+                self.project_vesting_contract.get(token_uid, NULL_CONTRACT_ID)
+                == contract_id
+            ):
+                return True
+            if (
+                self.project_staking_contract.get(token_uid, NULL_CONTRACT_ID)
+                == contract_id
+            ):
+                return True
+            if (
+                self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
+                == contract_id
+            ):
+                return True
+            if (
+                self.project_crowdsale_contract.get(token_uid, NULL_CONTRACT_ID)
+                == contract_id
+            ):
+                return True
+        return False
+
+    def _generate_salt(
+        self, ctx: Context, token_uid: TokenUid, contract_type: str
+    ) -> bytes:
+        """Generate a unique salt for contract creation."""
+        return (
+            token_uid
+            + bytes(contract_type, "utf-8")
+            + bytes(str(ctx.block.timestamp), "utf-8")
+        )
+
+    @public(allow_deposit=True)
+    def initialize(
+        self,
+        ctx: Context,
+        dozer_pool_manager_id: ContractId,
+        dzr_token_uid: TokenUid,
+        minimum_deposit: Amount,
+    ) -> None:
+        """Initialize the DozerTools contract.
+
+        Args:
+            ctx: Transaction context
+            dozer_pool_manager_id: ContractId of the DozerPoolManager
+            dzr_token_uid: TokenUid of the DZR token for cheaper fees
+            minimum_deposit: Minimum deposit required to enable contract usage
+        """
+        self.contract_version = "1.0.0"
+        self.owner = Address(ctx.caller_id)
+        self.dozer_pool_manager_id = dozer_pool_manager_id
+        self.dzr_token_uid = dzr_token_uid
+        self.minimum_deposit = minimum_deposit
+        self.paused = False
+
+        # Initialize blueprint IDs as unset (NULL_CONTRACT_ID equivalent)
+        null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
+        self.vesting_blueprint_id = null_blueprint
+        self.staking_blueprint_id = null_blueprint
+        self.dao_blueprint_id = null_blueprint
+        self.crowdsale_blueprint_id = null_blueprint
+
+        # Initialize default crowdsale fees (0 = no fee)
+        self.default_crowdsale_platform_fee = Amount(0)
+        self.default_crowdsale_participation_fee = Amount(0)
+
+        # Initialize legacy permissions and blacklist
+        self.legacy_token_permissions: dict[TokenUid, Address] = {}
+        self.blacklisted_tokens: dict[TokenUid, bool] = {}
+
+        # Initialize project registry
+        self.project_exists: dict[TokenUid, bool] = {}
+        self.all_projects: list[TokenUid] = []
+        self.total_projects_count: int = 0
+        self.used_symbols: dict[str, bool] = {}
+
+        # Initialize project metadata
+        self.project_name: dict[TokenUid, str] = {}
+        self.project_symbol: dict[TokenUid, str] = {}
+        self.project_dev: dict[TokenUid, Address] = {}
+        self.project_created_at: dict[TokenUid, Timestamp] = {}
+        self.project_total_supply: dict[TokenUid, Amount] = {}
+        self.project_creation_mode: dict[TokenUid, str] = {}
+        self.project_creation_fee_token: dict[TokenUid, str] = {}
+        self.project_creation_fee_amount: dict[TokenUid, Amount] = {}
+        self.project_description: dict[TokenUid, str] = {}
+        self.project_website: dict[TokenUid, str] = {}
+        self.project_logo_url: dict[TokenUid, str] = {}
+        self.project_twitter: dict[TokenUid, str] = {}
+        self.project_telegram: dict[TokenUid, str] = {}
+        self.project_discord: dict[TokenUid, str] = {}
+        self.project_github: dict[TokenUid, str] = {}
+        self.project_category: dict[TokenUid, str] = {}
+        self.project_whitepaper_url: dict[TokenUid, str] = {}
+
+        # Initialize project credit balances
+        self.project_htr_balance: dict[TokenUid, Amount] = {}
+        self.project_dzr_balance: dict[TokenUid, Amount] = {}
+        self.platform_htr_fees = Amount(0)
+        self.platform_dzr_fees = Amount(0)
+
+        # Initialize all fees to 0 (free initially)
+        self.method_fees_htr: dict[str, Amount] = {}
+        self.method_fees_dzr: dict[str, Amount] = {}
+
+        # Initialize contract registries
+        self.project_vesting_contract: dict[TokenUid, ContractId] = {}
+        self.project_staking_contract: dict[TokenUid, ContractId] = {}
+        self.project_dao_contract: dict[TokenUid, ContractId] = {}
+        self.project_crowdsale_contract: dict[TokenUid, ContractId] = {}
+        self.project_pools: dict[TokenUid, str] = {}
+
+        # Initialize allocation percentages
+        self.project_staking_percentage: dict[TokenUid, int] = {}
+        self.project_public_sale_percentage: dict[TokenUid, int] = {}
+        self.project_dozer_pool_percentage: dict[TokenUid, int] = {}
+
+        # Initialize configuration flags
+        self.project_vesting_configured: dict[TokenUid, bool] = {}
+        self.project_melt_authority_acquired: dict[TokenUid, bool] = {}
+
+    @public(allow_deposit=True)
+    def create_project(
+        self,
+        ctx: Context,
+        token_name: str,
+        token_symbol: str,
+        total_supply: Amount,
+        description: str,
+        website: str,
+        logo_url: str,
+        twitter: str,
+        telegram: str,
+        discord: str,
+        github: str,
+        category: str,
+        whitepaper_url: str,
+    ) -> TokenUid:
+        """Create new token project with metadata.
+
+        Args:
+            ctx: Transaction context
+            token_name: Human-readable name of the token
+            token_symbol: Symbol/ticker of the token
+            initial_supply: Initial amount to mint
+            total_supply: Maximum total supply
+            description: Project description (optional)
+            website: Official website (optional)
+            logo_url: Logo image URL (optional)
+            twitter: Twitter handle (optional)
+            telegram: Telegram link (optional)
+            discord: Discord link (optional)
+            github: GitHub link (optional)
+            category: Project category (optional)
+            whitepaper_url: Whitepaper link (optional)
+
+        Returns:
+            TokenUid of the created token
+        """
+        # Check if contract is paused (owner can still create projects when paused)
+        self._validate_not_paused(ctx)
+
+        # Charge project creation fee directly from this transaction.
+        fee_token_uid_hex, fee_amount = self._charge_create_project_fee(ctx)
+
+        # Check if symbol is currently in use (not permanently reserved)
+        if self.symbol_exists(token_symbol):
+            raise ProjectAlreadyExists(
+                f"Token symbol '{token_symbol}' is currently in use"
+            )
+
+        # Create token with fee-based mint path (no 1% HTR deposit model).
+        # Use the same token that was used to pay the creation fee to also pay the token creation fee.
+        fee_token_uid_bytes = bytes.fromhex(fee_token_uid_hex)
+        # The token-creation fee is also paid out of the contract balance.
+        self._take_protocol_fee(TokenUid(fee_token_uid_bytes))
+        token_uid = self.syscall.create_fee_token(
+            token_name=token_name,
+            token_symbol=token_symbol,
+            amount=total_supply,
+            mint_authority=True,
+            melt_authority=True,
+            fee_payment_token=TokenUid(fee_token_uid_bytes),
+        )
+
+        # Validate token permissions for legacy tokens
+        self._validate_legacy_token_permission(ctx, token_uid)
+        self._validate_token_not_blacklisted(token_uid)
+
+        if self.project_exists.get(token_uid, False):
+            raise ProjectAlreadyExists("Project already exists for this token")
+
+        # Store basic project information
+        self.project_exists[token_uid] = True
+        self.all_projects.append(token_uid)
+        self.total_projects_count += 1
+        self.project_name[token_uid] = token_name
+        self.project_symbol[token_uid] = token_symbol
+        self.project_dev[token_uid] = Address(ctx.caller_id)
+        self.project_created_at[token_uid] = Timestamp(ctx.block.timestamp)
+        self.project_total_supply[token_uid] = total_supply
+        self.project_creation_mode[token_uid] = "fee_based"
+        self.project_creation_fee_token[token_uid] = fee_token_uid_hex
+        self.project_creation_fee_amount[token_uid] = fee_amount
+
+        # Mark symbol as currently in use (will be freed if project is cancelled)
+        self.used_symbols[token_symbol.upper().strip()] = True
+
+        # Store optional metadata (only if provided and not empty)
+        if description != "":
+            self.project_description[token_uid] = description
+        if website != "":
+            self.project_website[token_uid] = website
+        if logo_url != "":
+            self.project_logo_url[token_uid] = logo_url
+        if twitter != "":
+            self.project_twitter[token_uid] = twitter
+        if telegram != "":
+            self.project_telegram[token_uid] = telegram
+        if discord != "":
+            self.project_discord[token_uid] = discord
+        if github != "":
+            self.project_github[token_uid] = github
+        if category != "":
+            self.project_category[token_uid] = category
+        if whitepaper_url != "":
+            self.project_whitepaper_url[token_uid] = whitepaper_url
+
+        # Create vesting contract and deposit ALL tokens
+        vesting_salt = self._generate_salt(ctx, token_uid, "vesting")
+        vesting_actions: list[NCAction] = [
+            NCDepositAction(token_uid=token_uid, amount=total_supply)
+        ]
+
+        # NCFee required by the protocol when depositing a fee-based token into another
+        # contract (1 HTR cent, or 100 DZR cents), paid from the platform fee reserve.
+        vesting_fees = self._take_protocol_fee(TokenUid(fee_token_uid_bytes))
+
+        self._ensure_vesting_blueprint_configured()
+        vesting_id, _ = self.syscall.setup_new_contract(
+            self.vesting_blueprint_id,
+            *vesting_actions,
+            fees=vesting_fees,
+            salt=vesting_salt,
+        ).initialize(
+            token_uid,  # Initialize vesting with the token
+            self.syscall.get_contract_id(),  # Pass DozerTools contract ID as creator
+        )
+
+        # Initialize contract references
+        self.project_vesting_contract[token_uid] = vesting_id
+        self.project_staking_contract[token_uid] = NULL_CONTRACT_ID
+        self.project_dao_contract[token_uid] = NULL_CONTRACT_ID
+        self.project_crowdsale_contract[token_uid] = NULL_CONTRACT_ID
+        self.project_pools[token_uid] = ""
+
+        # Initialize special allocation percentages (0 means not configured)
+        self.project_staking_percentage[token_uid] = 0
+        self.project_public_sale_percentage[token_uid] = 0
+        self.project_dozer_pool_percentage[token_uid] = 0
+
+        # Initialize vesting configuration status
+        self.project_vesting_configured[token_uid] = False
+
+        # Initialize melt authority tracking
+        self.project_melt_authority_acquired[token_uid] = False
+
+        # Initialize credit balances
+        self.project_htr_balance[token_uid] = Amount(0)
+        self.project_dzr_balance[token_uid] = Amount(0)
+
+        return token_uid
+
+    @public(allow_deposit=True)
+    def deposit_credits(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Deposit HTR/DZR credits to project balance.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        self._validate_not_paused(ctx)
+        self._only_project_dev(ctx, token_uid)
+        if TokenUid(HTR_UID) in ctx.actions:
+            deposit_action = self._get_exact_deposit_action(ctx, TokenUid(HTR_UID))
+            action_amount = Amount(deposit_action.amount)
+            current_balance = self.project_htr_balance.get(token_uid, Amount(0))
+            self.project_htr_balance[token_uid] = Amount(
+                current_balance + action_amount
+            )
+        elif self.dzr_token_uid in ctx.actions:
+            deposit_action = self._get_exact_deposit_action(ctx, self.dzr_token_uid)
+            action_amount = Amount(deposit_action.amount)
+            current_balance = self.project_dzr_balance.get(token_uid, Amount(0))
+            self.project_dzr_balance[token_uid] = Amount(
+                current_balance + action_amount
+            )
+        else:
+            raise InsufficientCredits("Only HTR and DZR deposits accepted")
+
+    @public(allow_deposit=True)
+    def fund_platform_fee_reserve(self, ctx: Context) -> None:
+        """Top up the platform fee reserve that pays protocol NCFees (anyone may call).
+
+        Accepts exactly one HTR or DZR deposit.
+        """
+        if TokenUid(HTR_UID) in ctx.actions:
+            action = self._get_exact_deposit_action(ctx, TokenUid(HTR_UID))
+            self.platform_htr_fees = Amount(self.platform_htr_fees + action.amount)
+        elif self.dzr_token_uid in ctx.actions:
+            action = self._get_exact_deposit_action(ctx, self.dzr_token_uid)
+            self.platform_dzr_fees = Amount(self.platform_dzr_fees + action.amount)
+        else:
+            raise InsufficientCredits("Only HTR and DZR deposits accepted")
+
+    @public
+    def create_staking_contract(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        earnings_per_day: int,
+    ) -> ContractId:
+        """Create staking contract with tokens from vesting contract.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            earnings_per_day: Daily earnings rate for staking rewards
+
+        Returns:
+            ContractId of the created staking contract
+        """
+        self._validate_not_paused(ctx)
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "create_staking_contract")
+
+        if (
+            self.project_staking_contract.get(token_uid, NULL_CONTRACT_ID)
+            != NULL_CONTRACT_ID
+        ):
+            raise ContractAlreadyExists("Staking contract already exists")
+
+        if not self.project_vesting_configured.get(token_uid, False):
+            raise VestingNotConfigured("Vesting must be configured first")
+
+        staking_percentage = self.project_staking_percentage.get(token_uid, 0)
+        if staking_percentage == 0:
+            raise InvalidAllocation("No staking allocation configured")
+
+        return self._create_staking(ctx, token_uid, earnings_per_day)
+
+    def _create_staking(
+        self, ctx: Context, token_uid: TokenUid, earnings_per_day: int
+    ) -> ContractId:
+        """Helper method to create staking contract with tokens from vesting."""
+        vesting_contract = self.project_vesting_contract[token_uid]
+        total_supply = self.project_total_supply[token_uid]
+        staking_percentage = self.project_staking_percentage[token_uid]
+
+        # Calculate staking allocation amount
+        staking_amount = Amount((total_supply * staking_percentage) // 100)
+
+        # Withdraw tokens from vesting contract (staking allocation)
+        withdraw_actions: list[NCAction] = [
+            NCWithdrawalAction(token_uid=token_uid, amount=staking_amount)
+        ]
+
+        self.syscall.get_contract(
+            vesting_contract,
+            blueprint_id=None,
+        ).public(*withdraw_actions, fees=self._project_protocol_fee(token_uid)).claim_allocation(
+            STAKING_ALLOCATION_INDEX,
+        )
+
+        # Create staking contract with withdrawn tokens
+        salt = self._generate_salt(ctx, token_uid, "staking")
+        staking_actions: list[NCAction] = [
+            NCDepositAction(token_uid=token_uid, amount=staking_amount)
+        ]
+
+        self._ensure_staking_blueprint_configured()
+        staking_id, _ = self.syscall.setup_new_contract(
+            self.staking_blueprint_id,
+            *staking_actions,
+            fees=self._project_protocol_fee(token_uid),
+            salt=salt,
+        ).initialize(
+            earnings_per_day,
+            token_uid,
+            self.syscall.get_contract_id(),
+        )
+
+        self.project_staking_contract[token_uid] = staking_id
+        return staking_id
+
+    @public
+    def create_dao_contract(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        name: str,
+        description: str,
+        voting_period_days: int,
+        quorum_percentage: int,
+        proposal_threshold: Amount,
+    ) -> ContractId:
+        """Create DAO contract.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            name: DAO name
+            description: DAO description
+            voting_period_days: Voting period in days
+            quorum_percentage: Minimum quorum percentage
+            proposal_threshold: Minimum tokens needed to create proposals
+
+        Returns:
+            ContractId of the created DAO contract
+        """
+        self._validate_not_paused(ctx)
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "create_dao_contract")
+
+        if (
+            self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
+            != NULL_CONTRACT_ID
+        ):
+            raise ContractAlreadyExists("DAO contract already exists")
+
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if staking_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Staking contract must be created first")
+
+        # Generate salt and create DAO contract
+        salt = self._generate_salt(ctx, token_uid, "dao")
+
+        self._ensure_dao_blueprint_configured()
+        dao_id, _ = self.syscall.setup_new_contract(
+            self.dao_blueprint_id,
+            salt=salt,
+        ).initialize(
+            name,
+            description,
+            token_uid,
+            staking_contract,
+            voting_period_days,
+            quorum_percentage,
+            proposal_threshold,
+            self.syscall.get_contract_id(),
+        )
+
+        self.project_dao_contract[token_uid] = dao_id
+        self.syscall.get_contract(
+            staking_contract,
+            blueprint_id=None,
+        ).public().authorize_governance_contract(dao_id)
+        return dao_id
+
+    @public
+    def create_crowdsale(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        rate: Amount,
+        soft_cap: Amount,
+        hard_cap: Amount,
+        min_deposit: Amount,
+        start_time: Timestamp,
+        end_time: Timestamp,
+    ) -> ContractId:
+        """Create crowdsale contract.
+
+        NOTE: Uses default platform_fee and participation_fee configured in DozerTools.
+        Project dev no longer passes fees - they're set globally by DozerTools owner.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            rate: Tokens per HTR
+            soft_cap: Minimum goal in HTR
+            hard_cap: Maximum cap in HTR
+            min_deposit: Minimum purchase in HTR
+            start_time: Sale start time
+            end_time: Sale end time
+
+        Returns:
+            ContractId of the created crowdsale contract
+        """
+        self._validate_not_paused(ctx)
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "create_crowdsale")
+
+        if (
+            self.project_crowdsale_contract.get(token_uid, NULL_CONTRACT_ID)
+            != NULL_CONTRACT_ID
+        ):
+            raise ContractAlreadyExists("Crowdsale contract already exists")
+
+        if not self.project_vesting_configured.get(token_uid, False):
+            raise VestingNotConfigured("Vesting must be configured first")
+
+        public_sale_percentage = self.project_public_sale_percentage.get(token_uid, 0)
+        if public_sale_percentage == 0:
+            raise InvalidAllocation("No public sale allocation configured")
+
+        # Use configured default fees
+        return self._create_crowdsale(
+            ctx,
+            token_uid,
+            rate,
+            soft_cap,
+            hard_cap,
+            min_deposit,
+            start_time,
+            end_time,
+            self.default_crowdsale_platform_fee,
+            self.default_crowdsale_participation_fee,
+        )
+
+    def _create_crowdsale(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        rate: Amount,
+        soft_cap: Amount,
+        hard_cap: Amount,
+        min_deposit: Amount,
+        start_time: Timestamp,
+        end_time: Timestamp,
+        platform_fee: Amount,
+        participation_fee: Amount,
+    ) -> ContractId:
+        """Helper method to create crowdsale contract with tokens from vesting."""
+        vesting_contract = self.project_vesting_contract[token_uid]
+        total_supply = self.project_total_supply[token_uid]
+        public_sale_percentage = self.project_public_sale_percentage[token_uid]
+
+        # Calculate public sale allocation amount
+        public_sale_amount = Amount((total_supply * public_sale_percentage) // 100)
+
+        # Withdraw tokens from vesting contract (public sale allocation)
+        withdraw_actions: list[NCAction] = [
+            NCWithdrawalAction(token_uid=token_uid, amount=public_sale_amount)
+        ]
+
+        self.syscall.get_contract(
+            vesting_contract,
+            blueprint_id=None,
+        ).public(*withdraw_actions, fees=self._project_protocol_fee(token_uid)).claim_allocation(
+            PUBLIC_SALE_ALLOCATION_INDEX,
+        )
+
+        # Generate salt and create crowdsale contract
+        salt = self._generate_salt(ctx, token_uid, "crowdsale")
+        crowdsale_actions: list[NCAction] = [
+            NCDepositAction(token_uid=token_uid, amount=public_sale_amount)
+        ]
+
+        self._ensure_crowdsale_blueprint_configured()
+        crowdsale_id, _ = self.syscall.setup_new_contract(
+            self.crowdsale_blueprint_id,
+            *crowdsale_actions,
+            fees=self._project_protocol_fee(token_uid),
+            salt=salt,
+        ).initialize(
+            token_uid,
+            rate,
+            soft_cap,
+            hard_cap,
+            min_deposit,
+            start_time,
+            end_time,
+            platform_fee,
+            participation_fee,
+            self.syscall.get_contract_id(),  # Pass DozerTools contract ID as creator
+        )
+
+        self.project_crowdsale_contract[token_uid] = crowdsale_id
+        return crowdsale_id
+
+    @public(allow_deposit=True)
+    def create_liquidity_pool(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        htr_amount: Amount,
+        fee: Amount,
+    ) -> str:
+        """Create a liquidity pool in DozerPoolManager.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            htr_amount: Amount of HTR to add to pool (user must deposit)
+            fee: Pool fee (e.g., 3 for 0.3%)
+
+        Returns:
+            Pool key from DozerPoolManager
+        """
+        self._validate_not_paused(ctx)
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "create_liquidity_pool")
+
+        if self.project_pools.get(token_uid, "") != "":
+            raise ContractAlreadyExists("Liquidity pool already exists")
+
+        if not self.project_vesting_configured.get(token_uid, False):
+            raise VestingNotConfigured("Vesting must be configured first")
+
+        dozer_pool_percentage = self.project_dozer_pool_percentage.get(token_uid, 0)
+        if dozer_pool_percentage == 0:
+            raise InvalidAllocation("No dozer pool allocation configured")
+
+        htr_action = self._get_exact_deposit_action(ctx, TokenUid(HTR_UID))
+        if htr_action.amount != htr_amount:
+            raise InvalidAllocation("HTR deposit must equal declared pool amount")
+
+        return self._create_liquidity_pool(ctx, token_uid, htr_amount, fee)
+
+    def _create_liquidity_pool(
+        self, _ctx: Context, token_uid: TokenUid, htr_amount: Amount, fee: Amount
+    ) -> str:
+        """Helper method to create liquidity pool with tokens from vesting."""
+        vesting_contract = self.project_vesting_contract[token_uid]
+        total_supply = self.project_total_supply[token_uid]
+        dozer_pool_percentage = self.project_dozer_pool_percentage[token_uid]
+
+        # Calculate dozer pool allocation amount
+        dozer_pool_amount = Amount((total_supply * dozer_pool_percentage) // 100)
+
+        # Withdraw tokens from vesting contract (dozer pool allocation)
+        withdraw_actions: list[NCAction] = [
+            NCWithdrawalAction(token_uid=token_uid, amount=dozer_pool_amount)
+        ]
+
+        self.syscall.get_contract(
+            vesting_contract,
+            blueprint_id=None,
+        ).public(*withdraw_actions, fees=self._project_protocol_fee(token_uid)).claim_allocation(
+            DOZER_POOL_ALLOCATION_INDEX,
+        )
+
+        # Prepare actions for pool creation (tokens from vesting + HTR from user)
+        pool_actions: list[NCAction] = [
+            NCDepositAction(token_uid=token_uid, amount=dozer_pool_amount),
+            NCDepositAction(token_uid=TokenUid(HTR_UID), amount=htr_amount),
+        ]
+
+        # Call DozerPoolManager to create pool
+        pool_key = (
+            self.syscall.get_contract(
+                self.dozer_pool_manager_id,
+                blueprint_id=None,
+            )
+            .public(*pool_actions, fees=self._project_protocol_fee(token_uid))
+            .create_pool(fee)
+        )
+
+        self.project_pools[token_uid] = pool_key
+        return pool_key
+
+    @public(allow_acquire_authority=True)
+    def get_melt_authority(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Transfer melt authority of project token to project owner.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        self._validate_not_paused(ctx)
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "get_melt_authority")
+
+        # Check if melt authority was already acquired
+        if self.project_melt_authority_acquired.get(token_uid, False):
+            raise Unauthorized("Melt authority was already acquired for this project")
+
+        # Check if the contract still has melt authority
+        if not self.syscall.can_melt(token_uid):
+            raise Unauthorized("Contract does not have melt authority for this token")
+
+        # Get project dev address (verified in _only_project_dev)
+        _dev_address = self.project_dev[token_uid]
+
+        action = ctx.get_single_action(token_uid)
+        if isinstance(action, NCAcquireAuthorityAction):
+            if action.mint:
+                raise Unauthorized(
+                    "Contract cannot acquire mint authority for this token"
+                )
+            if not action.melt:
+                raise Unauthorized("Must request melt authority acquisition")
+        else:
+            raise Unauthorized("Only acquire authority action is allowed")
+
+        # Transfer melt authority to the caller by acquiring it from the contract
+        # This will transfer the authority from the contract to the transaction caller
+
+        # Mark melt authority as acquired for this project
+        self.project_melt_authority_acquired[token_uid] = True
+
+    @public(allow_withdrawal=True)
+    def cancel_project(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Cancel project before vesting is configured.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+
+        This method can only be called:
+        - By the project dev
+        - When vesting is not yet configured
+        - Will melt all token supply
+        - Symbol is freed and can be reused for new projects
+        - Remaining HTR/DZR credits must be refunded via exact withdrawal actions
+        """
+        self._validate_not_paused(ctx)
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "cancel_project")
+
+        # Moving the supply out of the vesting contract and melting it each cost a protocol
+        # fee, paid from the project's credits before the remaining credits are refunded.
+        will_melt = self.syscall.can_melt(token_uid)
+        withdraw_fees: list[NCFee] = []
+        if will_melt:
+            withdraw_fees = self._project_protocol_fee(token_uid)
+            self._project_htr_fee(token_uid)
+
+        # Remaining credits must be refunded exactly (and nothing else withdrawn).
+        htr_left = self.project_htr_balance.get(token_uid, Amount(0))
+        dzr_left = self.project_dzr_balance.get(token_uid, Amount(0))
+        refunds = 0
+        if htr_left > 0:
+            self._require_refund(ctx, TokenUid(HTR_UID), htr_left)
+            refunds += 1
+        if dzr_left > 0:
+            self._require_refund(ctx, self.dzr_token_uid, dzr_left)
+            refunds += 1
+        if len(ctx.actions) != refunds:
+            raise InsufficientCredits("cancel_project only allows credit refunds")
+
+        # Check that vesting is not configured yet
+        if self.project_vesting_configured.get(token_uid, False):
+            raise InvalidAllocation("Cannot cancel project after vesting is configured")
+
+        # Get the total supply for full token cleanup
+        total_supply = self.project_total_supply[token_uid]
+
+        # Melt all token supply (contract has melt authority)
+        if will_melt:
+            # Get vesting contract that holds all tokens
+            vesting_contract = self.project_vesting_contract[token_uid]
+
+            # Withdraw all tokens from vesting contract to this contract first
+            withdraw_all_actions: list[NCAction] = [
+                NCWithdrawalAction(token_uid=token_uid, amount=total_supply)
+            ]
+
+            # Call vesting contract to get all tokens back
+            self.syscall.get_contract(
+                vesting_contract,
+                blueprint_id=None,
+            ).public(*withdraw_all_actions, fees=withdraw_fees).withdraw_available()
+
+            # Now melt all tokens that are in this contract (the 1 HTR cent melt fee was
+            # charged to the project's credits above)
+            self.syscall.melt_tokens(token_uid, total_supply)
+
+        # Remove project from all dictionaries and lists
+        # Basic information
+        if token_uid in self.project_exists:
+            del self.project_exists[token_uid]
+        if token_uid in self.project_name:
+            del self.project_name[token_uid]
+
+        # Free the symbol so it can be reused
+        if token_uid in self.project_symbol:
+            symbol = self.project_symbol[token_uid]
+            symbol_key = symbol.upper().strip()
+            if symbol_key in self.used_symbols:
+                del self.used_symbols[symbol_key]
+            del self.project_symbol[token_uid]
+
+        if token_uid in self.project_dev:
+            del self.project_dev[token_uid]
+        if token_uid in self.project_created_at:
+            del self.project_created_at[token_uid]
+        if token_uid in self.project_total_supply:
+            del self.project_total_supply[token_uid]
+        if token_uid in self.project_creation_mode:
+            del self.project_creation_mode[token_uid]
+        if token_uid in self.project_creation_fee_token:
+            del self.project_creation_fee_token[token_uid]
+        if token_uid in self.project_creation_fee_amount:
+            del self.project_creation_fee_amount[token_uid]
+
+        # Optional metadata
+        if token_uid in self.project_description:
+            del self.project_description[token_uid]
+        if token_uid in self.project_website:
+            del self.project_website[token_uid]
+        if token_uid in self.project_logo_url:
+            del self.project_logo_url[token_uid]
+        if token_uid in self.project_twitter:
+            del self.project_twitter[token_uid]
+        if token_uid in self.project_telegram:
+            del self.project_telegram[token_uid]
+        if token_uid in self.project_discord:
+            del self.project_discord[token_uid]
+        if token_uid in self.project_github:
+            del self.project_github[token_uid]
+        if token_uid in self.project_category:
+            del self.project_category[token_uid]
+        if token_uid in self.project_whitepaper_url:
+            del self.project_whitepaper_url[token_uid]
+
+        # Credit balances
+        if token_uid in self.project_htr_balance:
+            del self.project_htr_balance[token_uid]
+        if token_uid in self.project_dzr_balance:
+            del self.project_dzr_balance[token_uid]
+
+        # Contract references
+        if token_uid in self.project_vesting_contract:
+            del self.project_vesting_contract[token_uid]
+        if token_uid in self.project_staking_contract:
+            del self.project_staking_contract[token_uid]
+        if token_uid in self.project_dao_contract:
+            del self.project_dao_contract[token_uid]
+        if token_uid in self.project_crowdsale_contract:
+            del self.project_crowdsale_contract[token_uid]
+        if token_uid in self.project_pools:
+            del self.project_pools[token_uid]
+
+        # Allocation percentages
+        if token_uid in self.project_staking_percentage:
+            del self.project_staking_percentage[token_uid]
+        if token_uid in self.project_public_sale_percentage:
+            del self.project_public_sale_percentage[token_uid]
+        if token_uid in self.project_dozer_pool_percentage:
+            del self.project_dozer_pool_percentage[token_uid]
+
+        # Vesting status
+        if token_uid in self.project_vesting_configured:
+            del self.project_vesting_configured[token_uid]
+
+        # Melt authority tracking
+        if token_uid in self.project_melt_authority_acquired:
+            del self.project_melt_authority_acquired[token_uid]
+
+        # Mark project as deleted in all_projects list
+        # Note: We can't actually remove from lists in public methods due to iteration restrictions
+        # The project will be filtered out in view methods
+
+        # Decrease project count
+        self.total_projects_count -= 1
+
+    @public
+    def transfer_dev_authority(
+        self, ctx: Context, token_uid: TokenUid, new_dev: Address
+    ) -> None:
+        """Transfer project dev authority to another address.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            new_dev: New developer address
+        """
+        self._validate_not_paused(ctx)
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "transfer_dev_authority")
+
+        # Update dev address
+        self.project_dev[token_uid] = new_dev
+
+    @public
+    def update_project_metadata(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        description: str,
+        website: str,
+        logo_url: str,
+        twitter: str,
+        telegram: str,
+        discord: str,
+        github: str,
+        category: str,
+        whitepaper_url: str,
+    ) -> None:
+        """Update project metadata.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            description: Project description (empty string to remove)
+            website: Official website (empty string to remove)
+            logo_url: Logo image URL (empty string to remove)
+            twitter: Twitter handle (empty string to remove)
+            telegram: Telegram link (empty string to remove)
+            discord: Discord link (empty string to remove)
+            github: GitHub link (empty string to remove)
+            category: Project category (empty string to remove)
+            whitepaper_url: Whitepaper link (empty string to remove)
+        """
+        self._validate_not_paused(ctx)
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "update_project_metadata")
+
+        # Update metadata (store empty strings as deletion from dict)
+        if description != "":
+            self.project_description[token_uid] = description
+        elif token_uid in self.project_description:
+            del self.project_description[token_uid]
+
+        if website != "":
+            self.project_website[token_uid] = website
+        elif token_uid in self.project_website:
+            del self.project_website[token_uid]
+
+        if logo_url != "":
+            self.project_logo_url[token_uid] = logo_url
+        elif token_uid in self.project_logo_url:
+            del self.project_logo_url[token_uid]
+
+        if twitter != "":
+            self.project_twitter[token_uid] = twitter
+        elif token_uid in self.project_twitter:
+            del self.project_twitter[token_uid]
+
+        if telegram != "":
+            self.project_telegram[token_uid] = telegram
+        elif token_uid in self.project_telegram:
+            del self.project_telegram[token_uid]
+
+        if discord != "":
+            self.project_discord[token_uid] = discord
+        elif token_uid in self.project_discord:
+            del self.project_discord[token_uid]
+
+        if github != "":
+            self.project_github[token_uid] = github
+        elif token_uid in self.project_github:
+            del self.project_github[token_uid]
+
+        if category != "":
+            self.project_category[token_uid] = category
+        elif token_uid in self.project_category:
+            del self.project_category[token_uid]
+
+        if whitepaper_url != "":
+            self.project_whitepaper_url[token_uid] = whitepaper_url
+        elif token_uid in self.project_whitepaper_url:
+            del self.project_whitepaper_url[token_uid]
+
+    # Blueprint Configuration Methods (Admin Only)
+
+    @public
+    def set_vesting_blueprint_id(
+        self,
+        ctx: Context,
+        blueprint_id: BlueprintId,
+    ) -> None:
+        """Admin method to set the vesting blueprint ID.
+
+        Args:
+            ctx: Transaction context
+            blueprint_id: Blueprint ID for vesting contracts
+        """
+        self._only_owner(ctx)
+        self.vesting_blueprint_id = blueprint_id
+
+    @public
+    def set_staking_blueprint_id(
+        self,
+        ctx: Context,
+        blueprint_id: BlueprintId,
+    ) -> None:
+        """Admin method to set the staking blueprint ID.
+
+        Args:
+            ctx: Transaction context
+            blueprint_id: Blueprint ID for staking contracts
+        """
+        self._only_owner(ctx)
+        self.staking_blueprint_id = blueprint_id
+
+    @public
+    def set_dao_blueprint_id(
+        self,
+        ctx: Context,
+        blueprint_id: BlueprintId,
+    ) -> None:
+        """Admin method to set the DAO blueprint ID.
+
+        Args:
+            ctx: Transaction context
+            blueprint_id: Blueprint ID for DAO contracts
+        """
+        self._only_owner(ctx)
+        self.dao_blueprint_id = blueprint_id
+
+    @public
+    def set_crowdsale_blueprint_id(
+        self,
+        ctx: Context,
+        blueprint_id: BlueprintId,
+    ) -> None:
+        """Admin method to set the crowdsale blueprint ID.
+
+        Args:
+            ctx: Transaction context
+            blueprint_id: Blueprint ID for crowdsale contracts
+        """
+        self._only_owner(ctx)
+        self.crowdsale_blueprint_id = blueprint_id
+
+    def _ensure_vesting_blueprint_configured(self) -> None:
+        """Ensure vesting blueprint is configured."""
+        null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
+        if self.vesting_blueprint_id == null_blueprint:
+            raise FeatureNotAvailable("Vesting feature not available")
+
+    def _ensure_staking_blueprint_configured(self) -> None:
+        """Ensure staking blueprint is configured."""
+        null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
+        if self.staking_blueprint_id == null_blueprint:
+            raise FeatureNotAvailable("Staking feature not available")
+
+    def _ensure_dao_blueprint_configured(self) -> None:
+        """Ensure DAO blueprint is configured."""
+        null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
+        if self.dao_blueprint_id == null_blueprint:
+            raise FeatureNotAvailable("DAO feature not available")
+
+    def _ensure_crowdsale_blueprint_configured(self) -> None:
+        """Ensure crowdsale blueprint is configured."""
+        null_blueprint = BlueprintId(VertexId(b"\x00" * 32))
+        if self.crowdsale_blueprint_id == null_blueprint:
+            raise FeatureNotAvailable("Crowdsale feature not available")
+
+    @public
+    def set_dzr_token_uid(
+        self,
+        ctx: Context,
+        dzr_token_uid: TokenUid,
+    ) -> None:
+        """Update the DZR token UID used for discounted fees (owner only).
+
+        This is intended to be called once after the real DZR token is created
+        via DozerTools, replacing the placeholder UID set at initialization.
+        Only allowed while the contract holds no DZR (no credits, no fees).
+
+        Args:
+            ctx: Transaction context
+            dzr_token_uid: The real DZR token UID
+        """
+        self._only_owner(ctx)
+        # Existing DZR credits/fees must never be remapped onto another token.
+        if self.platform_dzr_fees != 0 or self.syscall.get_current_balance(
+            self.dzr_token_uid
+        ) != 0:
+            raise DozerToolsError("Cannot change DZR token while DZR is held")
+        self.dzr_token_uid = dzr_token_uid
+
+    # Crowdsale Fee Configuration Methods (Admin Only)
+
+    @public
+    def set_default_crowdsale_platform_fee(
+        self,
+        ctx: Context,
+        platform_fee: Amount,
+    ) -> None:
+        """Set default platform fee for new crowdsales (owner only).
+
+        Args:
+            ctx: Transaction context
+            platform_fee: Platform fee in basis points (0-1000, where 1000 = 10%)
+                         0 means no platform fee
+        """
+        self._only_owner(ctx)
+
+        # Validate fee range (0 is allowed for no fee)
+        if platform_fee > MAX_PLATFORM_FEE:
+            raise DozerToolsError(
+                f"Platform fee cannot exceed {MAX_PLATFORM_FEE} basis points (10%)"
+            )
+
+        self.default_crowdsale_platform_fee = platform_fee
+
+    @public
+    def set_default_crowdsale_participation_fee(
+        self,
+        ctx: Context,
+        participation_fee: Amount,
+    ) -> None:
+        """Set default participation fee for new crowdsales (owner only).
+
+        Args:
+            ctx: Transaction context
+            participation_fee: Participation fee in basis points (0-300, where 300 = 3%)
+                              0 means no participation fee
+        """
+        self._only_owner(ctx)
+
+        # Validate fee range (0 is allowed for no fee)
+        if participation_fee > MAX_PARTICIPATION_FEE:
+            raise DozerToolsError(
+                f"Participation fee cannot exceed {MAX_PARTICIPATION_FEE} basis points (3%)"
+            )
+
+        self.default_crowdsale_participation_fee = participation_fee
+
+    # Admin Methods
+
+    @public
+    def update_method_fees(
+        self,
+        ctx: Context,
+        method_name: str,
+        htr_fee: Amount,
+        dzr_fee: Amount,
+    ) -> None:
+        """Admin method to update fees for specific methods.
+
+        Args:
+            ctx: Transaction context
+            method_name: Name of the method
+            htr_fee: Fee in HTR
+            dzr_fee: Fee in DZR
+        """
+        self._only_owner(ctx)
+        self.method_fees_htr[method_name] = htr_fee
+        self.method_fees_dzr[method_name] = dzr_fee
+
+    @public
+    def blacklist_token(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Admin method to blacklist a token from UI.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Token UID to blacklist
+        """
+        self._only_owner(ctx)
+        self.blacklisted_tokens[token_uid] = True
+
+    @public
+    def unblacklist_token(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Admin method to remove token from blacklist.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Token UID to unblacklist
+        """
+        self._only_owner(ctx)
+        self.blacklisted_tokens[token_uid] = False
+
+    @public
+    def set_legacy_token_permission(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        authorized_address: Address,
+    ) -> None:
+        """Admin method to set who can create project for legacy tokens.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Legacy token UID
+            authorized_address: Address authorized to create project
+        """
+        self._only_owner(ctx)
+        self.legacy_token_permissions[token_uid] = authorized_address
+
+    @public(allow_withdrawal=True)
+    def withdraw_platform_htr_fees(self, ctx: Context) -> None:
+        """Withdraw accumulated HTR method fees."""
+        self._only_owner(ctx)
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+        if action.amount != self.platform_htr_fees:
+            raise InsufficientCredits("Invalid HTR fee withdrawal amount")
+        self.platform_htr_fees = Amount(0)
+
+    @public(allow_withdrawal=True)
+    def withdraw_platform_dzr_fees(self, ctx: Context) -> None:
+        """Withdraw accumulated DZR method fees."""
+        self._only_owner(ctx)
+        action = self._get_exact_withdrawal_action(ctx, self.dzr_token_uid)
+        if action.amount != self.platform_dzr_fees:
+            raise InsufficientCredits("Invalid DZR fee withdrawal amount")
+        self.platform_dzr_fees = Amount(0)
+
+    @public(allow_withdrawal=True)
+    def withdraw_credits(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Withdraw unused HTR or DZR credits from the project balance.
+
+        Allows the project dev to reclaim credits they deposited but have not
+        spent on operations. One token per call (HTR or DZR). Partial
+        withdrawals are allowed — the withdrawal action amount must not exceed
+        the current balance.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID whose credits to withdraw
+
+        Raises:
+            Unauthorized: If caller is not the project dev
+            ProjectNotFound: If project does not exist
+            DozerToolsError: If withdrawal action is invalid
+            InsufficientCredits: If withdrawal amount exceeds available balance
+        """
+        self._validate_not_paused(ctx)
+        self._only_project_dev(ctx, token_uid)
+
+        if TokenUid(HTR_UID) in ctx.actions:
+            action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+            htr_balance = self.project_htr_balance.get(token_uid, Amount(0))
+            if Amount(action.amount) > htr_balance:
+                raise InsufficientCredits(
+                    f"Withdrawal amount exceeds HTR balance of {htr_balance}"
+                )
+            self.project_htr_balance[token_uid] = Amount(htr_balance - action.amount)
+        elif self.dzr_token_uid in ctx.actions:
+            action = self._get_exact_withdrawal_action(ctx, self.dzr_token_uid)
+            dzr_balance = self.project_dzr_balance.get(token_uid, Amount(0))
+            if Amount(action.amount) > dzr_balance:
+                raise InsufficientCredits(
+                    f"Withdrawal amount exceeds DZR balance of {dzr_balance}"
+                )
+            self.project_dzr_balance[token_uid] = Amount(dzr_balance - action.amount)
+        else:
+            raise DozerToolsError("Withdrawal must be for HTR or DZR")
+
+    @public
+    def change_owner(self, ctx: Context, new_owner: Address) -> None:
+        """Change the contract owner.
+
+        Args:
+            ctx: Transaction context
+            new_owner: New owner address
+        """
+        self._only_owner(ctx)
+        self.owner = new_owner
+
+    @public
+    def pause(self, ctx: Context) -> None:
+        """Emergency pause functionality.
+
+        Only the owner can pause the contract.
+        When paused, all project creation and management operations are blocked.
+
+        Args:
+            ctx: The transaction context
+
+        Raises:
+            Unauthorized: If the caller is not the owner
+        """
+        self._only_owner(ctx)
+        self.paused = True
+
+    @public
+    def unpause(self, ctx: Context) -> None:
+        """Unpause functionality.
+
+        Only the owner can unpause the contract.
+
+        Args:
+            ctx: The transaction context
+
+        Raises:
+            Unauthorized: If the caller is not the owner
+        """
+        self._only_owner(ctx)
+        self.paused = False
+
+    # View Methods (JSON Structure)
+
+    @view
+    def get_all_projects(self) -> dict[str, str]:
+        """Get all projects with basic information in JSON format.
+
+        Returns:
+            Dictionary with project information
+        """
+        projects = {}
+        for token_uid in self.all_projects:
+            # Only include projects that still exist and are not blacklisted
+            if self.project_exists.get(
+                token_uid, False
+            ) and not self.blacklisted_tokens.get(token_uid, False):
+                projects[token_uid.hex()] = self.project_name.get(token_uid, "")
+        return projects
+
+    @view
+    def get_project_info(self, token_uid: TokenUid) -> dict[str, str]:
+        """Get complete project information in JSON format.
+
+        Args:
+            token_uid: Project token UID
+
+        Returns:
+            Dictionary with complete project information
+        """
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+
+        project_info = {
+            "token_uid": token_uid.hex(),
+            "name": self.project_name.get(token_uid, ""),
+            "symbol": self.project_symbol.get(token_uid, ""),
+            "dev": self.project_dev.get(token_uid, Address(b"\x00" * 25)).hex(),
+            "created_at": str(self.project_created_at.get(token_uid, 0)),
+            "total_supply": str(self.project_total_supply.get(token_uid, 0)),
+            "description": self.project_description.get(token_uid, ""),
+            "website": self.project_website.get(token_uid, ""),
+            "logo_url": self.project_logo_url.get(token_uid, ""),
+            "twitter": self.project_twitter.get(token_uid, ""),
+            "telegram": self.project_telegram.get(token_uid, ""),
+            "discord": self.project_discord.get(token_uid, ""),
+            "github": self.project_github.get(token_uid, ""),
+            "category": self.project_category.get(token_uid, ""),
+            "whitepaper_url": self.project_whitepaper_url.get(token_uid, ""),
+            "creation_mode": self.project_creation_mode.get(token_uid, ""),
+            "creation_fee_token": self.project_creation_fee_token.get(token_uid, ""),
+            "creation_fee_amount": str(
+                self.project_creation_fee_amount.get(token_uid, Amount(0))
+            ),
+            "melt_authority_acquired": str(
+                self.project_melt_authority_acquired.get(token_uid, False)
+            ).lower(),
+        }
+
+        return project_info
+
+    @view
+    def get_project_contracts(self, token_uid: TokenUid) -> dict[str, str]:
+        """Get project contract information.
+
+        Args:
+            token_uid: Project token UID
+
+        Returns:
+            Dictionary with contract information
+        """
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+
+        vesting_contract = self.project_vesting_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        dao_contract = self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+
+        return {
+            "vesting_contract": (
+                vesting_contract.hex() if vesting_contract != NULL_CONTRACT_ID else ""
+            ),
+            "staking_contract": (
+                staking_contract.hex() if staking_contract != NULL_CONTRACT_ID else ""
+            ),
+            "dao_contract": (
+                dao_contract.hex() if dao_contract != NULL_CONTRACT_ID else ""
+            ),
+            "crowdsale_contract": (
+                crowdsale_contract.hex()
+                if crowdsale_contract != NULL_CONTRACT_ID
+                else ""
+            ),
+            "liquidity_pool": self.project_pools.get(token_uid, ""),
+        }
+
+    @view
+    def get_project_credits(self, token_uid: TokenUid) -> dict[str, str]:
+        """Get project credit balances.
+
+        Args:
+            token_uid: Project token UID
+
+        Returns:
+            Dictionary with credit information
+        """
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+
+        return {
+            "htr_balance": str(self.project_htr_balance.get(token_uid, Amount(0))),
+            "dzr_balance": str(self.project_dzr_balance.get(token_uid, Amount(0))),
+            "minimum_deposit": str(self.minimum_deposit),
+        }
+
+    @view
+    def get_platform_fee_balances(self) -> dict[str, str]:
+        """Get accumulated method fees withdrawable by the platform owner."""
+        return {
+            "htr_fees": str(self.platform_htr_fees),
+            "dzr_fees": str(self.platform_dzr_fees),
+        }
+
+    @view
+    def search_projects_by_category(self, category: str) -> dict[str, str]:
+        """Search projects by category.
+
+        Args:
+            category: Project category to search for
+
+        Returns:
+            Dictionary with matching projects
+        """
+        projects = {}
+        for token_uid in self.all_projects:
+            # Only include projects that still exist and are not blacklisted
+            if self.project_exists.get(
+                token_uid, False
+            ) and not self.blacklisted_tokens.get(token_uid, False):
+                project_category = self.project_category.get(token_uid, "")
+                if project_category == category:
+                    projects[token_uid.hex()] = self.project_name.get(token_uid, "")
+        return projects
+
+    @view
+    def get_projects_by_dev(self, dev_address: Address) -> dict[str, str]:
+        """Get all projects by a specific developer.
+
+        Args:
+            dev_address: Developer address
+
+        Returns:
+            Dictionary with projects by the developer
+        """
+        projects = {}
+        for token_uid in self.all_projects:
+            # Only include projects that still exist and are not blacklisted
+            if self.project_exists.get(
+                token_uid, False
+            ) and not self.blacklisted_tokens.get(token_uid, False):
+                project_dev = self.project_dev.get(token_uid, Address(b"\x00" * 25))
+                if project_dev == dev_address:
+                    projects[token_uid.hex()] = self.project_name.get(token_uid, "")
+        return projects
+
+    @view
+    def get_method_fees(self, method_name: str) -> dict[str, str]:
+        """Get fees for a specific method.
+
+        Args:
+            method_name: Name of the method to get fees for
+
+        Returns:
+            Dictionary with fee information for the method
+        """
+        htr_fee = self.method_fees_htr.get(method_name, Amount(0))
+        dzr_fee = self.method_fees_dzr.get(method_name, Amount(0))
+        return {
+            "method_name": method_name,
+            "htr_fee": str(htr_fee),
+            "dzr_fee": str(dzr_fee),
+        }
+
+    @view
+    def is_token_blacklisted(self, token_uid: TokenUid) -> bool:
+        """Check if token is blacklisted.
+
+        Args:
+            token_uid: Token UID to check
+
+        Returns:
+            True if blacklisted, False otherwise
+        """
+        return self.blacklisted_tokens.get(token_uid, False)
+
+    @view
+    def symbol_exists(self, symbol: str) -> bool:
+        """Check if a token symbol has ever been used.
+
+        Once a symbol is used by any project (active or cancelled), it becomes
+        permanently reserved and cannot be reused by any future projects.
+
+        Args:
+            symbol: Token symbol to check
+
+        Returns:
+            True if symbol has ever been used, False otherwise
+        """
+        symbol_upper = symbol.upper().strip()
+        return self.used_symbols.get(symbol_upper, False)
+
+    @view
+    def can_cancel_project(self, token_uid: TokenUid) -> bool:
+        """Check if a project can be cancelled.
+
+        Args:
+            token_uid: Project token UID
+
+        Returns:
+            True if project can be cancelled (exists and vesting not configured), False otherwise
+        """
+        if not self.project_exists.get(token_uid, False):
+            return False
+
+        return not self.project_vesting_configured.get(token_uid, False)
+
+    @view
+    def get_contract_info(self) -> dict[str, str]:
+        """Get contract configuration information.
+
+        Returns:
+            Dictionary with contract information
+        """
+        return {
+            "owner": self.owner.hex(),
+            "dozer_pool_manager_id": self.dozer_pool_manager_id.hex(),
+            "dzr_token_uid": self.dzr_token_uid.hex(),
+            "minimum_deposit": str(self.minimum_deposit),
+            "total_projects": str(self.total_projects_count),
+            "paused": str(self.paused).lower(),
+        }
+
+    @view
+    def get_crowdsale_fee_config(self) -> dict[str, str]:
+        """Get current default crowdsale fee configuration.
+
+        Returns:
+            Dictionary with fee configuration in basis points
+        """
+        return {
+            "default_platform_fee_bp": str(self.default_crowdsale_platform_fee),
+            "default_participation_fee_bp": str(
+                self.default_crowdsale_participation_fee
+            ),
+            "platform_fee": str(self.default_crowdsale_platform_fee),
+            "participation_fee": str(self.default_crowdsale_participation_fee),
+        }
+
+    @view
+    def get_crowdsale_fees_info(self, token_uid: TokenUid) -> dict[str, str]:
+        """Get fee information for a specific crowdsale.
+
+        Args:
+            token_uid: Project token UID
+
+        Returns:
+            Dictionary with crowdsale fee details
+        """
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Call crowdsale's view method to get fee info
+        return (
+            self.syscall.get_contract(
+                crowdsale_contract,
+                blueprint_id=None,
+            )
+            .view()
+            .get_fee_info()
+        )
+
+    @view
+    def get_project_vesting_overview(self, token_uid: TokenUid) -> dict[str, str]:
+        """Get comprehensive vesting information with special allocation rules.
+
+        Args:
+            token_uid: Project token UID
+
+        Returns:
+            Dictionary with combined vesting information
+        """
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+
+        if not self.project_vesting_configured.get(token_uid, False):
+            return {
+                "vesting_configured": "false",
+                "vesting_contract": self.project_vesting_contract.get(
+                    token_uid, NULL_CONTRACT_ID
+                ).hex(),
+                "message": "Vesting not configured yet",
+            }
+
+        vesting_contract = self.project_vesting_contract[token_uid]
+        _current_timestamp = 0  # In real usage, this would be ctx.timestamp
+
+        # Get base vesting information for special allocations
+        overview = {
+            "vesting_configured": "true",
+            "vesting_contract": vesting_contract.hex(),
+        }
+
+        # Special allocation information with custom rules
+        staking_percentage = self.project_staking_percentage.get(token_uid, 0)
+        if staking_percentage > 0:
+            staking_contract = self.project_staking_contract.get(
+                token_uid, NULL_CONTRACT_ID
+            )
+            if staking_contract != NULL_CONTRACT_ID:
+                # Staking tokens are distributed via emissions, show as active
+                overview["staking_status"] = "active"
+                overview["staking_percentage"] = str(staking_percentage)
+                overview["staking_contract"] = staking_contract.hex()
+            else:
+                # Staking allocation exists but contract not created
+                overview["staking_status"] = "allocated_not_deployed"
+                overview["staking_percentage"] = str(staking_percentage)
+
+        public_sale_percentage = self.project_public_sale_percentage.get(token_uid, 0)
+        if public_sale_percentage > 0:
+            crowdsale_contract = self.project_crowdsale_contract.get(
+                token_uid, NULL_CONTRACT_ID
+            )
+            if crowdsale_contract != NULL_CONTRACT_ID:
+                # Get crowdsale status to determine unlock status
+                # In reality, we'd call crowdsale contract view methods
+                overview["public_sale_status"] = "deployed"
+                overview["public_sale_percentage"] = str(public_sale_percentage)
+                overview["crowdsale_contract"] = crowdsale_contract.hex()
+            else:
+                overview["public_sale_status"] = "allocated_not_deployed"
+                overview["public_sale_percentage"] = str(public_sale_percentage)
+
+        dozer_pool_percentage = self.project_dozer_pool_percentage.get(token_uid, 0)
+        if dozer_pool_percentage > 0:
+            pool_key = self.project_pools.get(token_uid, "")
+            if pool_key != "":
+                # Pool created, tokens are 100% liquid
+                overview["dozer_pool_status"] = "deployed"
+                overview["dozer_pool_percentage"] = str(dozer_pool_percentage)
+                overview["pool_key"] = pool_key
+            else:
+                overview["dozer_pool_status"] = "allocated_not_deployed"
+                overview["dozer_pool_percentage"] = str(dozer_pool_percentage)
+
+        return overview
+
+    @view
+    def get_project_token_distribution(self, token_uid: TokenUid) -> dict[str, str]:
+        """Show how tokens are distributed across contracts and vesting.
+
+        Args:
+            token_uid: Project token UID
+
+        Returns:
+            Dictionary with token distribution information
+        """
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+
+        total_supply = self.project_total_supply[token_uid]
+        distribution = {
+            "total_supply": str(total_supply),
+            "vesting_contract": self.project_vesting_contract.get(
+                token_uid, NULL_CONTRACT_ID
+            ).hex(),
+        }
+
+        if not self.project_vesting_configured.get(token_uid, False):
+            distribution["status"] = "all_tokens_in_vesting_unconfigured"
+            return distribution
+
+        # Calculate token distribution
+        staking_percentage = self.project_staking_percentage.get(token_uid, 0)
+        public_sale_percentage = self.project_public_sale_percentage.get(token_uid, 0)
+        dozer_pool_percentage = self.project_dozer_pool_percentage.get(token_uid, 0)
+
+        regular_percentage = (
+            100 - staking_percentage - public_sale_percentage - dozer_pool_percentage
+        )
+
+        distribution["staking_allocation_percentage"] = str(staking_percentage)
+        distribution["public_sale_allocation_percentage"] = str(public_sale_percentage)
+        distribution["dozer_pool_allocation_percentage"] = str(dozer_pool_percentage)
+        distribution["regular_vesting_percentage"] = str(regular_percentage)
+
+        # Contract deployment status
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        dao_contract = self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
+        pool_key = self.project_pools.get(token_uid, "")
+
+        distribution["staking_deployed"] = (
+            "true" if staking_contract != NULL_CONTRACT_ID else "false"
+        )
+        distribution["crowdsale_deployed"] = (
+            "true" if crowdsale_contract != NULL_CONTRACT_ID else "false"
+        )
+        distribution["dao_deployed"] = (
+            "true" if dao_contract != NULL_CONTRACT_ID else "false"
+        )
+        distribution["pool_deployed"] = "true" if pool_key != "" else "false"
+
+        if staking_contract != NULL_CONTRACT_ID:
+            distribution["staking_contract"] = staking_contract.hex()
+        if crowdsale_contract != NULL_CONTRACT_ID:
+            distribution["crowdsale_contract"] = crowdsale_contract.hex()
+        if dao_contract != NULL_CONTRACT_ID:
+            distribution["dao_contract"] = dao_contract.hex()
+        if pool_key != "":
+            distribution["pool_key"] = pool_key
+
+        return distribution
+
+    @view
+    def get_vesting_allocation_info(
+        self, token_uid: TokenUid, allocation_index: int
+    ) -> dict[str, str]:
+        """Get information about a specific vesting allocation.
+
+        Args:
+            token_uid: Project token UID
+            allocation_index: Allocation index (0-9)
+
+        Returns:
+            Dictionary with allocation information
+        """
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+
+        if not self.project_vesting_configured.get(token_uid, False):
+            raise VestingNotConfigured("Vesting not configured")
+
+        vesting_contract = self.project_vesting_contract[token_uid]
+        current_timestamp = 0  # In real usage, this would be ctx.timestamp
+
+        vesting_info = (
+            self.syscall.get_contract(
+                vesting_contract,
+                blueprint_id=None,
+            )
+            .view()
+            .get_vesting_info(
+                allocation_index,
+                current_timestamp,
+            )
+        )
+
+        # Convert to string dict for consistency
+        return {
+            "name": str(vesting_info.get("name", "")),
+            "beneficiary": str(vesting_info.get("beneficiary", "")),
+            "amount": str(vesting_info.get("amount", 0)),
+            "cliff_months": str(vesting_info.get("cliff_months", 0)),
+            "vesting_months": str(vesting_info.get("vesting_months", 0)),
+            "withdrawn": str(vesting_info.get("withdrawn", 0)),
+            "vested": str(vesting_info.get("vested", 0)),
+            "claimable": str(vesting_info.get("claimable", 0)),
+        }
+
+    @public
+    def configure_project_vesting(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        # Special allocation percentages (0-100, 0 means not used)
+        staking_percentage: int,
+        public_sale_percentage: int,
+        dozer_pool_percentage: int,
+        # Staking configuration (required if staking_percentage > 0)
+        earnings_per_day: int,
+        # Regular vesting schedules (now using actual lists)
+        allocation_names: list[str],
+        allocation_percentages: list[int],
+        allocation_beneficiaries: list[Address],
+        allocation_cliff_months: list[int],
+        allocation_vesting_months: list[int],
+    ) -> None:
+        """Configure project vesting with special allocations and regular schedules.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            staking_percentage: Percentage for staking (0-100, 0 = not used)
+            public_sale_percentage: Percentage for public sale (0-100, 0 = not used)
+            dozer_pool_percentage: Percentage for dozer pool (0-100, 0 = not used)
+            earnings_per_day: Daily earnings for staking (required if staking_percentage > 0)
+            allocation_names: List of names for regular allocations
+            allocation_percentages: List of percentages for regular allocations
+            allocation_beneficiaries: List of beneficiary Address objects for regular allocations
+            allocation_cliff_months: List of cliff periods in months for regular allocations
+            allocation_vesting_months: List of vesting durations in months for regular allocations
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        self._only_project_dev(ctx, token_uid)
+        self._charge_fee(ctx, token_uid, "configure_project_vesting")
+
+        if self.project_vesting_configured.get(token_uid, False):
+            raise InvalidAllocation("Vesting already configured")
+
+        # Beneficiaries are now passed directly as Address objects
+
+        # Validate percentage totals
+        total_percentage = (
+            staking_percentage + public_sale_percentage + dozer_pool_percentage
+        )
+        for percentage in allocation_percentages:
+            total_percentage += percentage
+
+        if total_percentage > 100:
+            raise InvalidAllocation("Total allocation exceeds 100%")
+
+        # Validate regular allocation lists have same length
+        if not (
+            len(allocation_names)
+            == len(allocation_percentages)
+            == len(allocation_beneficiaries)
+            == len(allocation_cliff_months)
+            == len(allocation_vesting_months)
+        ):
+            raise InvalidAllocation("All allocation lists must have same length")
+        if len(allocation_names) > MAX_REGULAR_ALLOCATIONS:
+            raise InvalidAllocation("Too many regular allocations")
+        if (
+            staking_percentage < 0
+            or public_sale_percentage < 0
+            or dozer_pool_percentage < 0
+        ):
+            raise InvalidAllocation("Allocation percentages cannot be negative")
+        for percentage in allocation_percentages:
+            if percentage < 0:
+                raise InvalidAllocation("Allocation percentages cannot be negative")
+
+        # Configure vesting and start it
+        self._configure_vesting(
+            ctx,
+            token_uid,
+            staking_percentage,
+            public_sale_percentage,
+            dozer_pool_percentage,
+            allocation_names,
+            allocation_percentages,
+            allocation_beneficiaries,
+            allocation_cliff_months,
+            allocation_vesting_months,
+        )
+        self._start_vesting(ctx, token_uid)
+
+        # Mark as configured
+        self.project_vesting_configured[token_uid] = True
+
+        # Auto-create staking contract if staking allocation exists
+        if staking_percentage > 0:
+            self._create_staking(ctx, token_uid, earnings_per_day)
+
+    def _configure_vesting(
+        self,
+        ctx: Context,
+        token_uid: TokenUid,
+        staking_percentage: int,
+        public_sale_percentage: int,
+        dozer_pool_percentage: int,
+        allocation_names: list[str],
+        allocation_percentages: list[int],
+        allocation_beneficiaries: list[Address],
+        allocation_cliff_months: list[int],
+        allocation_vesting_months: list[int],
+    ) -> None:
+        """Configure all vesting allocations (special + regular)."""
+        vesting_contract = self.project_vesting_contract[token_uid]
+        total_supply = self.project_total_supply[token_uid]
+
+        # Store special allocation percentages
+        self.project_staking_percentage[token_uid] = staking_percentage
+        self.project_public_sale_percentage[token_uid] = public_sale_percentage
+        self.project_dozer_pool_percentage[token_uid] = dozer_pool_percentage
+
+        # Configure special allocations (unlocked: cliff=0, vesting=0)
+        if staking_percentage > 0:
+            staking_amount = Amount((total_supply * staking_percentage) // 100)
+            self.syscall.get_contract(
+                vesting_contract,
+                blueprint_id=None,
+            ).public().configure_vesting(
+                STAKING_ALLOCATION_INDEX,
+                staking_amount,
+                Address(
+                    ctx.caller_id
+                ),  # Use dev address as placeholder, creator_contract can claim
+                0,  # cliff_months = 0 (unlocked)
+                0,  # vesting_months = 0 (immediately available)
+                "Staking",
+            )
+
+        if public_sale_percentage > 0:
+            public_sale_amount = Amount((total_supply * public_sale_percentage) // 100)
+            self.syscall.get_contract(
+                vesting_contract,
+                blueprint_id=None,
+            ).public().configure_vesting(
+                PUBLIC_SALE_ALLOCATION_INDEX,
+                public_sale_amount,
+                Address(
+                    ctx.caller_id
+                ),  # Use dev address as placeholder, creator_contract can claim
+                0,  # cliff_months = 0 (unlocked)
+                0,  # vesting_months = 0 (immediately available)
+                "Public Sale",
+            )
+
+        if dozer_pool_percentage > 0:
+            dozer_pool_amount = Amount((total_supply * dozer_pool_percentage) // 100)
+            self.syscall.get_contract(
+                vesting_contract,
+                blueprint_id=None,
+            ).public().configure_vesting(
+                DOZER_POOL_ALLOCATION_INDEX,
+                dozer_pool_amount,
+                Address(
+                    ctx.caller_id
+                ),  # Use dev address as placeholder, creator_contract can claim
+                0,  # cliff_months = 0 (unlocked)
+                0,  # vesting_months = 0 (immediately available)
+                "Dozer Pool",
+            )
+
+        # Configure regular allocations (starting from index 3)
+        for i in range(len(allocation_names)):
+            if allocation_percentages[i] > 0:
+                allocation_amount = Amount(
+                    (total_supply * allocation_percentages[i]) // 100
+                )
+                allocation_index = 3 + i  # Start from index 3
+
+                self.syscall.get_contract(
+                    vesting_contract,
+                    blueprint_id=None,
+                ).public().configure_vesting(
+                    allocation_index,
+                    allocation_amount,
+                    allocation_beneficiaries[i],
+                    allocation_cliff_months[i],
+                    allocation_vesting_months[i],
+                    allocation_names[i],
+                )
+
+    def _start_vesting(self, _ctx: Context, token_uid: TokenUid) -> None:
+        """Start the vesting schedule."""
+        vesting_contract = self.project_vesting_contract[token_uid]
+        self.syscall.get_contract(
+            vesting_contract,
+            blueprint_id=None,
+        ).public().start_vesting()
+
+    # Routing Methods for Child Contract Operations
+
+    @public(allow_deposit=True, allow_withdrawal=True)
+    def vesting_claim_allocation(self, ctx: Context, index: int) -> None:
+        """Route vesting claim allocation to child contract.
+
+        Args:
+            ctx: Transaction context
+            index: Allocation index to claim
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        if index in [
+            STAKING_ALLOCATION_INDEX,
+            PUBLIC_SALE_ALLOCATION_INDEX,
+            DOZER_POOL_ALLOCATION_INDEX,
+        ]:
+            raise InvalidAllocation("Factory-reserved allocation")
+
+        if len(ctx.actions) != 2 or TokenUid(HTR_UID) not in ctx.actions:
+            raise DozerToolsError("Expected the token withdrawal plus an HTR protocol fee deposit")
+        token_uid = TokenUid(HTR_UID)
+        for key in ctx.actions.keys():
+            if key != TokenUid(HTR_UID):
+                token_uid = key
+        action, fees = self._user_action_with_fee(ctx, token_uid, False)
+
+        vesting_contract = self.project_vesting_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if vesting_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Vesting contract does not exist")
+
+        # Route to vesting contract with user address
+        self.syscall.get_contract(
+            vesting_contract,
+            blueprint_id=None,
+        ).public(action, fees=fees).routed_claim_allocation(
+            Address(ctx.caller_id),
+            index,
+        )
+
+    @public
+    def vesting_change_beneficiary(
+        self, ctx: Context, token_uid: TokenUid, index: int, new_beneficiary: Address
+    ) -> None:
+        """Route vesting change beneficiary to child contract.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            index: Allocation index
+            new_beneficiary: New beneficiary address
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        vesting_contract = self.project_vesting_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if vesting_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Vesting contract does not exist")
+
+        # Route to vesting contract with user address
+        self.syscall.get_contract(
+            vesting_contract,
+            blueprint_id=None,
+        ).public().routed_change_beneficiary(
+            Address(ctx.caller_id),
+            index,
+            new_beneficiary,
+        )
+
+    @public(allow_deposit=True)
+    def staking_stake(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route staking stake to child contract.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if staking_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Staking contract does not exist")
+
+        # Project-token deposit to forward, plus the HTR deposit paying the protocol fee
+        action, fees = self._user_action_with_fee(ctx, token_uid, True)
+
+        # Route to staking contract with user address
+        self.syscall.get_contract(
+            staking_contract,
+            blueprint_id=None,
+        ).public(action, fees=fees).routed_stake(
+            Address(ctx.caller_id),
+        )
+
+    @public(allow_deposit=True, allow_withdrawal=True)
+    def staking_unstake(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route staking unstake to child contract.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if staking_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Staking contract does not exist")
+
+        # Project-token withdrawal to forward, plus the HTR deposit paying the protocol fee
+        action, fees = self._user_action_with_fee(ctx, token_uid, False)
+
+        # Route to staking contract with user address
+        self.syscall.get_contract(
+            staking_contract,
+            blueprint_id=None,
+        ).public(action, fees=fees).routed_unstake(
+            Address(ctx.caller_id),
+        )
+
+    @public(allow_deposit=True)
+    def staking_owner_deposit(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route owner deposit (add rewards) to staking contract.
+
+        Only the project dev can call this method.
+        DozerTools is the owner of the staking contract, so it can call owner_deposit directly.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        self._only_project_dev(ctx, token_uid)
+
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if staking_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Staking contract does not exist")
+
+        # Get the deposit action to forward (should be for the project token)
+        action = self._get_exact_deposit_action(ctx, token_uid)
+
+        # Call staking contract's owner_deposit directly
+        # DozerTools is the owner, so this will succeed
+        self.syscall.get_contract(
+            staking_contract,
+            blueprint_id=None,
+        ).public(action, fees=self._project_protocol_fee(token_uid)).owner_deposit()
+
+    @public
+    def staking_pause(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route pause to staking contract.
+
+        Only the project dev can call this method.
+        DozerTools is the owner of the staking contract, so it can call pause directly.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        self._only_project_dev(ctx, token_uid)
+
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if staking_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Staking contract does not exist")
+
+        # Call staking contract's pause directly
+        # DozerTools is the owner, so this will succeed
+        self.syscall.get_contract(
+            staking_contract,
+            blueprint_id=None,
+        ).public().pause()
+
+    @public
+    def staking_unpause(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route unpause to staking contract.
+
+        Only the project dev can call this method.
+        DozerTools is the owner of the staking contract, so it can call unpause directly.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        self._only_project_dev(ctx, token_uid)
+
+        staking_contract = self.project_staking_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if staking_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Staking contract does not exist")
+
+        # Call staking contract's unpause directly
+        # DozerTools is the owner, so this will succeed
+        self.syscall.get_contract(
+            staking_contract,
+            blueprint_id=None,
+        ).public().unpause()
+
+    @public
+    def dao_create_proposal(
+        self, ctx: Context, token_uid: TokenUid, title: str, description: str
+    ) -> int:
+        """Route DAO create proposal to child contract.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            title: Proposal title
+            description: Proposal description
+
+        Returns:
+            Proposal ID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        dao_contract = self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
+        if dao_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("DAO contract does not exist")
+
+        # Route to DAO contract with user address
+        return (
+            self.syscall.get_contract(
+                dao_contract,
+                blueprint_id=None,
+            )
+            .public()
+            .routed_create_proposal(
+                Address(ctx.caller_id),
+                title,
+                description,
+            )
+        )
+
+    @public
+    def dao_cast_vote(
+        self, ctx: Context, token_uid: TokenUid, proposal_id: int, support: bool
+    ) -> None:
+        """Route DAO cast vote to child contract.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+            proposal_id: Proposal ID
+            support: Vote support (True for yes, False for no)
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        dao_contract = self.project_dao_contract.get(token_uid, NULL_CONTRACT_ID)
+        if dao_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("DAO contract does not exist")
+
+        # Route to DAO contract with user address
+        self.syscall.get_contract(
+            dao_contract,
+            blueprint_id=None,
+        ).public().routed_cast_vote(
+            Address(ctx.caller_id),
+            proposal_id,
+            support,
+        )
+
+    @public(allow_deposit=True)
+    def crowdsale_participate(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route crowdsale participate to child contract.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Get the deposit action to forward (should be HTR for crowdsale participation)
+        action = self._get_exact_deposit_action(ctx, TokenUid(HTR_UID))
+
+        # Route to crowdsale contract with user address
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public(action).routed_participate(
+            Address(ctx.caller_id),
+        )
+
+    @public(allow_deposit=True, allow_withdrawal=True)
+    def crowdsale_claim_tokens(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route crowdsale claim tokens to child contract.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Project-token withdrawal to forward, plus the HTR deposit paying the protocol fee
+        action, fees = self._user_action_with_fee(ctx, token_uid, False)
+
+        # Route to crowdsale contract with user address
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public(action, fees=fees).routed_claim_tokens(
+            Address(ctx.caller_id),
+        )
+
+    @public(allow_withdrawal=True)
+    def crowdsale_claim_refund(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route crowdsale claim refund to child contract.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Get the withdrawal action to forward (should be HTR for refunds)
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+
+        # Route to crowdsale contract with user address
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public(action).routed_claim_refund(
+            Address(ctx.caller_id),
+        )
+
+    @public
+    def crowdsale_pause(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route pause to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_pause.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        self._only_project_dev(ctx, token_uid)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Route to crowdsale contract with user address
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public().routed_pause(
+            Address(ctx.caller_id),
+        )
+
+    @public
+    def crowdsale_unpause(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route unpause to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_unpause.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        self._only_project_dev(ctx, token_uid)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Route to crowdsale contract with user address
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public().routed_unpause(
+            Address(ctx.caller_id),
+        )
+
+    @public
+    def crowdsale_early_activate(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route early activate to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_early_activate.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        self._only_project_dev(ctx, token_uid)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Route to crowdsale contract with user address
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public().routed_early_activate(
+            Address(ctx.caller_id),
+        )
+
+    @public
+    def crowdsale_finalize(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route finalize to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_finalize.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        if not self.project_exists.get(token_uid, False):
+            raise ProjectNotFound("Project does not exist")
+        project_dev = self.project_dev[token_uid]
+        if Address(ctx.caller_id) != project_dev:
+            sale_info = (
+                self.syscall.get_contract(
+                    crowdsale_contract,
+                    blueprint_id=None,
+                )
+                .view()
+                .get_sale_info()
+            )
+            if ctx.block.timestamp <= sale_info.end_time:
+                raise Unauthorized("Only project dev can finalize before sale end")
+
+        # Route to crowdsale contract with user address
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public().routed_finalize(
+            Address(ctx.caller_id),
+        )
+
+    @public(allow_withdrawal=True)
+    def crowdsale_withdraw_raised_htr(self, ctx: Context, token_uid: TokenUid) -> None:
+        """Route withdraw raised HTR to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_withdraw_raised_htr.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        self._only_project_dev(ctx, token_uid)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Get the withdrawal action to forward (should be HTR)
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+
+        # Route to crowdsale contract with user address
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public(action).routed_withdraw_raised_htr(
+            Address(ctx.caller_id),
+        )
+
+    @public(allow_withdrawal=True)
+    def crowdsale_withdraw_remaining_tokens(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> None:
+        """Route withdraw remaining tokens to crowdsale contract.
+
+        Only the project dev can call this method.
+        DozerTools is the creator of the crowdsale contract, so it can call routed_withdraw_remaining_tokens.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        self._only_project_dev(ctx, token_uid)
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Get the withdrawal action to forward (should be for the project token)
+        action = self._get_exact_withdrawal_action(ctx, token_uid)
+
+        # Route to crowdsale contract with user address
+        self.syscall.get_contract(crowdsale_contract, blueprint_id=None).public(
+            action, fees=self._project_protocol_fee(token_uid)
+        ).routed_withdraw_remaining_tokens(
+            Address(ctx.caller_id),
+        )
+
+    @public(allow_withdrawal=True)
+    def crowdsale_withdraw_participation_fees(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> None:
+        """Withdraw participation fees from crowdsale contract (DozerTools owner only).
+
+        This allows the DozerTools owner to collect all participation fees that have
+        been accumulated from users participating in the crowdsale.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID to identify which crowdsale
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        self._only_owner(ctx)  # Only DozerTools owner
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Get the withdrawal action (should be HTR for fees)
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+
+        # Route to crowdsale's withdraw_participation_fees
+        # Platform address in crowdsale is DozerTools owner, so this will succeed
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public(action).routed_withdraw_participation_fees(
+            Address(ctx.caller_id),
+        )
+
+    @public(allow_withdrawal=True)
+    def crowdsale_withdraw_platform_fees(
+        self, ctx: Context, token_uid: TokenUid
+    ) -> None:
+        """Withdraw platform fees from successful crowdsale (DozerTools owner only).
+
+        Platform fees are only available after a crowdsale reaches SUCCESS state.
+
+        Args:
+            ctx: Transaction context
+            token_uid: Project token UID to identify which crowdsale
+        """
+        # Check if contract is paused
+        self._validate_not_paused(ctx)
+
+        self._only_owner(ctx)  # Only DozerTools owner
+
+        crowdsale_contract = self.project_crowdsale_contract.get(
+            token_uid, NULL_CONTRACT_ID
+        )
+        if crowdsale_contract == NULL_CONTRACT_ID:
+            raise ProjectNotFound("Crowdsale contract does not exist")
+
+        # Get the withdrawal action (should be HTR for fees)
+        action = self._get_exact_withdrawal_action(ctx, TokenUid(HTR_UID))
+
+        # Route to crowdsale's withdraw_platform_fees (existing method)
+        # Platform address in crowdsale is DozerTools owner, so this will succeed
+        self.syscall.get_contract(
+            crowdsale_contract,
+            blueprint_id=None,
+        ).public(action).routed_withdraw_platform_fees(
+            Address(ctx.caller_id),
+        )
+
+    @public
+    def upgrade_contract(
+        self, ctx: Context, new_blueprint_id: BlueprintId, new_version: str
+    ) -> None:
+        """Upgrade the contract to a new blueprint version.
+
+        Args:
+            ctx: Transaction context
+            new_blueprint_id: The blueprint ID to upgrade to
+            new_version: Version string for the new blueprint (e.g., "1.1.0")
+
+        Raises:
+            Unauthorized: If caller is not the owner
+            InvalidVersion: If new version is not higher than current version
+        """
+        self._only_owner(ctx)
+
+        # Validate version is newer
+        if not self._is_version_higher(new_version, self.contract_version):
+            raise InvalidVersion(
+                f"New version {new_version} must be higher than current {self.contract_version}"
+            )
+        self.contract_version = new_version
+
+        # Perform the upgrade
+        self.syscall.change_blueprint(new_blueprint_id)
+
+    @public
+    def upgrade_specific_contract(
+        self,
+        ctx: Context,
+        contract_id: ContractId,
+        new_blueprint_id: BlueprintId,
+        new_version: str,
+    ) -> None:
+        """Upgrade the contract to a new blueprint version.
+
+        Args:
+            ctx: Transaction context
+            contract_id: Contract ID to upgrade
+            new_blueprint_id: The blueprint ID to upgrade to
+            new_version: Version string for the new blueprint (e.g., "1.1.0")
+
+        Raises:
+            Unauthorized: If caller is not the owner
+            InvalidVersion: If new version is not higher than current version
+            InvalidContractId: If contract ID is invalid
+        """
+        self._only_owner(ctx)
+        if not self.paused:
+            raise ContractPaused("Pause DozerTools before upgrading child contracts")
+        if not self._is_registered_child_contract(contract_id):
+            raise ProjectNotFound("Contract is not registered under DozerTools")
+
+        # Validate contract ID
+        contract = self.syscall.get_contract(contract_id, blueprint_id=None)
+        contract.get_public_method("upgrade_contract").call(
+            new_blueprint_id, new_version
+        )
+
+    @public
+    def migrate_specific_contract(
+        self, ctx: Context, contract_id: ContractId, method_name: str
+    ) -> None:
+        """Migrate the contract after an upgrade.
+
+        Args:
+            ctx: Transaction context
+            contract_id: Contract ID to migrate
+            method_name: Name of the method to migrate
+
+        Raises:
+            Unauthorized: If caller is not the owner
+            InvalidContractId: If contract ID is invalid
+            NCMethodNotFound: If method is not found
+        """
+        self._only_owner(ctx)
+        if not self.paused:
+            raise ContractPaused("Pause DozerTools before migrating child contracts")
+        if not self._is_registered_child_contract(contract_id):
+            raise ProjectNotFound("Contract is not registered under DozerTools")
+
+        # Validate contract ID
+        contract = self.syscall.get_contract(contract_id, blueprint_id=None)
+        contract.get_public_method(method_name).call()
+
+    def _is_version_higher(self, new_version: str, current_version: str) -> bool:
+        """Compare semantic versions (e.g., "1.2.3").
+
+        Returns True if new_version > current_version.
+        Returns False if versions are malformed or equal.
+        """
+        # Split versions by '.'
+        new_parts_str = new_version.split(".")
+        current_parts_str = current_version.split(".")
+
+        # Check if all parts are valid integers
+        new_parts: list[int] = []
+        for part in new_parts_str:
+            # Simple check: all characters must be digits
+            if not part or not all(c in "0123456789" for c in part):
+                return False  # Invalid format
+            new_parts.append(int(part))
+
+        current_parts: list[int] = []
+        for part in current_parts_str:
+            if not part or not all(c in "0123456789" for c in part):
+                return False  # Invalid format
+            current_parts.append(int(part))
+
+        # Pad shorter version with zeros
+        max_len = (
+            len(new_parts)
+            if len(new_parts) > len(current_parts)
+            else len(current_parts)
+        )
+        while len(new_parts) < max_len:
+            new_parts.append(0)
+        while len(current_parts) < max_len:
+            current_parts.append(0)
+
+        # Compare versions
+        return new_parts > current_parts
+
+    @view
+    def get_contract_version(self) -> str:
+        """Get the current contract version.
+
+        Returns:
+            Version string (e.g., "1.0.0")
+        """
+        return self.contract_version
+
+
+class InvalidVersion(NCFail):
+    pass
