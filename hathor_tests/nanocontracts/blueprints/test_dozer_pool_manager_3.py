@@ -481,3 +481,180 @@ class TestDozerPoolManagerPathSwaps(BlueprintTestCase):
             self.contract_id, "find_best_swap_path_exact_output", 1000, self.token_a, self.token_d, 3
         )
         assert via.hex() in info_exact.path and other.hex() not in info_exact.path
+
+
+class TestDozerPoolManagerPagination(BlueprintTestCase):
+    """Paginated variants of the all_pools-iterating views (bounded view cost)."""
+
+    HTR = TokenUid(b'\x00')
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.blueprint_id = self._register_blueprint_class(DozerPoolManager)
+        self.contract_id = self.gen_random_contract_id()
+        ctx = self.create_context()
+        self.runner.create_contract(self.contract_id, self.blueprint_id, ctx)
+        assert isinstance(ctx.caller_id, Address)
+        self.owner = ctx.caller_id
+
+    def view(self, method: str, *args):
+        return self.runner.call_view_method(self.contract_id, method, *args)
+
+    def create_pool(self, token_a: TokenUid, token_b: TokenUid, fee: int = 0, sign: bool = False,
+                    reserve_a: int = 1000000, reserve_b: int = 1000000) -> tuple[str, Address]:
+        ctx = self.create_context(actions=[
+            NCDepositAction(token_uid=token_a, amount=reserve_a),
+            NCDepositAction(token_uid=token_b, amount=reserve_b),
+        ], timestamp=1)
+        pool_key = self.runner.call_public_method(self.contract_id, 'create_pool', ctx, fee)
+        assert isinstance(ctx.caller_id, Address)
+        if sign:
+            sign_ctx = self.create_context(caller_id=self.owner, timestamp=1)
+            self.runner.call_public_method(self.contract_id, 'sign_pool', sign_ctx, token_a, token_b, fee)
+        return pool_key, ctx.caller_id
+
+    def create_many_pools(self, n: int, sign_every: int = 0) -> list[str]:
+        hub = self.gen_random_token_uid()
+        keys = []
+        for i in range(n):
+            key, _ = self.create_pool(hub, self.gen_random_token_uid(), sign=bool(sign_every) and i % sign_every == 0)
+            keys.append(key)
+        return keys
+
+    def collect(self, method: str, *args, page: int, total: int | None = None) -> list:
+        """Page through a list-returning view; returns the concatenation of all pages."""
+        if total is None:
+            total = self.view('get_pool_count')
+        out: list = []
+        for skip in range(0, total, page):
+            out.extend(self.view(method, *args, skip, page))
+        return out
+
+    def test_pool_count(self) -> None:
+        assert self.view('get_pool_count') == 0
+        self.create_many_pools(3)
+        assert self.view('get_pool_count') == 3
+
+    def test_pools_page_walks_all_pools_once_in_order(self) -> None:
+        keys = self.create_many_pools(7)
+        full = self.view('get_all_pools')
+        assert full == keys
+        for page in (1, 2, 3, 7, 100):
+            assert self.collect('get_pools_page', page=page) == full
+        assert self.view('get_pools_page', 2, 3) == full[2:5]
+        # last partial page
+        assert self.view('get_pools_page', 6, 3) == full[6:]
+
+    def test_pools_page_limit_is_capped(self) -> None:
+        self.create_many_pools(101 + 4)
+        full = self.view('get_all_pools')
+        assert len(full) == 105
+        page = self.view('get_pools_page', 0, 1_000_000)
+        assert len(page) == 100
+        assert page == full[:100]
+        assert self.view('get_pools_page', 100, 1_000_000) == full[100:]
+
+    def test_pools_page_skip_beyond_end_is_empty(self) -> None:
+        self.create_many_pools(3)
+        assert self.view('get_pools_page', 3, 10) == []
+        assert self.view('get_pools_page', 1000, 10) == []
+        # also on an empty contract
+        other_id = self.gen_random_contract_id()
+        self.runner.create_contract(other_id, self.blueprint_id, self.create_context())
+        assert self.runner.call_view_method(other_id, 'get_pools_page', 0, 10) == []
+
+    def test_page_args_validated(self) -> None:
+        self.create_many_pools(2)
+        user = self.owner
+        calls = [
+            ('get_pools_page', ()),
+            ('get_signed_pools_page', ()),
+            ('get_user_pools_page', (user,)),
+            ('get_user_positions_page', (user,)),
+            ('get_token_prices_in_htr_page', ()),
+            ('get_token_prices_in_usd_page', ()),
+        ]
+        for method, args in calls:
+            for skip, limit in ((-1, 10), (0, 0), (0, -5), (-3, -3)):
+                with pytest.raises(NCFail):
+                    self.view(method, *args, skip, limit)
+            # valid arguments do not raise
+            self.view(method, *args, 0, 10)
+
+    def test_signed_pools_page_matches_non_paginated(self) -> None:
+        self.create_many_pools(9, sign_every=3)
+        full = self.view('get_signed_pools')
+        assert len(full) == 3
+        for page in (1, 2, 4, 100):
+            assert self.collect('get_signed_pools_page', page=page) == full
+
+    def test_user_pools_and_positions_page_match_non_paginated(self) -> None:
+        hub = self.gen_random_token_uid()
+        keys = []
+        creators = []
+        for _ in range(6):
+            key, creator = self.create_pool(hub, self.gen_random_token_uid())
+            keys.append(key)
+            creators.append(creator)
+        # the creator of pool 0 gets liquidity in several other pools too
+        user = creators[0]
+        for key in (keys[2], keys[4]):
+            token_a, token_b = self.get_pool_tokens(key)
+            ctx = self.create_context(caller_id=user, timestamp=2, actions=[
+                NCDepositAction(token_uid=token_a, amount=1000),
+                NCDepositAction(token_uid=token_b, amount=1000),
+            ])
+            fee = 0
+            self.runner.call_public_method(self.contract_id, 'add_liquidity', ctx, fee)
+
+        full_pools = self.view('get_user_pools', user)
+        assert len(full_pools) == 3
+        full_positions = self.view('get_user_positions', user)
+        assert len(full_positions) == 3
+        for page in (1, 2, 4, 100):
+            assert self.collect('get_user_pools_page', user, page=page) == full_pools
+            merged: dict = {}
+            total = self.view('get_pool_count')
+            for skip in range(0, total, page):
+                part = self.view('get_user_positions_page', user, skip, page)
+                assert not (set(part) & set(merged))  # each pool appears in exactly one page
+                merged.update(part)
+            assert merged == full_positions
+        # a user with no positions gets nothing
+        stranger = self.create_context().caller_id
+        assert self.view('get_user_pools_page', stranger, 0, 100) == []
+        assert self.view('get_user_positions_page', stranger, 0, 100) == {}
+
+    def get_pool_tokens(self, pool_key: str) -> tuple[TokenUid, TokenUid]:
+        pool = self.get_readonly_contract(self.contract_id).pools[pool_key]  # type: ignore[attr-defined]
+        return pool.token_a, pool.token_b
+
+    def test_token_price_pages_match_non_paginated(self) -> None:
+        usd = self.gen_random_token_uid()
+        usd_pool, _ = self.create_pool(self.HTR, usd, sign=True, reserve_a=1000_00, reserve_b=10000_00)
+        owner_ctx = self.create_context(caller_id=self.owner, timestamp=1)
+        self.runner.call_public_method(self.contract_id, 'set_htr_usd_pool', owner_ctx, self.HTR, usd, 0)
+        for i in range(5):
+            self.create_pool(self.HTR, self.gen_random_token_uid(), sign=True,
+                             reserve_a=1000_00 + i * 100, reserve_b=5000_00)
+        # an unsigned pool is not routable, so its token has no price
+        self.create_pool(self.HTR, self.gen_random_token_uid(), sign=False)
+
+        for method, full_method in (
+            ('get_token_prices_in_htr_page', 'get_all_token_prices_in_htr'),
+            ('get_token_prices_in_usd_page', 'get_all_token_prices_in_usd'),
+        ):
+            full = self.view(full_method)
+            assert len(full) >= 7
+            for page in (1, 2, 3, 100):
+                merged: dict = {}
+                for skip in range(0, self.view('get_pool_count'), page):
+                    for token, price in self.view(method, skip, page).items():
+                        # the same token must get the same price whichever page it shows up in
+                        assert merged.setdefault(token, price) == price
+                assert merged == full
+        assert self.view('get_token_prices_in_usd_page', 1000, 10) == {}
+        # without an HTR-USD pool the USD page is empty
+        other_id = self.gen_random_contract_id()
+        self.runner.create_contract(other_id, self.blueprint_id, self.create_context())
+        assert self.runner.call_view_method(other_id, 'get_token_prices_in_usd_page', 0, 10) == {}

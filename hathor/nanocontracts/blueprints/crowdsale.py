@@ -85,6 +85,15 @@ class SaleState:
     COMPLETED_SUCCESS = 5  # Sale ended above soft cap
 
 
+# States a sale can be finalized from. PENDING covers a sale nobody joined.
+OPEN_STATES = (
+    SaleState.PENDING,
+    SaleState.ACTIVE,
+    SaleState.PAUSED,
+    SaleState.SOFT_CAP_REACHED,
+)
+
+
 class CrowdsaleErrors:
     """Common error messages"""
 
@@ -340,6 +349,7 @@ class Crowdsale(Blueprint):
     @public(allow_withdrawal=True)
     def claim_tokens(self, ctx: Context) -> None:
         """Claim tokens after successful sale."""
+        self._finalize_if_ended(ctx)
         if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
@@ -369,6 +379,7 @@ class Crowdsale(Blueprint):
     @public(allow_withdrawal=True)
     def claim_refund(self, ctx: Context) -> None:
         """Claim refund if sale failed."""
+        self._finalize_if_ended(ctx)
         if self.state != SaleState.COMPLETED_FAILED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
 
@@ -405,6 +416,7 @@ class Crowdsale(Blueprint):
         """Withdraw raised HTR after successful sale."""
         if not self._is_owner(ctx):
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        self._finalize_if_ended(ctx)
         if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.owner_withdrawn:
@@ -426,20 +438,20 @@ class Crowdsale(Blueprint):
 
     @public(allow_withdrawal=True)
     def withdraw_remaining_tokens(self, ctx: Context) -> None:
-        """Withdraw unsold tokens after successful sale (owner only).
+        """Withdraw unsold tokens after the sale ends (owner only).
 
-        This withdraws only tokens that were never sold to participants.
-        Users can still claim their allocated tokens after this withdrawal.
+        After a successful sale this withdraws only tokens that were never sold, so
+        users can still claim theirs. After a failed sale it withdraws the whole deposit.
         """
         if not self._is_owner(ctx):
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
-        if self.state != SaleState.COMPLETED_SUCCESS:
+        self._finalize_if_ended(ctx)
+        if self.state not in (SaleState.COMPLETED_SUCCESS, SaleState.COMPLETED_FAILED):
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.unsold_tokens_withdrawn:
             raise NCFail("Unsold tokens already withdrawn")
 
-        # Calculate unsold tokens (tokens never allocated to participants)
-        unsold_tokens = Amount(self.initial_token_deposit - self.total_sold)
+        unsold_tokens = self._unsold_tokens()
         if unsold_tokens == 0:
             raise NCFail("No unsold tokens to withdraw")
 
@@ -457,6 +469,7 @@ class Crowdsale(Blueprint):
         """Withdraw platform fees after successful sale."""
         if Address(ctx.caller_id) != self.platform:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        self._finalize_if_ended(ctx)
         if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.platform_fees_withdrawn:
@@ -481,6 +494,7 @@ class Crowdsale(Blueprint):
         """
         if Address(ctx.caller_id) != self.platform:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
+        self._finalize_if_ended(ctx)
         if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.participation_fees_withdrawn:
@@ -522,6 +536,32 @@ class Crowdsale(Blueprint):
             and ContractId(ctx.caller_id) != self.creator_contract_id
         ):
             raise NCFail("Only owner or creator contract")
+
+    def _complete_sale(self) -> None:
+        """Move the sale to its final state based on the soft cap."""
+        if self.total_raised >= self.soft_cap:
+            self.state = SaleState.COMPLETED_SUCCESS
+        else:
+            self.state = SaleState.COMPLETED_FAILED
+
+    def _finalize_if_ended(self, ctx: Context) -> None:
+        """Finalize a sale whose end time has passed.
+
+        Called by every claim and withdrawal, so the first one after the end closes the
+        sale and nobody has to send a separate finalize transaction.
+        """
+        if self.state in OPEN_STATES and ctx.block.timestamp > self.end_time:
+            self._complete_sale()
+
+    def _unsold_tokens(self) -> Amount:
+        """Tokens the owner can recover after the sale.
+
+        A failed sale refunds participants in HTR and never delivers tokens, so the whole
+        deposit is recoverable; a successful sale keeps the sold tokens for claims.
+        """
+        if self.state == SaleState.COMPLETED_FAILED:
+            return self.initial_token_deposit
+        return Amount(self.initial_token_deposit - self.total_sold)
 
     def _activate_if_started(self, ctx: Context) -> None:
         """Activate the sale (anyone)"""
@@ -576,17 +616,9 @@ class Crowdsale(Blueprint):
         """
         if not self._is_owner(ctx) and ctx.block.timestamp <= self.end_time:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
-        if self.state not in {
-            SaleState.ACTIVE,
-            SaleState.PAUSED,
-            SaleState.SOFT_CAP_REACHED,
-        }:
+        if self.state not in OPEN_STATES:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
-
-        if self.total_raised >= self.soft_cap:
-            self.state = SaleState.COMPLETED_SUCCESS
-        else:
-            self.state = SaleState.COMPLETED_FAILED
+        self._complete_sale()
 
     def _calculate_tokens(self, htr_amount: Amount) -> Amount:
         """Calculate tokens to be received for HTR amount."""
@@ -672,9 +704,9 @@ class Crowdsale(Blueprint):
     @view
     def get_unsold_token_info(self) -> dict[str, str]:
         """Get information about unsold tokens available for withdrawal."""
-        unsold_tokens = Amount(self.initial_token_deposit - self.total_sold)
+        unsold_tokens = self._unsold_tokens()
         can_withdraw_unsold = (
-            self.state == SaleState.COMPLETED_SUCCESS
+            self.state in (SaleState.COMPLETED_SUCCESS, SaleState.COMPLETED_FAILED)
             and not self.unsold_tokens_withdrawn
             and unsold_tokens > 0
         )
@@ -764,6 +796,7 @@ class Crowdsale(Blueprint):
     def routed_claim_tokens(self, ctx: Context, user_address: Address) -> None:
         """Claim tokens after successful sale via DozerTools routing."""
         self._only_creator_contract(ctx)
+        self._finalize_if_ended(ctx)
 
         if self.state != SaleState.COMPLETED_SUCCESS:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -792,6 +825,7 @@ class Crowdsale(Blueprint):
     def routed_claim_refund(self, ctx: Context, user_address: Address) -> None:
         """Claim refund if sale failed via DozerTools routing."""
         self._only_creator_contract(ctx)
+        self._finalize_if_ended(ctx)
 
         if self.state != SaleState.COMPLETED_FAILED:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
@@ -860,22 +894,15 @@ class Crowdsale(Blueprint):
         self._only_creator_contract(ctx)
 
         # DozerTools is responsible for authorization - just execute the action
-        if self.state not in {
-            SaleState.ACTIVE,
-            SaleState.PAUSED,
-            SaleState.SOFT_CAP_REACHED,
-        }:
+        if self.state not in OPEN_STATES:
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
-
-        if self.total_raised >= self.soft_cap:
-            self.state = SaleState.COMPLETED_SUCCESS
-        else:
-            self.state = SaleState.COMPLETED_FAILED
+        self._complete_sale()
 
     @public(allow_withdrawal=True)
     def routed_withdraw_raised_htr(self, ctx: Context, user_address: Address) -> None:
         """Withdraw raised HTR after successful sale via DozerTools routing (DozerTools handles authorization)."""
         self._only_creator_contract(ctx)
+        self._finalize_if_ended(ctx)
 
         # DozerTools is responsible for authorization - just execute the action
         if self.state != SaleState.COMPLETED_SUCCESS:
@@ -901,22 +928,20 @@ class Crowdsale(Blueprint):
     def routed_withdraw_remaining_tokens(
         self, ctx: Context, user_address: Address
     ) -> None:
-        """Withdraw unsold tokens after successful sale via DozerTools routing.
+        """Withdraw unsold tokens after the sale ends via DozerTools routing.
 
-        This withdraws only tokens that were never sold to participants.
-        Users can still claim their allocated tokens after this withdrawal.
-        DozerTools handles authorization.
+        Same rules as withdraw_remaining_tokens. DozerTools handles authorization.
         """
         self._only_creator_contract(ctx)
+        self._finalize_if_ended(ctx)
 
         # DozerTools is responsible for authorization - just execute the action
-        if self.state != SaleState.COMPLETED_SUCCESS:
+        if self.state not in (SaleState.COMPLETED_SUCCESS, SaleState.COMPLETED_FAILED):
             raise NCFail(CrowdsaleErrors.INVALID_STATE)
         if self.unsold_tokens_withdrawn:
             raise NCFail("Unsold tokens already withdrawn")
 
-        # Calculate unsold tokens (tokens never allocated to participants)
-        unsold_tokens = Amount(self.initial_token_deposit - self.total_sold)
+        unsold_tokens = self._unsold_tokens()
         if unsold_tokens == 0:
             raise NCFail("No unsold tokens to withdraw")
 
@@ -935,6 +960,7 @@ class Crowdsale(Blueprint):
     ) -> None:
         """Withdraw platform fees through the creator contract."""
         self._only_creator_contract(ctx)
+        self._finalize_if_ended(ctx)
         if user_address != self.platform:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.COMPLETED_SUCCESS:
@@ -956,6 +982,7 @@ class Crowdsale(Blueprint):
     ) -> None:
         """Withdraw participation fees through the creator contract."""
         self._only_creator_contract(ctx)
+        self._finalize_if_ended(ctx)
         if user_address != self.platform:
             raise NCFail(CrowdsaleErrors.UNAUTHORIZED)
         if self.state != SaleState.COMPLETED_SUCCESS:

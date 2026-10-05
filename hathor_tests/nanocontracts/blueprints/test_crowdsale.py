@@ -1560,3 +1560,260 @@ class CrowdsaleTestCase(BlueprintTestCase):
                 self.participation_fee,
                 self.creator_contract_id,
             )
+
+    # ------------------------------------------------------------------
+    # Ended sales: automatic finalization and token recovery
+    # ------------------------------------------------------------------
+
+    def _gross_for_net(self, net_amount: int) -> int:
+        """Smallest gross deposit whose net (after participation fee) is at least net_amount."""
+        return -(-net_amount * 10000 // (10000 - self.participation_fee))
+
+    def _state(self) -> int:
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        return contract.state
+
+    def test_claim_tokens_finalizes_ended_sale(self):
+        """The first claim after the end time finalizes a successful sale; no finalize tx is needed."""
+        self._initialize_sale()
+        deposit_ctx = self._create_deposit_context(self._gross_for_net(self.soft_cap))
+        self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
+        self.assertEqual(self._state(), SaleState.SOFT_CAP_REACHED)
+        user = Address(deposit_ctx.caller_id)
+        tokens_due = self.runner.call_view_method(
+            self.contract_id, "get_participant_info", user
+        ).tokens_due
+
+        # Before the end time the sale is still open, so claiming fails and nothing changes
+        early_ctx = self._ctx(
+            user,
+            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=tokens_due)],
+            timestamp=self.end_time,
+        )
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(self.contract_id, "claim_tokens", early_ctx)
+        self.assertEqual(self._state(), SaleState.SOFT_CAP_REACHED)
+
+        claim_ctx = self._ctx(
+            user,
+            actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=tokens_due)],
+            timestamp=self.end_time + 1,
+        )
+        self.runner.call_public_method(self.contract_id, "claim_tokens", claim_ctx)
+        self.assertEqual(self._state(), SaleState.COMPLETED_SUCCESS)
+        self.assertTrue(
+            self.runner.call_view_method(
+                self.contract_id, "get_participant_info", user
+            ).has_claimed
+        )
+        self._check_contract_balances()
+
+    def test_claim_refund_finalizes_ended_sale(self):
+        """The first refund claim after the end time finalizes a failed sale."""
+        self._initialize_sale()
+        gross_amount = self.soft_cap // 2
+        deposit_ctx = self._create_deposit_context(gross_amount)
+        self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
+        self.assertEqual(self._state(), SaleState.ACTIVE)
+
+        refund_ctx = self._ctx(
+            Address(deposit_ctx.caller_id),
+            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=gross_amount)],  # type: ignore
+            timestamp=self.end_time + 1,
+        )
+        self.runner.call_public_method(self.contract_id, "claim_refund", refund_ctx)
+        self.assertEqual(self._state(), SaleState.COMPLETED_FAILED)
+        self._check_contract_balances()
+
+    def test_paused_sale_finalizes_on_claim_after_end(self):
+        """A sale left paused past its end time is finalized by the first refund claim."""
+        self._initialize_sale()
+        gross_amount = self.soft_cap // 2
+        deposit_ctx = self._create_deposit_context(gross_amount)
+        self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
+        self.runner.call_public_method(
+            self.contract_id, "pause", self._ctx(Address(self.owner_address))
+        )
+        self.assertEqual(self._state(), SaleState.PAUSED)
+
+        refund_ctx = self._ctx(
+            Address(deposit_ctx.caller_id),
+            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=gross_amount)],  # type: ignore
+            timestamp=self.end_time + 1,
+        )
+        self.runner.call_public_method(self.contract_id, "claim_refund", refund_ctx)
+        self.assertEqual(self._state(), SaleState.COMPLETED_FAILED)
+
+    def test_owner_withdraw_finalizes_ended_sale(self):
+        """The owner's HTR withdrawal after the end time finalizes a successful sale."""
+        self._initialize_sale()
+        deposit_ctx = self._create_deposit_context(self._gross_for_net(self.soft_cap))
+        self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
+
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        withdrawable = contract.total_raised - self._calculate_platform_fee(
+            contract.total_raised
+        )
+        withdraw_ctx = self._ctx(
+            Address(self.owner_address),
+            actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=withdrawable)],  # type: ignore
+            timestamp=self.end_time + 1,
+        )
+        self.runner.call_public_method(
+            self.contract_id, "withdraw_raised_htr", withdraw_ctx
+        )
+        self.assertEqual(self._state(), SaleState.COMPLETED_SUCCESS)
+        self._check_contract_balances()
+
+    def test_routed_claims_finalize_ended_sale(self):
+        """Routed claims (through DozerTools) finalize an ended sale the same way."""
+        self._initialize_sale()
+        user, _ = self._get_any_address()
+        gross_amount = self.soft_cap // 2
+        self.runner.call_public_method(
+            self.contract_id,
+            "routed_participate",
+            self._ctx(
+                self.creator_contract_id,
+                actions=[NCDepositAction(token_uid=HTR_UID, amount=gross_amount)],  # type: ignore
+            ),
+            Address(user),
+        )
+
+        self.runner.call_public_method(
+            self.contract_id,
+            "routed_claim_refund",
+            self._ctx(
+                self.creator_contract_id,
+                actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=gross_amount)],  # type: ignore
+                timestamp=self.end_time + 1,
+            ),
+            Address(user),
+        )
+        self.assertEqual(self._state(), SaleState.COMPLETED_FAILED)
+        self._check_contract_balances()
+
+    def test_failed_sale_owner_recovers_all_tokens(self):
+        """After a failed sale the owner recovers the whole token deposit; refunds still work."""
+        self._initialize_sale()
+        gross_amount = self.soft_cap // 2
+        deposit_ctx = self._create_deposit_context(gross_amount)
+        self.runner.call_public_method(self.contract_id, "participate", deposit_ctx)
+
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        initial_deposit = contract.initial_token_deposit
+        self.assertGreater(contract.total_sold, 0)
+
+        # Finalized lazily by the owner's withdrawal; sold-but-refunded tokens are recoverable too
+        self.runner.call_public_method(
+            self.contract_id,
+            "withdraw_remaining_tokens",
+            self._ctx(
+                Address(self.owner_address),
+                actions=[
+                    NCWithdrawalAction(token_uid=self.token_uid, amount=initial_deposit)
+                ],
+                timestamp=self.end_time + 1,
+            ),
+        )
+        self.assertEqual(self._state(), SaleState.COMPLETED_FAILED)
+        contract = self.get_readonly_contract(self.contract_id)
+        assert isinstance(contract, Crowdsale)
+        self.assertEqual(contract.sale_token_balance, 0)
+        self.assertEqual(
+            self.runner.call_view_method(
+                self.contract_id, "get_unsold_token_info"
+            )["can_withdraw_unsold"],
+            "false",
+        )
+        self._check_contract_balances()
+
+        # Cannot withdraw twice
+        with self.assertRaises(NCFail):
+            self.runner.call_public_method(
+                self.contract_id,
+                "withdraw_remaining_tokens",
+                self._ctx(
+                    Address(self.owner_address),
+                    actions=[NCWithdrawalAction(token_uid=self.token_uid, amount=1)],
+                    timestamp=self.end_time + 2,
+                ),
+            )
+
+        # Participant still gets the full refund
+        self.runner.call_public_method(
+            self.contract_id,
+            "claim_refund",
+            self._ctx(
+                Address(deposit_ctx.caller_id),
+                actions=[NCWithdrawalAction(token_uid=HTR_UID, amount=gross_amount)],  # type: ignore
+                timestamp=self.end_time + 3,
+            ),
+        )
+        self._check_contract_balances()
+
+    def test_failed_sale_view_reports_full_deposit_as_unsold(self):
+        self._initialize_sale()
+        self.runner.call_public_method(
+            self.contract_id,
+            "participate",
+            self._create_deposit_context(self.soft_cap // 2),
+        )
+        self.runner.call_public_method(
+            self.contract_id,
+            "finalize",
+            self._ctx(Address(self.owner_address), timestamp=self.end_time + 1),
+        )
+        info = self.runner.call_view_method(self.contract_id, "get_unsold_token_info")
+        self.assertEqual(info["can_withdraw_unsold"], "true")
+        self.assertEqual(int(info["unsold_tokens"]), self.hard_cap * self.rate)
+
+    def test_sale_without_participants_can_be_closed(self):
+        """A sale nobody joined (still PENDING) can be finalized after its end and the tokens recovered."""
+        self._initialize_sale(activate=False)
+        self.assertEqual(self._state(), SaleState.PENDING)
+
+        # Anyone may finalize once the end time has passed
+        self.runner.call_public_method(
+            self.contract_id,
+            "finalize",
+            self._ctx(Address(self._get_any_address()[0]), timestamp=self.end_time + 1),
+        )
+        self.assertEqual(self._state(), SaleState.COMPLETED_FAILED)
+
+        self.runner.call_public_method(
+            self.contract_id,
+            "withdraw_remaining_tokens",
+            self._ctx(
+                Address(self.owner_address),
+                actions=[
+                    NCWithdrawalAction(
+                        token_uid=self.token_uid, amount=self.hard_cap * self.rate
+                    )
+                ],
+                timestamp=self.end_time + 2,
+            ),
+        )
+        self._check_contract_balances()
+
+    def test_routed_withdraw_remaining_tokens_after_failed_sale(self):
+        self._initialize_sale(activate=False)
+        self.runner.call_public_method(
+            self.contract_id,
+            "routed_withdraw_remaining_tokens",
+            self._ctx(
+                self.creator_contract_id,
+                actions=[
+                    NCWithdrawalAction(
+                        token_uid=self.token_uid, amount=self.hard_cap * self.rate
+                    )
+                ],
+                timestamp=self.end_time + 1,
+            ),
+            Address(self.owner_address),
+        )
+        self.assertEqual(self._state(), SaleState.COMPLETED_FAILED)
+        self._check_contract_balances()

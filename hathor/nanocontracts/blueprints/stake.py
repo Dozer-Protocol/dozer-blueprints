@@ -242,13 +242,13 @@ class Stake(Blueprint):
 
     def _do_stake(self, ctx: Context, address: Address, amount: Amount) -> None:
         self._update_pool(ctx)
-        pending = self._pending_rewards(address)
         # create entries for newcomers
-        if pending == 0:
-            if address not in self.user_deposits:
-                self.user_deposits[address] = Amount(0)
-                self.user_actual_stake[address] = Amount(0)
-            self.user_stake_timestamp[address] = int(ctx.block.timestamp)
+        if address not in self.user_deposits:
+            self.user_deposits[address] = Amount(0)
+            self.user_actual_stake[address] = Amount(0)
+        # Every new stake restarts the timelock for the whole position, so a top-up cannot be
+        # withdrawn right away on the strength of an older stake.
+        self.user_stake_timestamp[address] = int(ctx.block.timestamp)
 
         self._compound_rewards(address)
         self.user_deposits[address] = Amount(self.user_deposits[address] + amount)

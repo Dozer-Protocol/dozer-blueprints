@@ -713,22 +713,19 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         else:
             print("⚠️ No auto-compounding detected (or pending was 0)")
 
-        # Timestamp should NOT change (keeps original lock time)
-        if Address(user_address) in contract_2.user_stake_timestamp:
-            self.assertEqual(
-                initial_timestamp,
-                contract_2.user_stake_timestamp[Address(user_address)],
-                "Stake timestamp should not change on subsequent stakes",
-            )
+        # Every new stake restarts the timelock
+        self.assertGreater(
+            contract_2.user_stake_timestamp[Address(user_address)],
+            initial_timestamp,
+            "Stake timestamp should restart on subsequent stakes",
+        )
 
         print("✓ total_staked correctly includes compounded rewards")
         print("✓ user_deposits includes auto-compounded rewards")
         print("✓ Timestamp preserved from first stake")
 
-        # Advance to after timelock
-        time_until_unlock = MIN_PERIOD_DAYS * DAY_IN_SECONDS - (time_2 - time_1)
-        if time_until_unlock > 0:
-            self.clock.advance(time_until_unlock + 1)
+        # Advance past the timelock restarted by the second stake
+        self.clock.advance(MIN_PERIOD_DAYS * DAY_IN_SECONDS + 1)
 
         final_time = self.clock.seconds()
 
@@ -844,9 +841,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         print("✓ total_staked correctly includes compounded rewards")
         print("======================================\n")
 
-        # Wait for unlock period from FIRST stake
+        # Wait for the unlock period of the latest stake
         time_until_unlock = (
-            time_1 + MIN_PERIOD_DAYS * DAY_IN_SECONDS
+            time_2 + MIN_PERIOD_DAYS * DAY_IN_SECONDS
         ) - self.clock.seconds()
         if time_until_unlock > 0:
             self.clock.advance(time_until_unlock + 1)
@@ -925,7 +922,15 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         self.assertEqual(contract.total_staked, stake_1 + stake_2 + pending_rewards)
         self.assertEqual(contract.total_staked, user_info.deposits)
 
-        # Verify user can still unstake (timelock should remain from first stake)
+        # The second stake restarts the timelock for the whole position
+        user_staking_info = self.runner.call_view_method(
+            self.contract_id,
+            "get_user_staking_info",
+            ctx2.caller_id,
+            int(self.clock.seconds()),
+        )
+        self.assertFalse(user_staking_info.can_unstake)
+        self.clock.advance(MIN_PERIOD_DAYS * DAY_IN_SECONDS)
         user_staking_info = self.runner.call_view_method(
             self.contract_id,
             "get_user_staking_info",
@@ -1066,9 +1071,9 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
         )
         self.assertLessEqual(abs(contract_2.total_staked - expected_2), 5)
 
-        # Wait and do second partial unstake: 400 tokens
-        self.clock.advance(2 * DAY_IN_SECONDS)
-        elapsed += 2 * DAY_IN_SECONDS
+        # Wait out the timelock restarted by the second stake, then unstake 400 tokens
+        self.clock.advance(MIN_PERIOD_DAYS * DAY_IN_SECONDS)
+        elapsed += MIN_PERIOD_DAYS * DAY_IN_SECONDS
         unstake_2 = 400_00
         unstake_ctx_2 = self.create_context(
             actions=[
@@ -1110,7 +1115,8 @@ class StakeEdgeCasesTestCase(BlueprintTestCase):
             contract_4.total_staked, contract_4.user_deposits[Address(user_address)]
         )
 
-        # Final verification: withdraw everything
+        # Final verification: withdraw everything once the third stake's timelock has passed
+        self.clock.advance(MIN_PERIOD_DAYS * DAY_IN_SECONDS)
         final_time = self.clock.seconds()
         max_withdrawal = self.runner.call_view_method(
             self.contract_id,

@@ -50,6 +50,8 @@ from hathor.wallet.keypair import KeyPair
 from hathor_tests.nanocontracts.blueprints.unittest import BlueprintTestCase
 
 settings = HathorSettings()
+# HTR deposit a user attaches to pay the protocol NCFee of routed user operations
+PROTOCOL_FEE = NCDepositAction(token_uid=TokenUid(settings.HATHOR_TOKEN_UID), amount=Amount(1))
 
 DOZER_POOL_MANAGER_BLUEPRINT_ID = (
     "d6c09caa2f1f7ef6a6f416301c2b665e041fa819a792e53b8409c9c1aed2c89a"
@@ -651,7 +653,7 @@ class DozerToolsTest(BlueprintTestCase):
     def test_deposit_credits(self) -> None:
         """Test depositing HTR and DZR credits to project."""
         # First create a project
-        token_uid = self._create_test_project()
+        token_uid = self._create_test_project(protocol_fee_credits=0)
 
         # Deposit HTR credits
         tx = self._get_any_tx()
@@ -809,7 +811,7 @@ class DozerToolsTest(BlueprintTestCase):
 
     def test_charged_htr_fees_become_platform_withdrawable(self) -> None:
         """Charged project credits accrue to exact owner-withdrawable fees."""
-        token_uid = self._create_test_project("FeeToken", "FEE")
+        token_uid = self._create_test_project("FeeToken", "FEE", protocol_fee_credits=0)
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
         tx = self._get_any_tx()
 
@@ -964,8 +966,9 @@ class DozerToolsTest(BlueprintTestCase):
         symbol: str = "TEST",
         category: str = "DeFi",
         dev_address: Optional[Address] = None,
+        protocol_fee_credits: int = 100,
     ) -> TokenUid:
-        """Helper method to create a test project."""
+        """Helper method to create a test project (with HTR credits for protocol fees)."""
         if dev_address is None:
             dev_address = self.dev_address
 
@@ -981,7 +984,7 @@ class DozerToolsTest(BlueprintTestCase):
             timestamp=self.get_current_timestamp(),
         )
 
-        return self.runner.call_public_method(
+        token_uid = self.runner.call_public_method(
             self.dozer_tools_nc_id,
             "create_project",
             context,
@@ -998,6 +1001,10 @@ class DozerToolsTest(BlueprintTestCase):
             category,  # category
             "",  # whitepaper_url - empty
         )
+        if protocol_fee_credits > 0:
+            # Owner operations pay protocol fees from project credits
+            self._deposit_credits(token_uid, htr_uid, protocol_fee_credits, caller=dev_address)
+        return token_uid
 
     def test_configure_project_vesting(self) -> None:
         """Test configuring project vesting with special allocations."""
@@ -1325,7 +1332,7 @@ class DozerToolsTest(BlueprintTestCase):
         stake_amount = 1000_00  # 1000 tokens
 
         stake_context = self.create_context(
-            actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            actions=[PROTOCOL_FEE, NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
             vertex=self._get_any_tx(),
             caller_id=Address(user_address),
             timestamp=self.get_current_timestamp(),
@@ -1386,7 +1393,7 @@ class DozerToolsTest(BlueprintTestCase):
         initial_time = self.get_current_timestamp()
 
         stake_context = self.create_context(
-            actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            actions=[PROTOCOL_FEE, NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
             vertex=self._get_any_tx(),
             caller_id=Address(user_address),
             timestamp=initial_time,
@@ -1413,6 +1420,7 @@ class DozerToolsTest(BlueprintTestCase):
         # Unstake through DozerTools routing using exact amount from view method
         unstake_context = self.create_context(
             actions=[
+                PROTOCOL_FEE,
                 NCWithdrawalAction(token_uid=token_uid, amount=Amount(max_withdrawal))
             ],
             vertex=self._get_any_tx(),
@@ -1537,6 +1545,7 @@ class DozerToolsTest(BlueprintTestCase):
 
             stake_ctx = self.create_context(
                 actions=[
+                    PROTOCOL_FEE,
                     NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))
                 ],
                 vertex=self._get_any_tx(),
@@ -1574,6 +1583,7 @@ class DozerToolsTest(BlueprintTestCase):
             half_withdrawal = max_withdrawal // 2
             unstake_ctx = self.create_context(
                 actions=[
+                    PROTOCOL_FEE,
                     NCWithdrawalAction(
                         token_uid=token_uid, amount=Amount(half_withdrawal)
                     )
@@ -1603,7 +1613,7 @@ class DozerToolsTest(BlueprintTestCase):
 
         # Try to stake through routing (should fail - no staking contract)
         stake_context = self.create_context(
-            actions=[NCDepositAction(token_uid=token_uid, amount=Amount(1000_00))],
+            actions=[PROTOCOL_FEE, NCDepositAction(token_uid=token_uid, amount=Amount(1000_00))],
             vertex=self._get_any_tx(),
             caller_id=Address(user_address),
             timestamp=self.get_current_timestamp(),
@@ -1658,7 +1668,7 @@ class DozerToolsTest(BlueprintTestCase):
         initial_time = self.get_current_timestamp()
 
         stake_context = self.create_context(
-            actions=[NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            actions=[PROTOCOL_FEE, NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
             vertex=self._get_any_tx(),
             caller_id=Address(user_address),
             timestamp=initial_time,
@@ -1898,7 +1908,7 @@ class DozerToolsTest(BlueprintTestCase):
             # Claim tokens (based on NET deposit)
             tokens_due = net_deposit * rate
             claim_ctx = self.create_context(
-                actions=[NCWithdrawalAction(token_uid=token_uid, amount=tokens_due)],
+                actions=[PROTOCOL_FEE, NCWithdrawalAction(token_uid=token_uid, amount=tokens_due)],
                 vertex=self._get_any_tx(),
                 caller_id=Address(user_addr),
                 timestamp=end_time + 100,
@@ -2143,6 +2153,98 @@ class DozerToolsTest(BlueprintTestCase):
             self.assertTrue(participant_info_after.has_claimed)
             self.assertEqual(participant_info_after.deposited, 0)
             self.assertEqual(participant_info_after.gross_deposited, 0)
+
+    def test_crowdsale_ended_sale_finalizes_on_first_claim(self) -> None:
+        """No finalize tx: the first refund claim closes the ended sale, and the dev
+        then recovers the whole token deposit from the failed sale."""
+        token_uid = self._create_test_project("AutoFinalToken", "AUTO")
+        tx = self._get_any_tx()
+        now = self.get_current_timestamp()
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "configure_project_vesting",
+            self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=now),
+            token_uid, 20, 20, 5, 1000, ["Team"], [55], [self.dev_address], [12], [36],
+        )
+
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        min_deposit = 50_00
+        start_time = now + 100
+        end_time = start_time + 3600
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "create_crowdsale",
+            self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=now),
+            token_uid, 100, 150_00, 200_00, min_deposit, start_time, end_time,
+        )
+        contracts = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_contracts", token_uid
+        )
+        crowdsale_contract_id = ContractId(
+            VertexId(bytes.fromhex(contracts["crowdsale_contract"]))
+        )
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_early_activate",
+            self.create_context(actions=[], vertex=tx, caller_id=self.dev_address, timestamp=start_time - 1),
+            token_uid,
+        )
+
+        user_addr, _ = self._get_any_address()
+        gross = min_deposit * 2
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_participate",
+            self.create_context(
+                actions=[NCDepositAction(token_uid=htr_uid, amount=gross)],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=start_time + 100,
+            ),
+            token_uid,
+        )
+        self.assertEqual(
+            self.runner.call_view_method(crowdsale_contract_id, "get_sale_info").state, 1
+        )
+
+        # First claim after the end finalizes the sale as failed and refunds the gross deposit
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_claim_refund",
+            self.create_context(
+                actions=[NCWithdrawalAction(token_uid=htr_uid, amount=gross)],
+                vertex=self._get_any_tx(),
+                caller_id=Address(user_addr),
+                timestamp=end_time + 1,
+            ),
+            token_uid,
+        )
+        self.assertEqual(
+            self.runner.call_view_method(crowdsale_contract_id, "get_sale_info").state, 4
+        )
+
+        # The dev recovers every token deposited into the failed sale
+        unsold = self.runner.call_view_method(crowdsale_contract_id, "get_unsold_token_info")
+        self.assertEqual(unsold["can_withdraw_unsold"], "true")
+        self.assertEqual(unsold["unsold_tokens"], unsold["initial_token_deposit"])
+        self.runner.call_public_method(
+            self.dozer_tools_nc_id,
+            "crowdsale_withdraw_remaining_tokens",
+            self.create_context(
+                actions=[
+                    NCWithdrawalAction(
+                        token_uid=token_uid, amount=int(unsold["initial_token_deposit"])
+                    )
+                ],
+                vertex=self._get_any_tx(),
+                caller_id=self.dev_address,
+                timestamp=end_time + 2,
+            ),
+            token_uid,
+        )
+        storage = self.runner.get_storage(crowdsale_contract_id)
+        self.assertEqual(storage.get_balance(token_uid).value, 0)
+        self.assertEqual(storage.get_balance(htr_uid).value, 0)
 
     def test_crowdsale_pause_unpause_operations(self) -> None:
         """Test crowdsale pause/unpause functionality."""
@@ -3722,7 +3824,7 @@ class DozerToolsTest(BlueprintTestCase):
         stake_amount = 1000_00
         self._call(
             user,
-            [NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
+            [PROTOCOL_FEE, NCDepositAction(token_uid=token_uid, amount=Amount(stake_amount))],
             "staking_stake",
             token_uid,
         )
@@ -3747,6 +3849,7 @@ class DozerToolsTest(BlueprintTestCase):
             "staking_unstake",
             self.create_context(
                 actions=[
+                    PROTOCOL_FEE,
                     NCWithdrawalAction(token_uid=token_uid, amount=Amount(max_withdrawal))
                 ],
                 vertex=self._get_any_tx(),
@@ -3763,7 +3866,7 @@ class DozerToolsTest(BlueprintTestCase):
             self.dozer_tools_nc_id,
             "vesting_claim_allocation",
             self.create_context(
-                actions=[NCWithdrawalAction(token_uid=token_uid, amount=Amount(100_000))],
+                actions=[PROTOCOL_FEE, NCWithdrawalAction(token_uid=token_uid, amount=Amount(100_000))],
                 vertex=self._get_any_tx(),
                 caller_id=self.dev_address,
                 timestamp=claim_time,
@@ -3789,26 +3892,83 @@ class DozerToolsTest(BlueprintTestCase):
         # Creation fee (100) + vesting deposit fee (100) are covered by the fee.
         self.assertEqual(int(fees["dzr_fees"]), int(self.create_project_fee_dzr) - 200)
 
-    def test_protocol_fee_reserve_must_cover_routed_calls(self) -> None:
-        """With an empty HTR fee reserve, routed/child calls fail until it is funded."""
-        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
-        token_uid = self._create_dzr_project("NoReserve", "NRES")
-        # Project paid in DZR: platform_htr_fees is zero, so staking auto-creation
-        # (which needs HTR protocol fees) cannot be covered.
+    def test_owner_operations_pay_protocol_fees_from_project_credits(self) -> None:
+        """Protocol NCFees of owner operations come out of the project's credits."""
+        token_uid = self._create_dzr_project("NoCredits", "NCRD")
+        # No credits: auto-creating the staking contract cannot pay its protocol fees.
         with self.assertRaises(InsufficientCredits):
             self._configure_vesting_simple(token_uid)
 
-        # Anyone can fund the reserve with HTR.
-        self._call(
-            self.user_address,
-            [NCDepositAction(token_uid=htr_uid, amount=Amount(10))],
-            "fund_platform_fee_reserve",
-        )
-        fees = self.runner.call_view_method(
+        fees_before = self.runner.call_view_method(
             self.dozer_tools_nc_id, "get_platform_fee_balances"
         )
-        self.assertEqual(fees["htr_fees"], "10")
+        # DZR credits work too (100 DZR cents per fee): withdraw from vesting + set up staking.
+        self._deposit_credits(token_uid, self.dzr_token_uid, 200)
         self._configure_vesting_simple(token_uid)
+        credits = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_credits", token_uid
+        )
+        self.assertEqual(int(credits["dzr_balance"]), 0)
+        # The platform's balances are untouched.
+        self.assertEqual(
+            self.runner.call_view_method(
+                self.dozer_tools_nc_id, "get_platform_fee_balances"
+            ),
+            fees_before,
+        )
+        self._assert_solvent([token_uid])
+
+    def test_user_operations_pay_protocol_fee_with_htr_deposit(self) -> None:
+        htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
+        token_uid = self._create_test_project("UserFee", "UFEE")
+        self._configure_vesting_simple(token_uid)
+        claim_time = self.get_current_timestamp() + 4 * 30 * 24 * 3600
+        claim = NCWithdrawalAction(token_uid=token_uid, amount=Amount(100_000))
+
+        def claim_with(actions):
+            self.runner.call_public_method(
+                self.dozer_tools_nc_id,
+                "vesting_claim_allocation",
+                self.create_context(
+                    actions=actions,
+                    vertex=self._get_any_tx(),
+                    caller_id=self.dev_address,
+                    timestamp=claim_time,
+                ),
+                3,
+            )
+
+        from hathor.nanocontracts.exception import NCFail
+
+        bad = [
+            [claim],  # no fee
+            [claim, NCDepositAction(token_uid=htr_uid, amount=Amount(2))],  # wrong amount
+            [claim, NCWithdrawalAction(token_uid=htr_uid, amount=Amount(1))],  # not a deposit
+        ]
+        for actions in bad:
+            with self.assertRaises(NCFail):
+                claim_with(actions)
+
+        credits_before = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_project_credits", token_uid
+        )
+        fees_before = self.runner.call_view_method(
+            self.dozer_tools_nc_id, "get_platform_fee_balances"
+        )
+        claim_with([PROTOCOL_FEE, claim])
+        # Neither the project nor the platform paid for the user's operation.
+        self.assertEqual(
+            self.runner.call_view_method(
+                self.dozer_tools_nc_id, "get_project_credits", token_uid
+            ),
+            credits_before,
+        )
+        self.assertEqual(
+            self.runner.call_view_method(
+                self.dozer_tools_nc_id, "get_platform_fee_balances"
+            ),
+            fees_before,
+        )
         self._assert_solvent([token_uid])
 
     def test_create_project_fails_when_reserve_cannot_cover_protocol_fees(self) -> None:
@@ -3920,13 +4080,14 @@ class DozerToolsTest(BlueprintTestCase):
 
     def test_cancel_project_requires_exact_credit_refund(self) -> None:
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
-        token_uid = self._create_test_project("CancelRefund", "CREF")
+        token_uid = self._create_test_project("CancelRefund", "CREF", protocol_fee_credits=0)
         self._set_cancel_fee(500)
         self._deposit_credits(token_uid, htr_uid, 5_000)
         self._deposit_credits(token_uid, self.dzr_token_uid, 300)
         self._assert_solvent([token_uid])
 
-        htr_refund = NCWithdrawalAction(token_uid=htr_uid, amount=Amount(4_500))
+        # 5_000 credits - 500 cancel fee - 2 protocol fees (supply withdrawal + melt)
+        htr_refund = NCWithdrawalAction(token_uid=htr_uid, amount=Amount(4_498))
         dzr_refund = NCWithdrawalAction(token_uid=self.dzr_token_uid, amount=Amount(300))
 
         bad_cases = [
@@ -3934,11 +4095,11 @@ class DozerToolsTest(BlueprintTestCase):
             [htr_refund],  # DZR missing
             [dzr_refund],  # HTR missing
             [
-                NCWithdrawalAction(token_uid=htr_uid, amount=Amount(4_499)),
+                NCWithdrawalAction(token_uid=htr_uid, amount=Amount(4_497)),
                 dzr_refund,
             ],  # HTR short
             [
-                NCWithdrawalAction(token_uid=htr_uid, amount=Amount(4_501)),
+                NCWithdrawalAction(token_uid=htr_uid, amount=Amount(4_499)),
                 dzr_refund,
             ],  # HTR over
             [
@@ -3979,14 +4140,15 @@ class DozerToolsTest(BlueprintTestCase):
 
     def test_cancel_project_refunds_single_token_credits(self) -> None:
         htr_uid = TokenUid(settings.HATHOR_TOKEN_UID)
-        token_uid = self._create_test_project("CancelHtrOnly", "CHTR")
+        token_uid = self._create_test_project("CancelHtrOnly", "CHTR", protocol_fee_credits=0)
         self._deposit_credits(token_uid, htr_uid, 2_000)
+        refund = 2_000 - 2  # minus the protocol fees for withdrawing and melting the supply
         # Zero DZR credits: DZR refund action must not be accepted.
         with self.assertRaises(InsufficientCredits):
             self._call(
                 self.dev_address,
                 [
-                    NCWithdrawalAction(token_uid=htr_uid, amount=Amount(2_000)),
+                    NCWithdrawalAction(token_uid=htr_uid, amount=Amount(refund)),
                     NCWithdrawalAction(token_uid=self.dzr_token_uid, amount=Amount(1)),
                 ],
                 "cancel_project",
@@ -3994,7 +4156,7 @@ class DozerToolsTest(BlueprintTestCase):
             )
         self._call(
             self.dev_address,
-            [NCWithdrawalAction(token_uid=htr_uid, amount=Amount(2_000))],
+            [NCWithdrawalAction(token_uid=htr_uid, amount=Amount(refund))],
             "cancel_project",
             token_uid,
         )
@@ -4005,7 +4167,9 @@ class DozerToolsTest(BlueprintTestCase):
         token_uid = self._create_test_project("PausedTok", "PAUS")
         self._deposit_credits(token_uid, htr_uid, 5_000)
         self._configure_vesting_simple(token_uid, staking=30, public_sale=10, team=60)
-        cancel_token = self._create_test_project("PausedCancel", "PCAN")
+        cancel_token = self._create_test_project(
+            "PausedCancel", "PCAN", protocol_fee_credits=2  # exactly the cancel protocol fees
+        )
         new_dev = Address(self._get_any_address()[0])
 
         self._call(self.owner_address, [], "pause")
