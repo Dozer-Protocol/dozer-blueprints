@@ -23,6 +23,7 @@ from hathor import (
 PRECISION = Amount(10**20)
 MINIMUM_LIQUIDITY = Amount(10**3)  # Multiplier for minimum liquidity burn
 MAX_POOLS_TO_ITERATE = 1000  # Maximum pools in graph building methods to prevent DoS
+MAX_PAGE_SIZE = 100  # Maximum pools scanned by a single paginated view call
 
 # Price precision constants
 PRICE_PRECISION = 10**8  # 8 decimal places for price calculations (including TWAP)
@@ -1009,7 +1010,7 @@ class DozerPoolManager(Blueprint):
         Raises:
             PoolNotFound: If the pool does not exist
         """
-        if pool_key not in self.all_pools:
+        if pool_key not in self.pools:
             raise PoolNotFound()
 
         pool = self.pools[pool_key]
@@ -1115,13 +1116,13 @@ class DozerPoolManager(Blueprint):
 
         if result.swap_amount > 0:
             if token_out == token_a:
-                swap_reserve_in = Amount(pool.reserve_b - result.amount_b + result.swap_amount)
+                swap_reserve_in = Amount(pool.reserve_b - result.amount_b)
                 swap_reserve_out = Amount(pool.reserve_a - result.amount_a)
                 price_impact = self._calculate_single_swap_price_impact(
                     result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
                 )
             else:
-                swap_reserve_in = Amount(pool.reserve_a - result.amount_a + result.swap_amount)
+                swap_reserve_in = Amount(pool.reserve_a - result.amount_a)
                 swap_reserve_out = Amount(pool.reserve_b - result.amount_b)
                 price_impact = self._calculate_single_swap_price_impact(
                     result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
@@ -1176,13 +1177,13 @@ class DozerPoolManager(Blueprint):
 
         if result.swap_amount > 0:
             if token_out == token_a:
-                swap_reserve_in = Amount(pool.reserve_b - result.amount_b + result.swap_amount)
+                swap_reserve_in = Amount(pool.reserve_b - result.amount_b)
                 swap_reserve_out = Amount(pool.reserve_a - result.amount_a)
                 price_impact = self._calculate_single_swap_price_impact(
                     result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
                 )
             else:
-                swap_reserve_in = Amount(pool.reserve_a - result.amount_a + result.swap_amount)
+                swap_reserve_in = Amount(pool.reserve_a - result.amount_a)
                 swap_reserve_out = Amount(pool.reserve_b - result.amount_b)
                 price_impact = self._calculate_single_swap_price_impact(
                     result.swap_amount, result.swap_output, swap_reserve_in, swap_reserve_out
@@ -1218,7 +1219,7 @@ class DozerPoolManager(Blueprint):
         Raises:
             PoolNotFound: If the pool does not exist
         """
-        if pool_key not in self.all_pools:
+        if pool_key not in self.pools:
             raise PoolNotFound()
 
         pool = self.pools[pool_key]
@@ -2136,7 +2137,7 @@ class DozerPoolManager(Blueprint):
 
         if token_out == token_a:
             if amount_b > 0:
-                swap_reserve_in = Amount(new_reserve_b + amount_b)
+                swap_reserve_in = new_reserve_b
                 swap_reserve_out = Amount(new_reserve_a)
 
                 extra_a = self.get_amount_out(
@@ -2172,7 +2173,7 @@ class DozerPoolManager(Blueprint):
         else:
             assert token_out == token_b, f"Token {token_out} is not part of pool"
             if amount_a > 0:
-                swap_reserve_in = Amount(new_reserve_a + amount_a)
+                swap_reserve_in = new_reserve_a
                 swap_reserve_out = Amount(new_reserve_b)
 
                 extra_b = self.get_amount_out(
@@ -2403,11 +2404,11 @@ class DozerPoolManager(Blueprint):
 
         if result.swap_amount > 0:
             if token_out == token_a:
-                swap_reserve_in = Amount(reserve_b_after_removal + result.swap_amount)
+                swap_reserve_in = reserve_b_after_removal
                 swap_reserve_out = reserve_a_after_removal
                 token_in_for_swap = token_b
             else:
-                swap_reserve_in = Amount(reserve_a_after_removal + result.swap_amount)
+                swap_reserve_in = reserve_a_after_removal
                 swap_reserve_out = reserve_b_after_removal
                 token_in_for_swap = token_a
 
@@ -2685,7 +2686,7 @@ class DozerPoolManager(Blueprint):
         """
         seen: list[str] = []
         for pool_key in path:
-            if pool_key not in self.all_pools:
+            if pool_key not in self.pools:
                 raise PoolNotFound()
             if pool_key not in self.pool_signers:
                 raise InvalidPath("Route contains an unsigned pool")
@@ -2743,7 +2744,7 @@ class DozerPoolManager(Blueprint):
 
         # Get the first pool to determine input token
         first_pool_key = path[0]
-        if first_pool_key not in self.all_pools:
+        if first_pool_key not in self.pools:
             raise PoolNotFound()
 
         # Execute the swap through the path
@@ -2769,7 +2770,7 @@ class DozerPoolManager(Blueprint):
             current_token = next_token
             second_pool_key = path[1]
 
-            if second_pool_key not in self.all_pools:
+            if second_pool_key not in self.pools:
                 raise PoolNotFound()
 
             # Determine the output token of the second pool
@@ -2791,7 +2792,7 @@ class DozerPoolManager(Blueprint):
                 current_token = next_token
                 third_pool_key = path[2]
 
-                if third_pool_key not in self.all_pools:
+                if third_pool_key not in self.pools:
                     raise PoolNotFound()
 
                 # Determine the output token of the third pool
@@ -3014,7 +3015,7 @@ class DozerPoolManager(Blueprint):
         # For a single hop path
         if len(path) == 1:
             pool_key = path[0]
-            if pool_key not in self.all_pools:
+            if pool_key not in self.pools:
                 raise PoolNotFound()
 
             pool = self.pools[pool_key]
@@ -3080,7 +3081,7 @@ class DozerPoolManager(Blueprint):
 
         # Get the last pool
         last_pool_key = path[-1]
-        if last_pool_key not in self.all_pools:
+        if last_pool_key not in self.pools:
             raise PoolNotFound()
 
         # Verify the output token is in the last pool
@@ -3102,7 +3103,7 @@ class DozerPoolManager(Blueprint):
 
             # Get the first pool (token_in -> intermediate)
             first_pool_key = path[0]
-            if first_pool_key not in self.all_pools:
+            if first_pool_key not in self.pools:
                 raise PoolNotFound()
 
             first_pool = self.pools[first_pool_key]
@@ -3212,7 +3213,7 @@ class DozerPoolManager(Blueprint):
         if len(path) == 3:
             # Get the third pool (last in the path)
             third_pool_key = path[2]
-            if third_pool_key not in self.all_pools:
+            if third_pool_key not in self.pools:
                 raise PoolNotFound()
 
             # Get third pool and determine the output token and the second intermediate token
@@ -3221,7 +3222,7 @@ class DozerPoolManager(Blueprint):
 
             # Get the second pool (middle of the path)
             second_pool_key = path[1]
-            if second_pool_key not in self.all_pools:
+            if second_pool_key not in self.pools:
                 raise PoolNotFound()
 
             second_pool = self.pools[second_pool_key]
@@ -3230,7 +3231,7 @@ class DozerPoolManager(Blueprint):
 
             # Get the first pool (first in the path)
             first_pool_key = path[0]
-            if first_pool_key not in self.all_pools:
+            if first_pool_key not in self.pools:
                 raise PoolNotFound()
 
             first_pool = self.pools[first_pool_key]
@@ -4180,6 +4181,9 @@ class DozerPoolManager(Blueprint):
 
         old_owner = self.owner
         self.owner = new_owner
+        # Signer rights follow ownership
+        self.authorized_signers.discard(old_owner)
+        self.authorized_signers.add(new_owner)
 
         self.log.info('owner changed',
                       old_owner=str(old_owner),
@@ -4302,6 +4306,161 @@ class DozerPoolManager(Blueprint):
         result = []
         for pool_key in self.all_pools:
             result.append(pool_key)
+        return result
+
+    # --- Paginated views ---------------------------------------------------------------
+    # Pool creation is permissionless, so all_pools can grow without bound and the views that
+    # scan it all (get_all_pools, get_signed_pools, get_user_pools, get_user_positions,
+    # get_all_token_prices_in_htr/usd) may eventually exceed the view execution limits.
+    # The *_page variants below scan only the window [skip, skip + limit) of all_pools, with
+    # limit capped at MAX_PAGE_SIZE. Use get_pool_count() to know how many pools to page through;
+    # concatenating the pages of skip = 0, limit, 2 * limit, ... reproduces the non-paginated view.
+
+    def _page_bounds(self, skip: int, limit: int) -> tuple[int, int]:
+        """Validate paging arguments and return the window (start, end) clamped to all_pools."""
+        if skip < 0 or limit <= 0:
+            raise InvalidAction("Invalid page parameters")
+        if limit > MAX_PAGE_SIZE:
+            limit = MAX_PAGE_SIZE
+        total = len(self.all_pools)
+        end = skip + limit
+        if end > total:
+            end = total
+        if skip > end:
+            skip = end
+        return (skip, end)
+
+    def _page_unique_tokens(self, start: int, end: int) -> set[TokenUid]:
+        """Unique tokens of the pools in the window [start, end) of all_pools."""
+        unique_tokens = set()
+        for i in range(start, end):
+            pool = self.pools[self.all_pools[i]]
+            unique_tokens.add(pool.token_a)
+            unique_tokens.add(pool.token_b)
+        return unique_tokens
+
+    @view
+    def get_pool_count(self) -> int:
+        """Get the total number of pools (the size to page through with the *_page views)."""
+        return len(self.all_pools)
+
+    @view
+    def get_pools_page(self, skip: int, limit: int) -> list[str]:
+        """Paginated get_all_pools: the pool keys at positions [skip, skip + limit) of all_pools.
+
+        Raises:
+            InvalidAction: If skip is negative or limit is not positive
+        """
+        start, end = self._page_bounds(skip, limit)
+        result = []
+        for i in range(start, end):
+            result.append(self.all_pools[i])
+        return result
+
+    @view
+    def get_signed_pools_page(self, skip: int, limit: int) -> list[str]:
+        """Paginated get_signed_pools: the signed pools among the pools at positions [skip, skip + limit)
+        of all_pools. A page may therefore hold fewer than limit entries (or none) even if later pages
+        have more; page up to get_pool_count() to collect every signed pool.
+
+        Raises:
+            InvalidAction: If skip is negative or limit is not positive
+        """
+        start, end = self._page_bounds(skip, limit)
+        result = []
+        for i in range(start, end):
+            pool_key = self.all_pools[i]
+            if pool_key in self.pool_signers:
+                result.append(pool_key)
+        return result
+
+    @view
+    def get_user_pools_page(self, address: CallerId, skip: int, limit: int) -> list[str]:
+        """Paginated get_user_pools: pools where the user has liquidity, among the pools at positions
+        [skip, skip + limit) of all_pools.
+
+        Raises:
+            InvalidAction: If skip is negative or limit is not positive
+        """
+        start, end = self._page_bounds(skip, limit)
+        user_pools = []
+        for i in range(start, end):
+            pool_key = self.all_pools[i]
+            if self.pool_user_liquidity[pool_key].get(address, 0) > 0:
+                user_pools.append(pool_key)
+        return user_pools
+
+    @view
+    def get_user_positions_page(self, address: CallerId, skip: int, limit: int) -> dict[str, UserPosition]:
+        """Paginated get_user_positions: the user's positions in the pools at positions
+        [skip, skip + limit) of all_pools.
+
+        Raises:
+            InvalidAction: If skip is negative or limit is not positive
+        """
+        start, end = self._page_bounds(skip, limit)
+        positions = {}
+        for i in range(start, end):
+            pool_key = self.all_pools[i]
+            if self.pool_user_liquidity[pool_key].get(address, 0) > 0:
+                user_info = self.user_info(address, pool_key)
+                positions[pool_key] = UserPosition(
+                    liquidity=user_info.liquidity,
+                    token0Amount=user_info.token0Amount,
+                    token1Amount=user_info.token1Amount,
+                    share=user_info.share,
+                    balance_a=user_info.balance_a,
+                    balance_b=user_info.balance_b,
+                    token_a=user_info.token_a,
+                    token_b=user_info.token_b,
+                )
+        return positions
+
+    @view
+    def get_token_prices_in_htr_page(self, skip: int, limit: int) -> dict[str, Amount]:
+        """Paginated get_all_token_prices_in_htr: prices (in HTR, 8 decimals) of the tokens that appear in
+        the pools at positions [skip, skip + limit) of all_pools. A token present in several pages gets the
+        same price in each (prices come from the global route finding, not from the page), so merging the
+        pages of skip = 0, limit, 2 * limit, ... reproduces get_all_token_prices_in_htr.
+
+        Raises:
+            InvalidAction: If skip is negative or limit is not positive
+        """
+        start, end = self._page_bounds(skip, limit)
+        result = {}
+        result[HATHOR_TOKEN_UID.hex()] = Amount(100_000000)
+        for token in self._page_unique_tokens(start, end):
+            if token != HATHOR_TOKEN_UID:
+                price = self.get_token_price_in_htr(token)
+                if price > 0:
+                    result[token.hex()] = Amount(price)
+        return result
+
+    @view
+    def get_token_prices_in_usd_page(self, skip: int, limit: int) -> dict[str, Amount]:
+        """Paginated get_all_token_prices_in_usd: prices (in USD, 8 decimals) of the tokens that appear in
+        the pools at positions [skip, skip + limit) of all_pools; same merging semantics as
+        get_token_prices_in_htr_page. Empty if no HTR-USD pool is set.
+
+        Raises:
+            InvalidAction: If skip is negative or limit is not positive
+        """
+        start, end = self._page_bounds(skip, limit)
+        if not self.htr_usd_pool_key:
+            return {}
+        result = {}
+        usd_pool = self.pools[self.htr_usd_pool_key]
+        if usd_pool.token_a == HATHOR_TOKEN_UID:
+            usd_token = usd_pool.token_b
+        else:
+            usd_token = usd_pool.token_a
+        for token in self._page_unique_tokens(start, end):
+            if token == usd_token:
+                result[token.hex()] = Amount(100_000000)
+            else:
+                price = self.get_token_price_in_usd(token)
+                if price > 0:
+                    result[token.hex()] = Amount(price)
         return result
 
     @view
@@ -4947,7 +5106,7 @@ class DozerPoolManager(Blueprint):
         
         # Trace through each pool to get the exchange rate
         for pool_key in pool_keys:
-            if pool_key not in self.all_pools:
+            if pool_key not in self.pools:
                 return Amount(0)
             
             pool = self.pools[pool_key]
